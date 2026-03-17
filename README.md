@@ -1,0 +1,2 @@
+# dynamix-manager
+TeamDynamix Helper
