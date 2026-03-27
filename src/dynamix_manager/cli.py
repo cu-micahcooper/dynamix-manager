@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import json
 
+from dynamix_manager import pipeline
 from dynamix_manager.config import load_runtime_config, survey_report_id
 from dynamix_manager.tdx_client import TeamDynamixClient
 
@@ -64,8 +66,6 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
-    from dynamix_manager import pipeline
-
     parser = build_parser()
     args = parser.parse_args()
 
@@ -74,7 +74,12 @@ def main() -> None:
         return
 
     config = load_runtime_config()
-    client = TeamDynamixClient(base_url=config.base_url, app_id=config.app_id)
+    client = TeamDynamixClient(
+        base_url=config.base_url,
+        app_id=config.app_id,
+        username=config.username,
+        password=config.password,
+    )
 
     if args.command == "refresh-surveys":
         result = pipeline.refresh_survey_slice(
@@ -82,7 +87,7 @@ def main() -> None:
             client=client,
             report_id=survey_report_id(),
         )
-        print(result)
+        print(json.dumps(result, indent=2))
 
     elif args.command == "backfill-tickets":
         result = pipeline.backfill_ticket_links(
@@ -92,7 +97,7 @@ def main() -> None:
             batch_size=args.batch_size,
             max_batches=args.max_batches,
         )
-        print(result)
+        print(json.dumps(result, indent=2))
 
     elif args.command == "quality-check":
         result = pipeline.cache_ticket_quality_slice(
@@ -101,8 +106,12 @@ def main() -> None:
             ticket_app_id=args.ticket_app_id,
             limit=args.limit,
         )
-        print(result)
+        print(json.dumps(result, indent=2))
 
     elif args.command == "cache-days-off":
         result = pipeline.cache_days_off(config=config, client=client)
-        print(result)
+        print(json.dumps(result, indent=2))
+
+    else:
+        parser.print_help()
+        raise SystemExit(1)
