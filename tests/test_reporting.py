@@ -124,6 +124,9 @@ def test_serialize_survey_rows_emits_required_columns():
 
 
 def test_render_survey_health_html_escapes_html_in_comment_text():
+    # NOTE: This is a structural smoke test. It verifies esc() is defined and embedded
+    # in the rendered HTML. Client-side XSS prevention (esc() being called at runtime)
+    # cannot be tested at the Python level without browser automation.
     frame = pd.DataFrame([{
         "response_id": 1,
         "ticket_linked": True,
@@ -142,3 +145,17 @@ def test_render_survey_health_html_escapes_html_in_comment_text():
     assert "SURVEY_DATA" in html
     # Verify the esc function is wired (its definition appears in the script)
     assert "replace(/&/g," in html
+
+
+def test_serialize_survey_rows_escapes_script_injection():
+    frame = pd.DataFrame([{
+        "response_id": 1,
+        "survey_completed_at": pd.Timestamp("2026-01-15", tz="UTC"),
+        "satisfaction_label": "Very Satisfied",
+        "team_name": "Client Services",
+        "ticket_linked": True,
+        "comment_text": '</script><script>alert("xss")</script>',
+    }])
+    result = _serialize_survey_rows(frame)
+    assert "</script>" not in result
+    assert r"<\/" in result
