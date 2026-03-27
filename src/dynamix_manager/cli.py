@@ -115,3 +115,7 @@ def main() -> None:
     else:
         parser.print_help()
         raise SystemExit(1)
+
+
+if __name__ == "__main__":
+    main()
