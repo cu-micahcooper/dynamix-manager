@@ -15,6 +15,7 @@ def test_render_survey_health_html_includes_tailwind_and_summary_metrics():
                 "satisfaction_label": "Very Satisfied",
                 "comment_text": "Helpful support",
                 "team_name": "Client Services",
+                "survey_completed_at": pd.Timestamp("2026-01-15", tz="UTC"),
             },
             {
                 "response_id": 2,
@@ -22,6 +23,7 @@ def test_render_survey_health_html_includes_tailwind_and_summary_metrics():
                 "satisfaction_label": "Dissatisfied",
                 "comment_text": None,
                 "team_name": None,
+                "survey_completed_at": pd.Timestamp("2026-02-01", tz="UTC"),
             },
         ]
     )
@@ -30,11 +32,39 @@ def test_render_survey_health_html_includes_tailwind_and_summary_metrics():
 
     assert "https://cdn.tailwindcss.com" in html
     assert "Survey Health" in html
-    assert ">2<" in html
-    assert ">1<" in html
-    assert "Very Satisfied" in html
     assert "Average score" in html
     assert "Negative response rate" in html
+    # Plotly CDN present
+    assert "cdn.plot.ly" in html
+    # JSON data blob present
+    assert "SURVEY_DATA" in html
+    # Period filter buttons present
+    assert "Last 30" in html
+    assert "All time" in html
+    # Chart containers present
+    assert 'id="chart-satisfaction-mix"' in html
+    assert 'id="chart-monthly-trend"' in html
+    assert 'id="chart-team-volume"' in html
+
+
+def test_render_survey_health_html_stat_cards_have_js_ids():
+    frame = pd.DataFrame([{
+        "response_id": 1,
+        "ticket_linked": True,
+        "satisfaction_label": "Very Satisfied",
+        "comment_text": "Good",
+        "team_name": "Help Desk",
+        "survey_completed_at": pd.Timestamp("2026-01-15", tz="UTC"),
+    }])
+    html = render_survey_health_html(frame)
+    assert 'id="stat-total"' in html
+    assert 'id="stat-linked"' in html
+    assert 'id="stat-comments"' in html
+    assert 'id="stat-avg-score"' in html
+    assert 'id="stat-neg-rate"' in html
+    assert 'id="satisfaction-list"' in html
+    assert 'id="team-list"' in html
+    assert 'id="comment-list"' in html
 
 
 def test_write_survey_health_report_creates_output_file(tmp_path: Path):
