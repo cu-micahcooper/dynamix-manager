@@ -162,8 +162,16 @@ def render_survey_health_html(frame: pd.DataFrame) -> str:
       var NEGATIVE = new Set(["Very Dissatisfied", "Dissatisfied"]);
       var LABEL_ORDER = ["Very Satisfied", "Satisfied", "Dissatisfied", "Very Dissatisfied"];
 
+      function esc(s) {{
+        return String(s == null ? "" : s)
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;");
+      }}
+
       function filterData(days) {{
-        if (!days) return window.SURVEY_DATA;
+        if (days == null) return window.SURVEY_DATA;
         var cutoff = new Date();
         cutoff.setDate(cutoff.getDate() - days);
         return window.SURVEY_DATA.filter(function (r) {{
@@ -269,7 +277,7 @@ def render_survey_health_html(frame: pd.DataFrame) -> str:
         rows.forEach(function (r) {{ if (r.satisfaction_label in counts) counts[r.satisfaction_label]++; }});
         var el = document.getElementById("satisfaction-list");
         el.innerHTML = LABEL_ORDER.filter(function (l) {{ return counts[l] > 0; }}).map(function (l) {{
-          return '<li class="flex items-center justify-between border-b border-stone-200 py-2"><span>' + l + '</span><span class="font-semibold">' + counts[l] + '</span></li>';
+          return '<li class="flex items-center justify-between border-b border-stone-200 py-2"><span>' + esc(l) + '</span><span class="font-semibold">' + counts[l] + '</span></li>';
         }}).join("") || '<li class="py-2 text-stone-500">No satisfaction labels found.</li>';
       }}
 
@@ -282,21 +290,25 @@ def render_survey_health_html(frame: pd.DataFrame) -> str:
         var sorted = Object.entries(counts).sort(function (a, b) {{ return b[1] - a[1]; }}).slice(0, 5);
         var el = document.getElementById("team-list");
         el.innerHTML = sorted.map(function (e) {{
-          return '<li class="flex items-center justify-between border-b border-stone-200 py-2"><span>' + e[0] + '</span><span class="font-semibold">' + e[1] + '</span></li>';
+          return '<li class="flex items-center justify-between border-b border-stone-200 py-2"><span>' + esc(e[0]) + '</span><span class="font-semibold">' + e[1] + '</span></li>';
         }}).join("") || '<li class="py-2 text-stone-500">No linked team data found.</li>';
       }}
 
       function renderComments(rows) {{
         var items = rows
           .filter(function (r) {{ return r.comment_text && String(r.comment_text).trim(); }})
-          .sort(function (a, b) {{ return (b.survey_completed_at || "") > (a.survey_completed_at || "") ? 1 : -1; }})
+          .sort(function (a, b) {{
+            var ta = b.survey_completed_at || "";
+            var tb = a.survey_completed_at || "";
+            return ta > tb ? 1 : ta < tb ? -1 : 0;
+          }})
           .slice(0, 5);
         var el = document.getElementById("comment-list");
         el.innerHTML = items.map(function (r) {{
           return '<li class="border-b border-stone-200 py-3">'
-            + '<p class="font-medium text-stone-800">' + (r.satisfaction_label || "Unrated") + '</p>'
-            + '<p class="text-sm text-stone-500">' + (r.team_name || "Unassigned team") + '</p>'
-            + '<p class="mt-2 text-sm text-stone-700">' + (r.comment_text || "") + '</p>'
+            + '<p class="font-medium text-stone-800">' + esc(r.satisfaction_label || "Unrated") + '</p>'
+            + '<p class="text-sm text-stone-500">' + esc(r.team_name || "Unassigned team") + '</p>'
+            + '<p class="mt-2 text-sm text-stone-700">' + esc(r.comment_text || "") + '</p>'
             + '</li>';
         }}).join("") || '<li class="py-2 text-stone-500">No recent comments found.</li>';
       }}
