@@ -87,3 +87,7 @@ def test_serialize_survey_rows_emits_required_columns():
     assert "comment_text" in rows[0]
     # Columns not in frame should not appear
     assert "created_at" not in rows[0]
+    # ISO date format preserved for non-null timestamps
+    assert rows[0]["survey_completed_at"].startswith("2026-01-15")
+    # None timestamp serializes as null
+    assert rows[1]["survey_completed_at"] is None

@@ -19,6 +19,7 @@ _SURVEY_JSON_COLUMNS = [
 
 
 def _serialize_survey_rows(frame: pd.DataFrame) -> str:
+    """Return the known survey columns from *frame* as a JSON records string."""
     columns = [c for c in _SURVEY_JSON_COLUMNS if c in frame.columns]
     return frame[columns].to_json(orient="records", date_format="iso")
 
