@@ -62,6 +62,34 @@ def _ticket_quality_rows(
     )
 
 
+def _stale_ticket_rows(
+    items: list[dict[str, object]],
+    tdx_base_url: str | None,
+    empty_message: str,
+) -> str:
+    if not items:
+        return f'<tr><td class="px-4 py-3 text-stone-500" colspan="4">{empty_message}</td></tr>'
+    rows = []
+    for item in items:
+        ticket_id = item.get("ticket_id") or ""
+        ticket_app_id = item.get("ticket_app_id")
+        if tdx_base_url and ticket_id and ticket_app_id:
+            org_root = str(tdx_base_url).rstrip("/").removesuffix("/TDWebApi")
+            url = f"{org_root}/TDNext/Apps/{int(ticket_app_id)}/Tickets/TicketDet?TicketID={int(ticket_id)}"
+            id_cell = f'<td class="px-4 py-3 text-sm"><a class="text-blue-600 underline hover:text-blue-800" href="{escape(url)}" target="_blank" rel="noopener">{escape(str(int(ticket_id)))}</a></td>'
+        else:
+            id_cell = f'<td class="px-4 py-3 text-sm text-stone-700">{escape(str(ticket_id))}</td>'
+        rows.append(
+            "<tr class=\"border-b border-stone-200\">"
+            + id_cell
+            + f'<td class="px-4 py-3 text-sm text-stone-700">{escape(str(item.get("ticket_title") or ""))}</td>'
+            + f'<td class="px-4 py-3 text-sm text-stone-700">{escape(str(item.get("team_name") or ""))}</td>'
+            + f'<td class="px-4 py-3 text-sm text-stone-700">{escape(str(item.get("stale_business_days") or ""))}</td>'
+            + "</tr>"
+        )
+    return "".join(rows)
+
+
 def render_survey_health_html(frame: pd.DataFrame) -> str:
     summary = summarize_survey_health(frame)
     total_responses = summary["total_responses"]
@@ -174,7 +202,12 @@ def render_survey_health_html(frame: pd.DataFrame) -> str:
 
       function filterData(days) {{
         if (days == null) return window.SURVEY_DATA;
-        var cutoff = new Date();
+        var dates = window.SURVEY_DATA
+          .map(function(r) {{ return r.survey_completed_at ? new Date(r.survey_completed_at) : null; }})
+          .filter(Boolean);
+        if (!dates.length) return [];
+        var maxDate = new Date(Math.max.apply(null, dates));
+        var cutoff = new Date(maxDate);
         cutoff.setDate(cutoff.getDate() - days);
         return window.SURVEY_DATA.filter(function (r) {{
           return r.survey_completed_at && new Date(r.survey_completed_at) >= cutoff;
@@ -359,6 +392,7 @@ def render_ticket_health_html(
     days_off: pd.DataFrame | None = None,
     quality_flags: pd.DataFrame | None = None,
     interactions: pd.DataFrame | None = None,
+    tdx_base_url: str | None = None,
 ) -> str:
     summary = summarize_ticket_health(
         frame,
@@ -429,14 +463,9 @@ def render_ticket_health_html(
         ],
         "No team quality hotspot data found.",
     )
-    stale_rows = _ticket_quality_rows(
+    stale_rows = _stale_ticket_rows(
         summary["stale_open_tickets"][:10],
-        [
-            ("ticket_id", "Ticket"),
-            ("ticket_title", "Title"),
-            ("team_name", "Team"),
-            ("stale_business_days", "Business Days"),
-        ],
+        tdx_base_url,
         "No stale open tickets found.",
     )
     sla_hotspot_rows = _ticket_quality_rows(
@@ -775,6 +804,7 @@ def write_ticket_health_report(
     days_off: pd.DataFrame | None = None,
     quality_flags: pd.DataFrame | None = None,
     interactions: pd.DataFrame | None = None,
+    tdx_base_url: str | None = None,
 ) -> Path:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(
@@ -783,6 +813,7 @@ def write_ticket_health_report(
             days_off=days_off,
             quality_flags=quality_flags,
             interactions=interactions,
+            tdx_base_url=tdx_base_url,
         )
     )
     return output_path

@@ -449,6 +449,7 @@ def test_cache_ticket_quality_slice_drops_tickets_closed_in_fresh_detail(tmp_pat
         "ID": 42,
         "Title": "Stale open ticket",
         "StatusName": "Closed",
+        "StatusClass": 3,
         "ServiceName": "Printing",
         "ResponsibleGroupName": "Tech Services",
         "RespondingFullName": "Alex Analyst",

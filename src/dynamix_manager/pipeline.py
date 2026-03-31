@@ -76,12 +76,17 @@ def _artifact_root(config: RuntimeConfig):
 
 def _open_tickets_only(tickets: pd.DataFrame) -> pd.DataFrame:
     frame = tickets.copy()
-    if "resolved_at" in frame.columns:
+    if "status_class" in frame.columns:
+        sc = pd.to_numeric(frame["status_class"], errors="coerce")
+        known_closed = sc.isin({3, 4})
+        if "resolved_at" in frame.columns:
+            resolved = pd.to_datetime(frame["resolved_at"], utc=True, errors="coerce")
+            frame = frame.loc[~(known_closed | (sc.isna() & resolved.notna()))]
+        else:
+            frame = frame.loc[~known_closed]
+    elif "resolved_at" in frame.columns:
         resolved = pd.to_datetime(frame["resolved_at"], utc=True, errors="coerce")
         frame = frame.loc[resolved.isna()]
-    elif "status_name" in frame.columns:
-        status = frame["status_name"].astype("string").str.strip().str.casefold()
-        frame = frame.loc[~status.isin({"closed", "completed", "resolved", "cancelled", "canceled"})]
     return frame
 
 
