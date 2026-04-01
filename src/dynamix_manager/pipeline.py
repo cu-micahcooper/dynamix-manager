@@ -14,6 +14,7 @@ from dynamix_manager.planned_days_off import PLANNED_DAYS_OFF
 from dynamix_manager.config import RuntimeConfig
 from dynamix_manager.reporting import (
     write_survey_health_report,
+    write_ticket_health_report,
     write_ticket_quality_report,
 )
 from dynamix_manager.storage import read_table, replace_table, table_exists
@@ -227,7 +228,8 @@ def cache_ticket_quality_slice(
     ticket_app_id: int,
     limit: int | None = None,
 ):
-    source_tickets = _open_tickets_only(read_table(config.db_path, "tickets"))
+    all_tickets = read_table(config.db_path, "tickets")
+    source_tickets = _open_tickets_only(all_tickets)
     days_off = read_table(config.db_path, "days_off") if table_exists(config.db_path, "days_off") else pd.DataFrame(columns=["holiday_date"])
     if "modified_at" in source_tickets.columns:
         source_tickets = source_tickets.sort_values("modified_at", ascending=False)
@@ -291,8 +293,17 @@ def cache_ticket_quality_slice(
     artifact_root = _artifact_root(config)
     report_path = artifact_root / "reports" / "ticket_quality.html"
     notebook_path = artifact_root / "notebooks" / "ticket_quality.ipynb"
+    health_report_path = artifact_root / "reports" / "ticket_health.html"
     write_ticket_quality_report(flags, report_path)
     write_ticket_quality_notebook(config.db_path, notebook_path)
+    write_ticket_health_report(
+        all_tickets,
+        health_report_path,
+        days_off=days_off,
+        quality_flags=flags,
+        interactions=interactions,
+        tdx_base_url=config.base_url,
+    )
 
     return {
         "ticket_rows": len(quality_tickets),
@@ -300,6 +311,7 @@ def cache_ticket_quality_slice(
         "flag_rows": len(flags),
         "report_written": int(report_path.exists()),
         "notebook_written": int(notebook_path.exists()),
+        "ticket_health_report_written": int(health_report_path.exists()),
     }
 
 

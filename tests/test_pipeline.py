@@ -337,6 +337,70 @@ def test_cache_ticket_quality_slice_persists_flags_and_artifacts(tmp_path):
     assert (tmp_path / "notebooks" / "ticket_quality.ipynb").exists()
 
 
+def test_cache_ticket_quality_slice_writes_ticket_health_report(tmp_path):
+    config = RuntimeConfig(
+        base_url="https://example.teamdynamix.com/TDWebApi",
+        app_id="1234",
+        username="user",
+        password="pass",
+        db_path=tmp_path / "analytics.duckdb",
+        report_output_path=tmp_path / "survey_health.html",
+        notebook_output_path=tmp_path / "survey_health.ipynb",
+    )
+    replace_table(
+        config.db_path,
+        "tickets",
+        pd.DataFrame(
+            [
+                {
+                    "ticket_id": 42,
+                    "ticket_title": "Printer issue",
+                    "ticket_app_id": 634,
+                    "modified_at": "2026-03-05T10:00:00Z",
+                    "resolved_at": None,
+                }
+            ]
+        ),
+    )
+    client = StubClient([])
+    client.ticket_payloads[(634, 42)] = {
+        "ID": 42,
+        "Title": "Printer issue",
+        "StatusName": "Open",
+        "StatusClass": 1,
+        "ServiceName": "Printing",
+        "ResponsibleGroupName": "Tech Services",
+        "RespondingFullName": "Alex Analyst",
+        "RequestorName": "Pat Client",
+        "RequestorUid": "client-1",
+        "CreatedDate": "2020-01-01T08:00:00Z",
+        "ModifiedDate": "2026-03-05T10:00:00Z",
+    }
+    client.ticket_feed_payloads[(634, 42)] = [
+        {
+            "ID": 101,
+            "CreatedUid": "it-1",
+            "CreatedFullName": "Alex Analyst",
+            "CreatedDate": "2026-03-05T10:00:00Z",
+            "Body": "Working on it.",
+            "IsPrivate": False,
+            "IsCommunication": True,
+            "UpdateType": 1,
+            "RepliesCount": 0,
+            "Replies": [],
+            "Uri": "api/feed/101",
+        }
+    ]
+
+    summary = cache_ticket_quality_slice(config=config, client=client, ticket_app_id=634)
+
+    health_report = tmp_path / "reports" / "ticket_health.html"
+    assert health_report.exists()
+    content = health_report.read_text()
+    assert "Ticket Health" in content
+    assert summary["ticket_health_report_written"] == 1
+
+
 def test_cache_ticket_quality_slice_only_uses_open_tickets(tmp_path):
     config = RuntimeConfig(
         base_url="https://example.test",
