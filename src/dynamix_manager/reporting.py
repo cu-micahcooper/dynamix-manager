@@ -819,6 +819,221 @@ def write_ticket_health_report(
     return output_path
 
 
+def _executive_kpi_card(label: str, value: str, sub: str = "") -> str:
+    sub_html = f'<p class="text-sm text-stone-500 mt-1">{escape(sub)}</p>' if sub else ""
+    return (
+        f'<div class="bg-white rounded-lg border border-stone-200 px-6 py-5">'
+        f'<p class="text-sm font-medium text-stone-500">{escape(label)}</p>'
+        f'<p class="text-3xl font-bold text-stone-900 mt-1">{escape(value)}</p>'
+        f"{sub_html}"
+        f"</div>"
+    )
+
+
+def render_executive_report_html(snapshot: dict) -> str:
+    import json
+
+    week_label = escape(str(snapshot.get("week_label", "")))
+    generated_at = escape(str(snapshot.get("report_generated_at", "")))
+
+    new_tickets = snapshot.get("new_tickets_this_week", 0)
+    avg_weekly = snapshot.get("avg_weekly_tickets_created", 0.0)
+    ww_delta = snapshot.get("week_over_week_delta_pct")
+    sla_rate = snapshot.get("sla_compliance_rate")
+    stale = snapshot.get("stale_open_count", 0)
+    unassigned = snapshot.get("unassigned_count", 0)
+    median_response = snapshot.get("median_first_response_hours")
+
+    ww_str = f"{ww_delta:+.1f}% vs prior week" if ww_delta is not None else "no prior week data"
+    sla_str = f"{sla_rate * 100:.0f}%" if sla_rate is not None else "N/A"
+    response_str = f"{median_response:.1f} hrs" if median_response is not None else "N/A"
+
+    kpi_cards = "\n".join([
+        _executive_kpi_card("New Tickets This Week", str(new_tickets), ww_str),
+        _executive_kpi_card("Avg Weekly Tickets", f"{avg_weekly:.1f}"),
+        _executive_kpi_card("SLA Compliance", sla_str),
+        _executive_kpi_card("Stale Open (>5 days)", str(stale)),
+        _executive_kpi_card("Unassigned Open", str(unassigned)),
+        _executive_kpi_card("Median First Response", response_str),
+    ])
+
+    # satisfaction counts table
+    sat_counts = snapshot.get("satisfaction_counts", {})
+    label_order = ["Very Satisfied", "Satisfied", "Dissatisfied", "Very Dissatisfied"]
+    total_sat = sum(sat_counts.values()) or 1
+    sat_rows = ""
+    for lbl in label_order:
+        count = sat_counts.get(lbl, 0)
+        pct = count / total_sat * 100
+        bar_w = int(pct)
+        sat_rows += (
+            f'<tr class="border-b border-stone-100">'
+            f'<td class="px-4 py-3 text-sm text-stone-700">{escape(lbl)}</td>'
+            f'<td class="px-4 py-3 text-sm text-stone-700 text-right">{escape(str(count))}</td>'
+            f'<td class="px-4 py-3">'
+            f'  <div class="h-2 bg-stone-100 rounded">'
+            f'    <div class="h-2 bg-blue-500 rounded" style="width:{bar_w}%"></div>'
+            f'  </div>'
+            f'</td>'
+            f'</tr>'
+        )
+    if not sat_rows:
+        sat_rows = '<tr><td class="px-4 py-3 text-stone-500" colspan="3">No survey data</td></tr>'
+
+    # satisfaction trend table
+    trend_rows = ""
+    for entry in snapshot.get("satisfaction_trend", []):
+        pct = f'{entry["positive_rate"] * 100:.0f}%'
+        trend_rows += (
+            f'<tr class="border-b border-stone-100">'
+            f'<td class="px-4 py-3 text-sm text-stone-700">{escape(str(entry["month"]))}</td>'
+            f'<td class="px-4 py-3 text-sm text-stone-700 text-right">{escape(str(entry["total"]))}</td>'
+            f'<td class="px-4 py-3 text-sm text-stone-700 text-right">{escape(pct)}</td>'
+            f'</tr>'
+        )
+    if not trend_rows:
+        trend_rows = '<tr><td class="px-4 py-3 text-stone-500" colspan="3">No trend data</td></tr>'
+
+    # top services table
+    service_rows = ""
+    for svc in snapshot.get("top_services", []):
+        service_rows += (
+            f'<tr class="border-b border-stone-100">'
+            f'<td class="px-4 py-3 text-sm text-stone-700">{escape(str(svc.get("service_name") or ""))}</td>'
+            f'<td class="px-4 py-3 text-sm text-stone-700 text-right">{escape(str(svc.get("count") or 0))}</td>'
+            f'</tr>'
+        )
+    if not service_rows:
+        service_rows = '<tr><td class="px-4 py-3 text-stone-500" colspan="2">No service data</td></tr>'
+
+    # plotly data — escape </script> injection
+    box_data_json = json.dumps({
+        "this_week": snapshot.get("completion_hours_this_week", []),
+        "all_time": snapshot.get("completion_hours_all_time", []),
+    }).replace("</", r"<\/")
+
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>IT Executive Report</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.plot.ly/plotly-3.4.0.min.js"></script>
+</head>
+<body class="bg-stone-50 font-sans text-stone-900">
+  <header class="bg-white border-b border-stone-200 px-8 py-6">
+    <h1 class="text-2xl font-bold">IT Executive Report</h1>
+    <p class="text-stone-500 text-sm mt-1">Week of {week_label} &nbsp;·&nbsp; Generated {generated_at}</p>
+  </header>
+  <main class="max-w-5xl mx-auto px-8 py-8 space-y-10">
+
+    <!-- KPI Cards -->
+    <section>
+      <h2 class="text-lg font-semibold text-stone-700 mb-4">At a Glance</h2>
+      <div class="grid grid-cols-2 md:grid-cols-3 gap-4">
+        {kpi_cards}
+      </div>
+    </section>
+
+    <!-- Completion Time Box/Whisker -->
+    <section>
+      <h2 class="text-lg font-semibold text-stone-700 mb-4">Ticket Completion Time (Business Hours)</h2>
+      <div class="bg-white rounded-lg border border-stone-200 p-4">
+        <div id="completion-chart" style="height:360px"></div>
+      </div>
+    </section>
+
+    <!-- Survey Satisfaction -->
+    <section>
+      <h2 class="text-lg font-semibold text-stone-700 mb-4">Survey Satisfaction</h2>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div class="bg-white rounded-lg border border-stone-200 overflow-hidden">
+          <table class="w-full">
+            <thead class="bg-stone-50 border-b border-stone-200">
+              <tr>
+                <th class="px-4 py-3 text-left text-xs font-semibold text-stone-500 uppercase">Response</th>
+                <th class="px-4 py-3 text-right text-xs font-semibold text-stone-500 uppercase">Count</th>
+                <th class="px-4 py-3 text-left text-xs font-semibold text-stone-500 uppercase">Share</th>
+              </tr>
+            </thead>
+            <tbody>{sat_rows}</tbody>
+          </table>
+        </div>
+        <div class="bg-white rounded-lg border border-stone-200 overflow-hidden">
+          <table class="w-full">
+            <thead class="bg-stone-50 border-b border-stone-200">
+              <tr>
+                <th class="px-4 py-3 text-left text-xs font-semibold text-stone-500 uppercase">Month</th>
+                <th class="px-4 py-3 text-right text-xs font-semibold text-stone-500 uppercase">Surveys</th>
+                <th class="px-4 py-3 text-right text-xs font-semibold text-stone-500 uppercase">% Positive</th>
+              </tr>
+            </thead>
+            <tbody>{trend_rows}</tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- Top Services -->
+    <section>
+      <h2 class="text-lg font-semibold text-stone-700 mb-4">Top Request Categories</h2>
+      <div class="bg-white rounded-lg border border-stone-200 overflow-hidden max-w-sm">
+        <table class="w-full">
+          <thead class="bg-stone-50 border-b border-stone-200">
+            <tr>
+              <th class="px-4 py-3 text-left text-xs font-semibold text-stone-500 uppercase">Service</th>
+              <th class="px-4 py-3 text-right text-xs font-semibold text-stone-500 uppercase">Tickets</th>
+            </tr>
+          </thead>
+          <tbody>{service_rows}</tbody>
+        </table>
+      </div>
+    </section>
+
+  </main>
+
+  <script>
+    window.EXEC_BOX_DATA = {box_data_json};
+    (function () {{
+      var d = window.EXEC_BOX_DATA;
+      var traces = [
+        {{
+          type: 'box',
+          y: d.all_time,
+          name: 'All Time',
+          marker: {{ color: '#94a3b8' }},
+          boxpoints: false,
+        }},
+        {{
+          type: 'box',
+          y: d.this_week,
+          name: 'This Week',
+          marker: {{ color: '#3b82f6' }},
+          boxpoints: false,
+        }},
+      ];
+      var layout = {{
+        margin: {{ t: 20, r: 20, b: 50, l: 60 }},
+        yaxis: {{ title: 'Business Hours', zeroline: false }},
+        legend: {{ orientation: 'h', y: -0.15 }},
+        paper_bgcolor: 'white',
+        plot_bgcolor: 'white',
+      }};
+      Plotly.newPlot('completion-chart', traces, layout, {{ responsive: true }});
+    }})();
+  </script>
+</body>
+</html>
+"""
+
+
+def write_executive_report(snapshot: dict, output_path: Path) -> Path:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(render_executive_report_html(snapshot))
+    return output_path
+
+
 def render_ticket_quality_html(frame: pd.DataFrame) -> str:
     frame = frame.copy()
     for column, default in {
