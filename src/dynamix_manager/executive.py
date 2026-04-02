@@ -65,6 +65,7 @@ def summarize_executive_snapshot(
     surveys: pd.DataFrame,
     days_off: pd.DataFrame | None = None,
     as_of: pd.Timestamp | None = None,
+    tdx_base_url: str | None = None,
 ) -> dict[str, object]:
     if as_of is None:
         as_of = pd.Timestamp.now("UTC")
@@ -84,6 +85,7 @@ def summarize_executive_snapshot(
         "as_of_label": _fmt(as_of),
         "week_range_label": f"{_fmt(ws)} – {_fmt(as_of)}",
         "prior_week_range_label": f"{_fmt(prior_ws)} – {_fmt(prior_ws_as_of)}",
+        "tdx_base_url": tdx_base_url,
     }
 
     # --- ticket volume ---
@@ -154,16 +156,19 @@ def summarize_executive_snapshot(
     if not surveys.empty and "satisfaction_label" in surveys.columns:
         if "survey_completed_at" in surveys.columns:
             _completed = pd.to_datetime(surveys["survey_completed_at"], utc=True, errors="coerce")
-            _this_week_mask = (_completed >= ws) & (_completed <= as_of)
+            _cutoff_30d = as_of - pd.Timedelta(days=30)
+            _rated_mask = (_completed >= _cutoff_30d) & (_completed <= as_of) & surveys["satisfaction_label"].notna()
             result["satisfaction_counts"] = (
-                surveys.loc[_this_week_mask, "satisfaction_label"]
+                surveys.loc[_rated_mask, "satisfaction_label"]
                 .value_counts()
                 .to_dict()
             )
+            result["satisfaction_period_label"] = f"{_fmt(_cutoff_30d)} – {_fmt(as_of)}"
         else:
             result["satisfaction_counts"] = (
-                surveys["satisfaction_label"].value_counts().to_dict()
+                surveys["satisfaction_label"].dropna().value_counts().to_dict()
             )
+            result["satisfaction_period_label"] = "all time"
         if "survey_completed_at" in surveys.columns:
             sc = surveys.copy()
             sc["survey_completed_at"] = pd.to_datetime(
@@ -196,6 +201,7 @@ def summarize_executive_snapshot(
     else:
         result["satisfaction_counts"] = {}
         result["satisfaction_trend"] = []
+        result["satisfaction_period_label"] = ""
 
     # --- SLA compliance ---
     if not tickets.empty and "is_sla_violated" in tickets.columns:
@@ -208,6 +214,21 @@ def summarize_executive_snapshot(
             result["sla_compliance_rate"] = None
     else:
         result["sla_compliance_rate"] = None
+
+    # --- detail columns available for drill-down ---
+    _DETAIL_COLS = ["ticket_id", "ticket_title", "service_name", "team_name", "assignee_name", "created_at", "ticket_app_id"]
+
+    def _ticket_detail(df: pd.DataFrame, limit: int = 200) -> list[dict]:
+        cols = [c for c in _DETAIL_COLS if c in df.columns]
+        return df[cols].head(limit).to_dict(orient="records")
+
+    # new tickets this week detail
+    if not tickets.empty and "created_at" in tickets.columns and this_week_mask.any():
+        result["new_tickets_detail"] = _ticket_detail(
+            tickets.loc[this_week_mask].sort_values("created_at", ascending=False)
+        )
+    else:
+        result["new_tickets_detail"] = []
 
     # --- stale open count (> 5 business days) ---
     if not tickets.empty and "created_at" in tickets.columns:
@@ -229,16 +250,28 @@ def summarize_executive_snapshot(
             else np.array([], dtype="datetime64[D]")
         )
         open_created = created_col[open_mask]
-        stale_count = 0
-        for c in open_created:
+        stale_idx = []
+        for idx, c in open_created.items():
             if pd.isna(c):
                 continue
             days = int(np.busday_count(c.date(), as_of.date(), holidays=holiday_array))
             if days > 5:
-                stale_count += 1
-        result["stale_open_count"] = stale_count
+                stale_idx.append(idx)
+        result["stale_open_count"] = len(stale_idx)
+        result["stale_tickets_detail"] = _ticket_detail(
+            tickets.loc[stale_idx].assign(
+                _days=lambda df: [
+                    int(np.busday_count(
+                        pd.to_datetime(r, utc=True).date(), as_of.date(),
+                        holidays=holiday_array
+                    ))
+                    for r in df["created_at"]
+                ]
+            ).sort_values("_days", ascending=False).drop(columns=["_days"])
+        )
     else:
         result["stale_open_count"] = 0
+        result["stale_tickets_detail"] = []
 
     # --- top services ---
     if not tickets.empty and "service_name" in tickets.columns:
@@ -254,7 +287,7 @@ def summarize_executive_snapshot(
     else:
         result["top_services"] = []
 
-    # --- median first response ---
+    # --- median first response (calendar hours) ---
     if (
         not tickets.empty
         and "created_at" in tickets.columns
@@ -264,10 +297,8 @@ def summarize_executive_snapshot(
         _responded = pd.to_datetime(tickets["responded_at"], utc=True, errors="coerce")
         _mask = _responded.notna() & _created.notna() & (_responded > _created)
         if _mask.any():
-            _c = _created[_mask].dt.date.values.astype("datetime64[D]")
-            _r = _responded[_mask].dt.date.values.astype("datetime64[D]")
-            _days = np.busday_count(_c, _r, holidays=holiday_array).clip(min=0)
-            result["median_first_response_hours"] = float(np.median(_days) * 8.0)
+            _hours = (_responded[_mask] - _created[_mask]).dt.total_seconds() / 3600
+            result["median_first_response_hours"] = float(_hours.median())
         else:
             result["median_first_response_hours"] = None
     else:
@@ -293,7 +324,12 @@ def summarize_executive_snapshot(
         )
         unassigned_mask = open_mask2 & (assignee.isna() | (assignee == ""))
         result["unassigned_count"] = int(unassigned_mask.sum())
+        _unassigned_df = tickets.loc[unassigned_mask]
+        if "created_at" in _unassigned_df.columns:
+            _unassigned_df = _unassigned_df.sort_values("created_at", ascending=False)
+        result["unassigned_tickets_detail"] = _ticket_detail(_unassigned_df)
     else:
         result["unassigned_count"] = 0
+        result["unassigned_tickets_detail"] = []
 
     return result

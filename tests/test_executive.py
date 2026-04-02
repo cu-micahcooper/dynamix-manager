@@ -148,10 +148,10 @@ def test_completion_hours_this_week_lists_resolved_tickets():
 
 def test_satisfaction_counts_groups_by_label():
     surveys = pd.DataFrame([
-        {"satisfaction_label": "Very Satisfied", "survey_completed_at": "2026-03-30T12:00:00Z"},  # this week
-        {"satisfaction_label": "Very Satisfied", "survey_completed_at": "2026-03-31T12:00:00Z"},  # this week
-        {"satisfaction_label": "Satisfied",      "survey_completed_at": "2026-03-31T09:00:00Z"},  # this week
-        {"satisfaction_label": "Dissatisfied",   "survey_completed_at": "2026-03-25T12:00:00Z"},  # prior week — excluded
+        {"satisfaction_label": "Very Satisfied", "survey_completed_at": "2026-03-30T12:00:00Z"},  # within 30d — in
+        {"satisfaction_label": "Very Satisfied", "survey_completed_at": "2026-03-31T12:00:00Z"},  # within 30d — in
+        {"satisfaction_label": "Satisfied",      "survey_completed_at": "2026-03-31T09:00:00Z"},  # within 30d — in
+        {"satisfaction_label": "Dissatisfied",   "survey_completed_at": "2026-02-25T12:00:00Z"},  # >30d ago — excluded
     ])
     snapshot = summarize_executive_snapshot(
         pd.DataFrame(), surveys, as_of=pd.Timestamp("2026-04-01", tz="UTC")
@@ -233,14 +233,14 @@ def test_top_services_returns_top_5_by_count():
 
 def test_median_first_response_hours_computed_from_created_and_responded_at():
     tickets = pd.DataFrame([
-        {"created_at": "2026-03-30T08:00:00Z", "responded_at": "2026-03-31T08:00:00Z"},  # 1 biz day = 8h
-        {"created_at": "2026-03-30T08:00:00Z", "responded_at": "2026-04-01T08:00:00Z"},  # 2 biz days = 16h
-        {"created_at": "2026-03-30T08:00:00Z", "responded_at": "2026-04-02T08:00:00Z"},  # 3 biz days = 24h
+        {"created_at": "2026-03-30T08:00:00Z", "responded_at": "2026-03-31T08:00:00Z"},  # 24 calendar hours
+        {"created_at": "2026-03-30T08:00:00Z", "responded_at": "2026-04-01T08:00:00Z"},  # 48 calendar hours
+        {"created_at": "2026-03-30T08:00:00Z", "responded_at": "2026-04-02T08:00:00Z"},  # 72 calendar hours
     ])
     snapshot = summarize_executive_snapshot(
         tickets, pd.DataFrame(), as_of=pd.Timestamp("2026-04-02", tz="UTC")
     )
-    assert snapshot["median_first_response_hours"] == pytest.approx(16.0)
+    assert snapshot["median_first_response_hours"] == pytest.approx(48.0)
 
 
 def test_unassigned_count_only_counts_open_tickets():

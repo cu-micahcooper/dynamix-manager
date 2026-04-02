@@ -819,15 +819,62 @@ def write_ticket_health_report(
     return output_path
 
 
-def _executive_kpi_card(label: str, value: str, sub: str = "") -> str:
-    sub_html = f'<p class="text-sm text-stone-500 mt-1">{escape(sub)}</p>' if sub else ""
+def _executive_kpi_card(label: str, value: str, sub: str = "", detail_html: str = "") -> str:
+    # label and sub are developer-controlled strings; value is escaped since it may contain arbitrary data
+    sub_html = f'<p class="text-sm text-stone-500 mt-1">{sub}</p>' if sub else ""
+    detail = (
+        f'<details class="mt-3 text-xs">'
+        f'<summary class="cursor-pointer text-blue-600 hover:underline select-none">Show details</summary>'
+        f'<div class="mt-2 overflow-x-auto">{detail_html}</div>'
+        f'</details>'
+    ) if detail_html else ""
     return (
         f'<div class="bg-white rounded-lg border border-stone-200 px-6 py-5">'
-        f'<p class="text-sm font-medium text-stone-500">{escape(label)}</p>'
+        f'<p class="text-sm font-medium text-stone-500">{label}</p>'
         f'<p class="text-3xl font-bold text-stone-900 mt-1">{escape(value)}</p>'
         f"{sub_html}"
+        f"{detail}"
         f"</div>"
     )
+
+
+def _ticket_table(rows: list[dict], tdx_base_url: str | None) -> str:
+    """Build a compact HTML table from ticket detail rows."""
+    if not rows:
+        return '<p class="text-stone-400 py-2">No tickets</p>'
+
+    def _link(row: dict) -> str:
+        tid = row.get("ticket_id")
+        app_id = row.get("ticket_app_id")
+        if tdx_base_url and tid and app_id:
+            org = str(tdx_base_url).rstrip("/").removesuffix("/TDWebApi")
+            url = f"{org}/TDNext/Apps/{int(app_id)}/Tickets/TicketDet?TicketID={int(tid)}"
+            return f'<a href="{escape(url)}" target="_blank" class="text-blue-600 hover:underline">{escape(str(tid))}</a>'
+        return escape(str(tid or ""))
+
+    header = (
+        '<table class="min-w-full text-xs border border-stone-200 mt-1">'
+        '<thead class="bg-stone-50">'
+        '<tr>'
+        '<th class="px-2 py-1 text-left border-b border-stone-200">ID</th>'
+        '<th class="px-2 py-1 text-left border-b border-stone-200">Title</th>'
+        '<th class="px-2 py-1 text-left border-b border-stone-200">Service</th>'
+        '<th class="px-2 py-1 text-left border-b border-stone-200">Team</th>'
+        '<th class="px-2 py-1 text-left border-b border-stone-200">Assignee</th>'
+        '</tr></thead><tbody>'
+    )
+    body = ""
+    for row in rows:
+        body += (
+            f'<tr class="border-b border-stone-100 hover:bg-stone-50">'
+            f'<td class="px-2 py-1 whitespace-nowrap">{_link(row)}</td>'
+            f'<td class="px-2 py-1">{escape(str(row.get("ticket_title") or ""))}</td>'
+            f'<td class="px-2 py-1 whitespace-nowrap">{escape(str(row.get("service_name") or ""))}</td>'
+            f'<td class="px-2 py-1 whitespace-nowrap">{escape(str(row.get("team_name") or ""))}</td>'
+            f'<td class="px-2 py-1 whitespace-nowrap">{escape(str(row.get("assignee_name") or ""))}</td>'
+            f'</tr>'
+        )
+    return header + body + "</tbody></table>"
 
 
 def render_executive_report_html(snapshot: dict) -> str:
@@ -838,6 +885,7 @@ def render_executive_report_html(snapshot: dict) -> str:
     week_range = escape(str(snapshot.get("week_range_label", "")))
     prior_week_range = escape(str(snapshot.get("prior_week_range_label", "")))
     as_of_label = escape(str(snapshot.get("as_of_label", "")))
+    tdx_base_url = snapshot.get("tdx_base_url")
 
     new_tickets = snapshot.get("new_tickets_this_week", 0)
     avg_weekly = snapshot.get("avg_weekly_tickets_created", 0.0)
@@ -856,11 +904,20 @@ def render_executive_report_html(snapshot: dict) -> str:
     response_str = f"{median_response:.1f} hrs" if median_response is not None else "N/A"
 
     kpi_cards = "\n".join([
-        _executive_kpi_card("New Tickets", str(new_tickets), f"{week_range} · {ww_str}"),
+        _executive_kpi_card(
+            "New Tickets", str(new_tickets), f"{week_range} · {ww_str}",
+            detail_html=_ticket_table(snapshot.get("new_tickets_detail", []), tdx_base_url),
+        ),
         _executive_kpi_card("Avg Weekly Tickets", f"{avg_weekly:.1f}", "all-time baseline"),
-        _executive_kpi_card("SLA Compliance", sla_str, "all open &amp; recently closed"),
-        _executive_kpi_card("Stale Open (&gt;5 biz days)", str(stale), f"as of {as_of_label}"),
-        _executive_kpi_card("Unassigned Open", str(unassigned), f"as of {as_of_label}"),
+        _executive_kpi_card("SLA Compliance", sla_str, "all open & recently closed"),
+        _executive_kpi_card(
+            "Stale Open (>5 biz days)", str(stale), f"as of {as_of_label}",
+            detail_html=_ticket_table(snapshot.get("stale_tickets_detail", []), tdx_base_url),
+        ),
+        _executive_kpi_card(
+            "Unassigned Open", str(unassigned), f"as of {as_of_label}",
+            detail_html=_ticket_table(snapshot.get("unassigned_tickets_detail", []), tdx_base_url),
+        ),
         _executive_kpi_card("Median First Response", response_str, "all-time"),
     ])
 
@@ -963,7 +1020,7 @@ def render_executive_report_html(snapshot: dict) -> str:
 
     <!-- Survey Satisfaction -->
     <section>
-      <h2 class="text-lg font-semibold text-stone-700 mb-4">Survey Satisfaction — Received {week_range}</h2>
+      <h2 class="text-lg font-semibold text-stone-700 mb-4">Survey Satisfaction — Received {escape(str(snapshot.get("satisfaction_period_label", week_range)))}</h2>
       <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
         <div class="bg-white rounded-lg border border-stone-200 overflow-hidden">
           <table class="w-full">

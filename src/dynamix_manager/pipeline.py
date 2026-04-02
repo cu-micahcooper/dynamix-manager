@@ -383,7 +383,9 @@ def generate_executive_report(
         else pd.DataFrame(columns=["holiday_date"])
     )
 
-    snapshot = summarize_executive_snapshot(tickets, surveys, days_off=days_off)
+    snapshot = summarize_executive_snapshot(
+        tickets, surveys, days_off=days_off, tdx_base_url=config.base_url
+    )
 
     artifact_root = _artifact_root(config)
     report_path = artifact_root / "reports" / "executive_report.html"

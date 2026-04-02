@@ -37,7 +37,12 @@ def _sample_snapshot():
         "week_range_label": "Mar 30 – Apr 1",
         "prior_week_range_label": "Mar 23 – Mar 25",
         "as_of_label": "Apr 1",
+        "satisfaction_period_label": "Mar 2 – Apr 1",
         "report_generated_at": "2026-04-01T12:00:00+00:00",
+        "new_tickets_detail": [],
+        "stale_tickets_detail": [],
+        "unassigned_tickets_detail": [],
+        "tdx_base_url": None,
     }
 
 
@@ -56,6 +61,28 @@ def test_render_executive_report_html_includes_satisfaction_table():
     assert "Very Satisfied" in html
     assert "100" in html
     assert "Satisfied" in html
+    assert "Mar 2" in html   # satisfaction_period_label
+
+
+def test_render_executive_report_html_no_double_escaped_entities():
+    html = render_executive_report_html(_sample_snapshot())
+    assert "&amp;" not in html
+    assert "&gt;" not in html
+    assert "all open & recently closed" in html
+    assert "Stale Open (>5 biz days)" in html
+
+
+def test_render_executive_report_html_drill_down_detail_present():
+    snapshot = _sample_snapshot()
+    snapshot["new_tickets_detail"] = [
+        {"ticket_id": 42, "ticket_title": "Printer broken", "service_name": "Printing",
+         "team_name": "IT", "assignee_name": "Alex", "ticket_app_id": 9}
+    ]
+    snapshot["tdx_base_url"] = "https://tdx.example.edu/TDWebApi"
+    html = render_executive_report_html(snapshot)
+    assert "Show details" in html
+    assert "Printer broken" in html
+    assert "TicketID=42" in html
 
 
 def test_render_executive_report_html_embeds_plotly_and_bar_chart():
