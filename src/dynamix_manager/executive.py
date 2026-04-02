@@ -22,6 +22,29 @@ def _parse_created_at(tickets: pd.DataFrame) -> pd.Series:
     return pd.to_datetime(tickets["created_at"], utc=True, errors="coerce")
 
 
+_HOUR_BUCKETS: list[tuple[float, float, str]] = [
+    (0, 8, "0–8h"),
+    (8, 24, "8–24h"),
+    (24, 40, "24–40h"),
+    (40, 80, "40–80h"),
+    (80, 160, "80–160h"),
+    (160, 320, "160–320h"),
+    (320, float("inf"), "320–1000h"),
+]
+
+
+def _bucket_completion_hours(hours: list[float], cap: float = 1000.0) -> list[dict]:
+    """Bucket completion hours into fixed ranges, capping outliers at `cap`."""
+    counts = {label: 0 for _, _, label in _HOUR_BUCKETS}
+    for h in hours:
+        h = min(h, cap)
+        for lo, hi, label in _HOUR_BUCKETS:
+            if lo <= h < hi:
+                counts[label] += 1
+                break
+    return [{"label": label, "count": counts[label]} for _, _, label in _HOUR_BUCKETS]
+
+
 def _business_hours_between(
     start: pd.Timestamp,
     end: pd.Timestamp,
@@ -113,8 +136,8 @@ def summarize_executive_snapshot(
                 resolved_at[this_week_resolved],
             )
         ]
-        result["completion_hours_this_week"] = this_week_hours
-        result["completion_hours_all_time"] = all_time_hours
+        result["completion_hours_this_week"] = _bucket_completion_hours(this_week_hours)
+        result["completion_hours_all_time"] = _bucket_completion_hours(all_time_hours)
     else:
         result["completion_hours_this_week"] = []
         result["completion_hours_all_time"] = []
@@ -122,11 +145,18 @@ def summarize_executive_snapshot(
     # --- survey stats ---
     _POSITIVE = {"Very Satisfied", "Satisfied"}
     if not surveys.empty and "satisfaction_label" in surveys.columns:
-        result["satisfaction_counts"] = (
-            surveys["satisfaction_label"]
-            .value_counts()
-            .to_dict()
-        )
+        if "survey_completed_at" in surveys.columns:
+            _completed = pd.to_datetime(surveys["survey_completed_at"], utc=True, errors="coerce")
+            _this_week_mask = (_completed >= ws) & (_completed <= as_of)
+            result["satisfaction_counts"] = (
+                surveys.loc[_this_week_mask, "satisfaction_label"]
+                .value_counts()
+                .to_dict()
+            )
+        else:
+            result["satisfaction_counts"] = (
+                surveys["satisfaction_label"].value_counts().to_dict()
+            )
         if "survey_completed_at" in surveys.columns:
             sc = surveys.copy()
             sc["survey_completed_at"] = pd.to_datetime(

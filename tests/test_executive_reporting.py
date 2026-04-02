@@ -10,8 +10,18 @@ def _sample_snapshot():
         "avg_weekly_tickets_created": 10.5,
         "week_over_week_delta_pct": 20.0,
         "satisfaction_counts": {"Very Satisfied": 100, "Satisfied": 50, "Dissatisfied": 8},
-        "completion_hours_this_week": [8.0, 16.0, 24.0],
-        "completion_hours_all_time": [8.0, 16.0, 40.0, 80.0],
+        "completion_hours_this_week": [
+            {"label": "0–8h", "count": 0}, {"label": "8–24h", "count": 2},
+            {"label": "24–40h", "count": 1}, {"label": "40–80h", "count": 0},
+            {"label": "80–160h", "count": 0}, {"label": "160–320h", "count": 0},
+            {"label": "320–1000h", "count": 0},
+        ],
+        "completion_hours_all_time": [
+            {"label": "0–8h", "count": 0}, {"label": "8–24h", "count": 2},
+            {"label": "24–40h", "count": 0}, {"label": "40–80h", "count": 1},
+            {"label": "80–160h", "count": 1}, {"label": "160–320h", "count": 0},
+            {"label": "320–1000h", "count": 0},
+        ],
         "sla_compliance_rate": 0.87,
         "stale_open_count": 3,
         "top_services": [
@@ -45,10 +55,9 @@ def test_render_executive_report_html_includes_satisfaction_table():
     assert "Satisfied" in html
 
 
-def test_render_executive_report_html_embeds_plotly_and_box_data():
+def test_render_executive_report_html_embeds_plotly_and_bar_chart():
     html = render_executive_report_html(_sample_snapshot())
     assert "plotly" in html.lower()
-    assert "completion_hours" in html.lower() or "box" in html.lower()
     assert "This Week" in html
     assert "All Time" in html
 

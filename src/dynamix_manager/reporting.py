@@ -907,9 +907,13 @@ def render_executive_report_html(snapshot: dict) -> str:
         service_rows = '<tr><td class="px-4 py-3 text-stone-500" colspan="2">No service data</td></tr>'
 
     # plotly data — escape </script> injection
-    box_data_json = json.dumps({
-        "this_week": snapshot.get("completion_hours_this_week", []),
-        "all_time": snapshot.get("completion_hours_all_time", []),
+    buckets_tw = snapshot.get("completion_hours_this_week", [])
+    buckets_all = snapshot.get("completion_hours_all_time", [])
+    _ref = buckets_all if buckets_all else buckets_tw
+    chart_data_json = json.dumps({
+        "labels": [b["label"] for b in _ref],
+        "this_week": [b["count"] for b in buckets_tw],
+        "all_time": [b["count"] for b in buckets_all],
     }).replace("</", r"<\/")
 
     return f"""<!DOCTYPE html>
@@ -936,7 +940,7 @@ def render_executive_report_html(snapshot: dict) -> str:
       </div>
     </section>
 
-    <!-- Completion Time Box/Whisker -->
+    <!-- Completion Time -->
     <section>
       <h2 class="text-lg font-semibold text-stone-700 mb-4">Ticket Completion Time (Business Hours)</h2>
       <div class="bg-white rounded-lg border border-stone-200 p-4">
@@ -994,29 +998,31 @@ def render_executive_report_html(snapshot: dict) -> str:
   </main>
 
   <script>
-    window.EXEC_BOX_DATA = {box_data_json};
+    window.EXEC_CHART_DATA = {chart_data_json};
     (function () {{
-      var d = window.EXEC_BOX_DATA;
+      var d = window.EXEC_CHART_DATA;
       var traces = [
         {{
-          type: 'box',
+          type: 'bar',
+          x: d.labels,
           y: d.all_time,
           name: 'All Time',
           marker: {{ color: '#94a3b8' }},
-          boxpoints: false,
         }},
         {{
-          type: 'box',
+          type: 'bar',
+          x: d.labels,
           y: d.this_week,
           name: 'This Week',
           marker: {{ color: '#3b82f6' }},
-          boxpoints: false,
         }},
       ];
       var layout = {{
-        margin: {{ t: 20, r: 20, b: 50, l: 60 }},
-        yaxis: {{ title: 'Business Hours', zeroline: false }},
-        legend: {{ orientation: 'h', y: -0.15 }},
+        barmode: 'group',
+        margin: {{ t: 20, r: 20, b: 80, l: 60 }},
+        xaxis: {{ title: 'Business Hours' }},
+        yaxis: {{ title: 'Tickets', zeroline: false }},
+        legend: {{ orientation: 'h', y: -0.25 }},
         paper_bgcolor: 'white',
         plot_bgcolor: 'white',
       }};

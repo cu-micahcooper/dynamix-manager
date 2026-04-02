@@ -112,16 +112,20 @@ def test_completion_hours_this_week_lists_resolved_tickets():
 
     snapshot = summarize_executive_snapshot(tickets, pd.DataFrame(), as_of=as_of)
 
-    assert snapshot["completion_hours_this_week"] == [8.0]
-    assert set(snapshot["completion_hours_all_time"]) == {8.0, 16.0}
+    tw = {b["label"]: b["count"] for b in snapshot["completion_hours_this_week"]}
+    assert tw["8–24h"] == 1   # 8h ticket resolved this week
+    assert tw["0–8h"] == 0
+
+    all_t = {b["label"]: b["count"] for b in snapshot["completion_hours_all_time"]}
+    assert all_t["8–24h"] == 2   # 8h + 16h tickets, both in [8, 24)
 
 
 def test_satisfaction_counts_groups_by_label():
     surveys = pd.DataFrame([
-        {"satisfaction_label": "Very Satisfied", "survey_completed_at": "2026-03-01T12:00:00Z"},
-        {"satisfaction_label": "Very Satisfied", "survey_completed_at": "2026-03-02T12:00:00Z"},
-        {"satisfaction_label": "Satisfied",      "survey_completed_at": "2026-03-03T12:00:00Z"},
-        {"satisfaction_label": "Dissatisfied",   "survey_completed_at": "2026-03-04T12:00:00Z"},
+        {"satisfaction_label": "Very Satisfied", "survey_completed_at": "2026-03-30T12:00:00Z"},  # this week
+        {"satisfaction_label": "Very Satisfied", "survey_completed_at": "2026-03-31T12:00:00Z"},  # this week
+        {"satisfaction_label": "Satisfied",      "survey_completed_at": "2026-03-31T09:00:00Z"},  # this week
+        {"satisfaction_label": "Dissatisfied",   "survey_completed_at": "2026-03-25T12:00:00Z"},  # prior week — excluded
     ])
     snapshot = summarize_executive_snapshot(
         pd.DataFrame(), surveys, as_of=pd.Timestamp("2026-04-01", tz="UTC")
@@ -129,7 +133,6 @@ def test_satisfaction_counts_groups_by_label():
     assert snapshot["satisfaction_counts"] == {
         "Very Satisfied": 2,
         "Satisfied": 1,
-        "Dissatisfied": 1,
     }
 
 
