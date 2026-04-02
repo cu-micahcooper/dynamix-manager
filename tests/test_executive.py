@@ -2,7 +2,7 @@
 import pandas as pd
 import pytest
 
-from dynamix_manager.executive import summarize_executive_snapshot
+from dynamix_manager.executive import _business_hours_between, summarize_executive_snapshot
 
 
 def test_new_tickets_this_week_counts_tickets_created_since_monday():
@@ -66,3 +66,51 @@ def test_week_label_formats_monday_to_sunday():
     snapshot = summarize_executive_snapshot(tickets, pd.DataFrame(), as_of=as_of)
 
     assert snapshot["week_label"] == "Mar 30 – Apr 5"
+
+
+def test_business_hours_between_returns_8_for_one_business_day():
+    start = pd.Timestamp("2026-03-30 08:00:00", tz="UTC")
+    end = pd.Timestamp("2026-03-31 08:00:00", tz="UTC")
+    assert _business_hours_between(start, end, set()) == 8.0
+
+
+def test_business_hours_between_excludes_holiday():
+    # Mon→Wed = 2 business days normally, but Tuesday is a holiday → 1 day = 8h
+    start = pd.Timestamp("2026-03-30 08:00:00", tz="UTC")
+    end = pd.Timestamp("2026-04-01 08:00:00", tz="UTC")
+    assert _business_hours_between(start, end, {"2026-03-31"}) == 8.0
+
+
+def test_business_hours_between_returns_zero_for_same_day():
+    start = pd.Timestamp("2026-03-30 08:00:00", tz="UTC")
+    end = pd.Timestamp("2026-03-30 16:00:00", tz="UTC")
+    assert _business_hours_between(start, end, set()) == 0.0
+
+
+def test_completion_hours_this_week_lists_resolved_tickets():
+    tickets = pd.DataFrame([
+        {
+            "ticket_id": 1,
+            "created_at": "2026-03-30T08:00:00Z",   # Mon this week
+            "resolved_at": "2026-03-31T08:00:00Z",   # Tue this week → 1 biz day = 8h
+            "status_class": 3,
+        },
+        {
+            "ticket_id": 2,
+            "created_at": "2026-01-05T08:00:00Z",
+            "resolved_at": "2026-01-07T08:00:00Z",   # 2 biz days = 16h; resolved last quarter
+            "status_class": 3,
+        },
+        {
+            "ticket_id": 3,
+            "created_at": "2026-03-30T08:00:00Z",
+            "resolved_at": None,                      # still open — excluded
+            "status_class": 1,
+        },
+    ])
+    as_of = pd.Timestamp("2026-04-01 12:00:00", tz="UTC")
+
+    snapshot = summarize_executive_snapshot(tickets, pd.DataFrame(), as_of=as_of)
+
+    assert snapshot["completion_hours_this_week"] == [8.0]
+    assert set(snapshot["completion_hours_all_time"]) == {8.0, 16.0}

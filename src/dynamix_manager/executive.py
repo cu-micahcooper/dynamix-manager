@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 
 
@@ -19,6 +20,21 @@ def _week_label(week_start: pd.Timestamp) -> str:
 
 def _parse_created_at(tickets: pd.DataFrame) -> pd.Series:
     return pd.to_datetime(tickets["created_at"], utc=True, errors="coerce")
+
+
+def _business_hours_between(
+    start: pd.Timestamp,
+    end: pd.Timestamp,
+    holidays: set[str],
+) -> float:
+    """Return approximate business hours between start and end (8h per business day)."""
+    if pd.isna(start) or pd.isna(end) or end <= start:
+        return 0.0
+    holiday_array = (
+        np.array(sorted(holidays), dtype="datetime64[D]") if holidays else np.array([], dtype="datetime64[D]")
+    )
+    days = int(np.busday_count(start.date(), end.date(), holidays=holiday_array))
+    return float(max(days, 0)) * 8.0
 
 
 def summarize_executive_snapshot(
@@ -67,9 +83,42 @@ def summarize_executive_snapshot(
             else None
         )
 
-    # remaining keys — populated in later tasks
-    result.setdefault("completion_hours_this_week", [])
-    result.setdefault("completion_hours_all_time", [])
+    # --- completion hours ---
+    holiday_dates: set[str] = set()
+    if days_off is not None and "holiday_date" in days_off.columns:
+        holiday_dates = set(days_off["holiday_date"].dropna().astype(str))
+
+    if not tickets.empty and "resolved_at" in tickets.columns and "created_at" in tickets.columns:
+        resolved_at = pd.to_datetime(tickets["resolved_at"], utc=True, errors="coerce")
+        created_at_col = _parse_created_at(tickets)
+        resolved_mask = resolved_at.notna()
+
+        this_week_resolved = resolved_mask & (resolved_at >= ws) & (resolved_at <= as_of)
+        all_resolved = resolved_mask
+
+        def _hours(row_created, row_resolved):
+            return _business_hours_between(row_created, row_resolved, holiday_dates)
+
+        all_time_hours = [
+            _hours(c, r)
+            for c, r in zip(
+                created_at_col[all_resolved],
+                resolved_at[all_resolved],
+            )
+        ]
+        this_week_hours = [
+            _hours(c, r)
+            for c, r in zip(
+                created_at_col[this_week_resolved],
+                resolved_at[this_week_resolved],
+            )
+        ]
+        result["completion_hours_this_week"] = this_week_hours
+        result["completion_hours_all_time"] = all_time_hours
+    else:
+        result["completion_hours_this_week"] = []
+        result["completion_hours_all_time"] = []
+
     result.setdefault("satisfaction_counts", {})
     result.setdefault("satisfaction_trend", [])
     result.setdefault("sla_compliance_rate", None)
