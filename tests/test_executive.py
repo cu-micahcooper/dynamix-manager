@@ -231,16 +231,16 @@ def test_top_services_returns_top_5_by_count():
     assert snapshot["top_services"][1] == {"service_name": "Network", "count": 3}
 
 
-def test_median_first_response_hours_uses_response_time_column():
+def test_median_first_response_hours_computed_from_created_and_responded_at():
     tickets = pd.DataFrame([
-        {"response_time_hours": 2.0},
-        {"response_time_hours": 4.0},
-        {"response_time_hours": 6.0},
+        {"created_at": "2026-03-30T08:00:00Z", "responded_at": "2026-03-31T08:00:00Z"},  # 1 biz day = 8h
+        {"created_at": "2026-03-30T08:00:00Z", "responded_at": "2026-04-01T08:00:00Z"},  # 2 biz days = 16h
+        {"created_at": "2026-03-30T08:00:00Z", "responded_at": "2026-04-02T08:00:00Z"},  # 3 biz days = 24h
     ])
     snapshot = summarize_executive_snapshot(
-        tickets, pd.DataFrame(), as_of=pd.Timestamp("2026-04-01", tz="UTC")
+        tickets, pd.DataFrame(), as_of=pd.Timestamp("2026-04-02", tz="UTC")
     )
-    assert snapshot["median_first_response_hours"] == pytest.approx(4.0)
+    assert snapshot["median_first_response_hours"] == pytest.approx(16.0)
 
 
 def test_unassigned_count_only_counts_open_tickets():

@@ -255,9 +255,21 @@ def summarize_executive_snapshot(
         result["top_services"] = []
 
     # --- median first response ---
-    if not tickets.empty and "response_time_hours" in tickets.columns:
-        median = tickets["response_time_hours"].dropna().median()
-        result["median_first_response_hours"] = float(median) if not pd.isna(median) else None
+    if (
+        not tickets.empty
+        and "created_at" in tickets.columns
+        and "responded_at" in tickets.columns
+    ):
+        _created = pd.to_datetime(tickets["created_at"], utc=True, errors="coerce")
+        _responded = pd.to_datetime(tickets["responded_at"], utc=True, errors="coerce")
+        _mask = _responded.notna() & _created.notna() & (_responded > _created)
+        if _mask.any():
+            _c = _created[_mask].dt.date.values.astype("datetime64[D]")
+            _r = _responded[_mask].dt.date.values.astype("datetime64[D]")
+            _days = np.busday_count(_c, _r, holidays=holiday_array).clip(min=0)
+            result["median_first_response_hours"] = float(np.median(_days) * 8.0)
+        else:
+            result["median_first_response_hours"] = None
     else:
         result["median_first_response_hours"] = None
 
