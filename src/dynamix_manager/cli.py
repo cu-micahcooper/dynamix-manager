@@ -62,6 +62,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Fetch and cache planned days off / holidays",
     )
 
+    # generate-report
+    subparsers.add_parser(
+        "generate-report",
+        help="Generate the executive snapshot report from cached data",
+    )
+
     return parser
 
 
@@ -110,6 +116,10 @@ def main() -> None:
 
     elif args.command == "cache-days-off":
         result = pipeline.cache_days_off(config=config, client=client)
+        print(json.dumps(result, indent=2))
+
+    elif args.command == "generate-report":
+        result = pipeline.generate_executive_report(config=config)
         print(json.dumps(result, indent=2))
 
     else:
