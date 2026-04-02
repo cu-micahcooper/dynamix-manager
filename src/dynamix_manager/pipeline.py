@@ -155,6 +155,8 @@ def _cache_ticket_context_from_rows(
             status_code = getattr(exc.response, "status_code", None)
             if status_code == 429:
                 break
+            if status_code == 404:
+                continue
             raise
     ticket_frame = normalize_ticket_rows(tickets)
     if not ticket_frame.empty:
