@@ -835,6 +835,9 @@ def render_executive_report_html(snapshot: dict) -> str:
 
     week_label = escape(str(snapshot.get("week_label", "")))
     generated_at = escape(str(snapshot.get("report_generated_at", "")))
+    week_range = escape(str(snapshot.get("week_range_label", "")))
+    prior_week_range = escape(str(snapshot.get("prior_week_range_label", "")))
+    as_of_label = escape(str(snapshot.get("as_of_label", "")))
 
     new_tickets = snapshot.get("new_tickets_this_week", 0)
     avg_weekly = snapshot.get("avg_weekly_tickets_created", 0.0)
@@ -844,17 +847,21 @@ def render_executive_report_html(snapshot: dict) -> str:
     unassigned = snapshot.get("unassigned_count", 0)
     median_response = snapshot.get("median_first_response_hours")
 
-    ww_str = f"{ww_delta:+.1f}% vs prior week" if ww_delta is not None else "no prior week data"
+    ww_str = (
+        f"{ww_delta:+.1f}% vs {prior_week_range}"
+        if ww_delta is not None
+        else f"no data for {prior_week_range}"
+    )
     sla_str = f"{sla_rate * 100:.0f}%" if sla_rate is not None else "N/A"
     response_str = f"{median_response:.1f} hrs" if median_response is not None else "N/A"
 
     kpi_cards = "\n".join([
-        _executive_kpi_card("New Tickets This Week", str(new_tickets), ww_str),
-        _executive_kpi_card("Avg Weekly Tickets", f"{avg_weekly:.1f}"),
-        _executive_kpi_card("SLA Compliance", sla_str),
-        _executive_kpi_card("Stale Open (>5 days)", str(stale)),
-        _executive_kpi_card("Unassigned Open", str(unassigned)),
-        _executive_kpi_card("Median First Response", response_str),
+        _executive_kpi_card("New Tickets", str(new_tickets), f"{week_range} · {ww_str}"),
+        _executive_kpi_card("Avg Weekly Tickets", f"{avg_weekly:.1f}", "all-time baseline"),
+        _executive_kpi_card("SLA Compliance", sla_str, "all open &amp; recently closed"),
+        _executive_kpi_card("Stale Open (&gt;5 biz days)", str(stale), f"as of {as_of_label}"),
+        _executive_kpi_card("Unassigned Open", str(unassigned), f"as of {as_of_label}"),
+        _executive_kpi_card("Median First Response", response_str, "all-time"),
     ])
 
     # satisfaction counts table
@@ -914,6 +921,7 @@ def render_executive_report_html(snapshot: dict) -> str:
         "labels": [b["label"] for b in _ref],
         "this_week": [b["count"] for b in buckets_tw],
         "all_time": [b["count"] for b in buckets_all],
+        "this_week_label": snapshot.get("week_range_label", "This Week"),
     }).replace("</", r"<\/")
 
     return f"""<!DOCTYPE html>
@@ -942,7 +950,7 @@ def render_executive_report_html(snapshot: dict) -> str:
 
     <!-- Completion Time -->
     <section>
-      <h2 class="text-lg font-semibold text-stone-700 mb-4">Ticket Completion Time (Business Hours)</h2>
+      <h2 class="text-lg font-semibold text-stone-700 mb-4">Ticket Completion Time — {week_range} vs All Time</h2>
       <div class="bg-white rounded-lg border border-stone-200 p-4">
         <div id="completion-chart" style="height:360px"></div>
       </div>
@@ -950,7 +958,7 @@ def render_executive_report_html(snapshot: dict) -> str:
 
     <!-- Survey Satisfaction -->
     <section>
-      <h2 class="text-lg font-semibold text-stone-700 mb-4">Survey Satisfaction</h2>
+      <h2 class="text-lg font-semibold text-stone-700 mb-4">Survey Satisfaction — Received {week_range}</h2>
       <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
         <div class="bg-white rounded-lg border border-stone-200 overflow-hidden">
           <table class="w-full">
@@ -981,7 +989,7 @@ def render_executive_report_html(snapshot: dict) -> str:
 
     <!-- Top Services -->
     <section>
-      <h2 class="text-lg font-semibold text-stone-700 mb-4">Top Request Categories</h2>
+      <h2 class="text-lg font-semibold text-stone-700 mb-4">Top Request Categories — All Time</h2>
       <div class="bg-white rounded-lg border border-stone-200 overflow-hidden max-w-sm">
         <table class="w-full">
           <thead class="bg-stone-50 border-b border-stone-200">
@@ -1013,7 +1021,7 @@ def render_executive_report_html(snapshot: dict) -> str:
           type: 'bar',
           x: d.labels,
           y: d.this_week,
-          name: 'This Week',
+          name: d.this_week_label,
           marker: {{ color: '#3b82f6' }},
         }},
       ];

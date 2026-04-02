@@ -34,6 +34,9 @@ def _sample_snapshot():
         "median_first_response_hours": 2.5,
         "unassigned_count": 7,
         "week_label": "Mar 30 – Apr 5",
+        "week_range_label": "Mar 30 – Apr 1",
+        "prior_week_range_label": "Mar 23 – Mar 25",
+        "as_of_label": "Apr 1",
         "report_generated_at": "2026-04-01T12:00:00+00:00",
     }
 
@@ -58,7 +61,7 @@ def test_render_executive_report_html_includes_satisfaction_table():
 def test_render_executive_report_html_embeds_plotly_and_bar_chart():
     html = render_executive_report_html(_sample_snapshot())
     assert "plotly" in html.lower()
-    assert "This Week" in html
+    assert "Mar 30" in html   # week range label appears in chart data and headings
     assert "All Time" in html
 
 

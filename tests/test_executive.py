@@ -74,6 +74,17 @@ def test_week_over_week_delta_pct_is_none_when_prior_week_empty():
     assert snapshot["week_over_week_delta_pct"] is None
 
 
+def test_range_labels_reflect_as_of_and_prior_window():
+    tickets = pd.DataFrame([{"ticket_id": 1, "created_at": "2026-03-30T10:00:00Z"}])
+    as_of = pd.Timestamp("2026-04-01 12:00:00", tz="UTC")  # Wednesday noon
+
+    snapshot = summarize_executive_snapshot(tickets, pd.DataFrame(), as_of=as_of)
+
+    assert snapshot["week_range_label"] == "Mar 30 – Apr 1"
+    assert snapshot["prior_week_range_label"] == "Mar 23 – Mar 25"
+    assert snapshot["as_of_label"] == "Apr 1"
+
+
 def test_week_label_formats_monday_to_sunday():
     tickets = pd.DataFrame([{"ticket_id": 1, "created_at": "2026-03-30T10:00:00Z"}])
     as_of = pd.Timestamp("2026-04-01 12:00:00", tz="UTC")

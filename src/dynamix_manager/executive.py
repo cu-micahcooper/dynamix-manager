@@ -73,10 +73,17 @@ def summarize_executive_snapshot(
 
     ws = _week_start(as_of)
     prior_ws = ws - pd.Timedelta(days=7)
+    prior_ws_as_of = as_of - pd.Timedelta(days=7)
+
+    def _fmt(ts: pd.Timestamp) -> str:
+        return ts.strftime("%b %-d")
 
     result: dict[str, object] = {
         "week_label": _week_label(ws),
         "report_generated_at": as_of.isoformat(),
+        "as_of_label": _fmt(as_of),
+        "week_range_label": f"{_fmt(ws)} – {_fmt(as_of)}",
+        "prior_week_range_label": f"{_fmt(prior_ws)} – {_fmt(prior_ws_as_of)}",
     }
 
     # --- ticket volume ---
@@ -86,7 +93,6 @@ def summarize_executive_snapshot(
         result["week_over_week_delta_pct"] = None
     else:
         created = _parse_created_at(tickets)
-        prior_ws_as_of = as_of - pd.Timedelta(days=7)
         this_week_mask = (created >= ws) & (created <= as_of)
         prior_week_mask = (created >= prior_ws) & (created <= prior_ws_as_of)
         this_week_count = int(this_week_mask.sum())
