@@ -25,7 +25,7 @@ from dynamix_manager.ticket_quality import (
     normalize_ticket_quality_feed_rows,
     normalize_ticket_quality_ticket_rows,
 )
-from dynamix_manager.tickets import normalize_ticket_rows
+from dynamix_manager.tickets import build_ticket_search_filters, normalize_ticket_rows
 from dynamix_manager.surveys import normalize_survey_rows
 from dynamix_manager.tdx_client import TeamDynamixClient
 
@@ -327,12 +327,49 @@ def materialize_ticket_linked_surveys(config: RuntimeConfig):
     return model
 
 
+def sync_tickets(
+    config: RuntimeConfig,
+    client: TeamDynamixClient,
+    ticket_app_id: int,
+) -> dict[str, int]:
+    """Bulk-sync all tickets modified since the last known date via the search API."""
+    modified_from: str | None = None
+    existing = pd.DataFrame()
+    if table_exists(config.db_path, "tickets"):
+        existing = read_table(config.db_path, "tickets")
+        if not existing.empty and "modified_at" in existing.columns:
+            max_mod = pd.to_datetime(existing["modified_at"], utc=True, errors="coerce").dropna().max()
+            if pd.notna(max_mod):
+                modified_from = max_mod.isoformat()
+
+    token = client.authenticate()
+    payload = build_ticket_search_filters(modified_from=modified_from)
+    rows = client.search_tickets(token, payload, ticket_app_id=ticket_app_id)
+    new_frame = normalize_ticket_rows(rows)
+
+    if not new_frame.empty:
+        new_frame["ticket_app_id"] = ticket_app_id
+
+    if existing.empty:
+        combined = new_frame
+    elif new_frame.empty:
+        combined = existing
+    else:
+        combined = pd.concat([existing, new_frame], ignore_index=True)
+        combined = combined.drop_duplicates(subset=["ticket_id"], keep="last")
+
+    replace_table(config.db_path, "tickets", combined)
+    return {"synced_tickets": len(new_frame)}
+
+
 def generate_executive_report(
     config: RuntimeConfig,
     client: TeamDynamixClient | None = None,
 ) -> dict[str, object]:
     if client is not None:
-        refresh_survey_slice(config=config, client=client, report_id=survey_report_id())
+        cache_survey_report(config=config, client=client, report_id=survey_report_id())
+        ticket_app = discover_ticket_app(config=config, client=client, report_id=survey_report_id())
+        sync_tickets(config=config, client=client, ticket_app_id=int(ticket_app["AppID"]))
 
     tickets = read_table(config.db_path, "tickets") if table_exists(config.db_path, "tickets") else pd.DataFrame()
     surveys = (
@@ -368,13 +405,10 @@ def refresh_survey_slice(
 ) -> dict[str, int]:
     survey_frame = cache_survey_report(config=config, client=client, report_id=report_id)
     ticket_app = discover_ticket_app(config=config, client=client, report_id=report_id)
-    ticket_frame = cache_ticket_context(
+    sync_result = sync_tickets(
         config=config,
         client=client,
-        ticket_app_id=ticket_app["AppID"],
-        ticket_app_name=ticket_app.get("Name"),
-        report_id=report_id,
-        limit=ticket_limit,
+        ticket_app_id=int(ticket_app["AppID"]),
     )
     model = materialize_ticket_linked_surveys(config)
     write_survey_health_report(model, config.report_output_path)
@@ -385,7 +419,7 @@ def refresh_survey_slice(
     return {
         "survey_rows": len(survey_frame),
         "ticket_app_id": int(ticket_app["AppID"]),
-        "ticket_rows": len(ticket_frame),
+        "ticket_rows": sync_result["synced_tickets"],
         "linked_rows": int(model["ticket_linked"].sum()),
         "notebook_written": int(notebook_path.exists()),
     }

@@ -12,6 +12,7 @@ from dynamix_manager.pipeline import (
     generate_executive_report,
     materialize_ticket_linked_surveys,
     refresh_survey_slice,
+    sync_tickets,
 )
 from dynamix_manager.storage import read_table, replace_table
 
@@ -46,6 +47,9 @@ class StubClient:
 
     def fetch_days_off(self, token):
         return self.days_off_rows
+
+    def search_tickets(self, token, payload, ticket_app_id=None):
+        return self.search_rows if hasattr(self, "search_rows") else []
 
     def get_ticket(self, ticket_id, token, ticket_app_id, max_attempts=5):
         self.ticket_calls.append((ticket_id, token, ticket_app_id))
@@ -681,6 +685,33 @@ def test_materialize_ticket_linked_surveys_persists_joined_model(tmp_path):
     assert len(model) == 1
 
 
+def test_sync_tickets_upserts_modified_tickets(tmp_path):
+    config = RuntimeConfig(
+        base_url="https://example.test",
+        app_id="1234",
+        username="user",
+        password="pass",
+        db_path=tmp_path / "analytics.duckdb",
+        report_output_path=tmp_path / "survey_health.html",
+        notebook_output_path=tmp_path / "survey_health.ipynb",
+    )
+    replace_table(config.db_path, "tickets", pd.DataFrame([
+        {"ticket_id": 1, "ticket_title": "Old", "modified_at": "2026-03-20T10:00:00Z"},
+    ]))
+    client = StubClient([])
+    client.search_rows = [
+        {"ID": 2, "Title": "New ticket", "CreatedDate": "2026-04-01T10:00:00Z",
+         "ModifiedDate": "2026-04-01T10:00:00Z", "StatusName": "Open"},
+    ]
+
+    result = sync_tickets(config, client, ticket_app_id=634)
+
+    tickets = read_table(config.db_path, "tickets")
+    assert result["synced_tickets"] == 1
+    assert len(tickets) == 2
+    assert set(tickets["ticket_id"]) == {1, 2}
+
+
 def test_refresh_survey_slice_runs_end_to_end_and_writes_report(tmp_path):
     config = RuntimeConfig(
         base_url="https://example.test",
@@ -695,17 +726,12 @@ def test_refresh_survey_slice_runs_end_to_end_and_writes_report(tmp_path):
     client.applications = [
         {"AppID": 634, "Name": "InfoTech Tickets", "AppClass": "TDTickets"},
     ]
-    client.ticket_payloads[(634, 42)] = {
-        "ID": 42,
-        "Title": "Laptop issue",
-        "StatusName": "Closed",
-        "ServiceName": "Desktop Support",
-        "ResponsibleGroupName": "Client Services",
-        "RespondingFullName": "Analyst One",
-        "CreatedDate": "2026-03-01T08:00:00Z",
-        "RespondedDate": "2026-03-01T08:30:00Z",
-        "CompletedDate": "2026-03-01T09:00:00Z",
-    }
+    client.search_rows = [
+        {"ID": 42, "Title": "Laptop issue", "StatusName": "Closed",
+         "ServiceName": "Desktop Support", "ResponsibleGroupName": "Client Services",
+         "RespondingFullName": "Analyst One", "CreatedDate": "2026-03-01T08:00:00Z",
+         "ModifiedDate": "2026-03-01T09:00:00Z", "CompletedDate": "2026-03-01T09:00:00Z"},
+    ]
 
     summary = refresh_survey_slice(config=config, client=client, report_id=100482)
 
