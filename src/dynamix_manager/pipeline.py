@@ -12,10 +12,12 @@ from dynamix_manager.notebooks import (
 )
 from dynamix_manager.planned_days_off import PLANNED_DAYS_OFF
 from dynamix_manager.config import RuntimeConfig
+from dynamix_manager.executive import summarize_executive_snapshot
 from dynamix_manager.reporting import (
     write_survey_health_report,
     write_ticket_health_report,
     write_ticket_quality_report,
+    write_executive_report,
 )
 from dynamix_manager.storage import read_table, replace_table, table_exists
 from dynamix_manager.ticket_quality import (
@@ -321,6 +323,33 @@ def materialize_ticket_linked_surveys(config: RuntimeConfig):
     model = build_ticket_linked_survey_model(surveys, tickets)
     replace_table(config.db_path, "ticket_linked_surveys", model)
     return model
+
+
+def generate_executive_report(config: RuntimeConfig) -> dict[str, object]:
+    tickets = read_table(config.db_path, "tickets") if table_exists(config.db_path, "tickets") else pd.DataFrame()
+    surveys = (
+        read_table(config.db_path, "survey_responses")
+        if table_exists(config.db_path, "survey_responses")
+        else pd.DataFrame()
+    )
+    days_off = (
+        read_table(config.db_path, "days_off")
+        if table_exists(config.db_path, "days_off")
+        else pd.DataFrame(columns=["holiday_date"])
+    )
+
+    snapshot = summarize_executive_snapshot(tickets, surveys, days_off=days_off)
+
+    artifact_root = _artifact_root(config)
+    report_path = artifact_root / "reports" / "executive_report.html"
+    write_executive_report(snapshot, report_path)
+
+    return {
+        "report_written": int(report_path.exists()),
+        "new_tickets_this_week": snapshot["new_tickets_this_week"],
+        "avg_weekly_tickets": snapshot["avg_weekly_tickets_created"],
+        "stale_open_count": snapshot["stale_open_count"],
+    }
 
 
 def refresh_survey_slice(

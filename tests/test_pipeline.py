@@ -9,6 +9,7 @@ from dynamix_manager.pipeline import (
     cache_survey_report,
     cache_ticket_context,
     discover_ticket_app,
+    generate_executive_report,
     materialize_ticket_linked_surveys,
     refresh_survey_slice,
 )
@@ -811,3 +812,46 @@ def test_backfill_ticket_links_materializes_outputs_once_after_batching(tmp_path
     assert summary["batches_run"] == 2
     assert len(report_calls) == 1
     assert len(notebook_calls) == 1
+
+
+def test_generate_executive_report_writes_html_and_returns_summary(tmp_path):
+    config = RuntimeConfig(
+        base_url="https://example.test",
+        app_id="1234",
+        username="user",
+        password="pass",
+        db_path=tmp_path / "analytics.duckdb",
+        report_output_path=tmp_path / "survey_health.html",
+        notebook_output_path=tmp_path / "survey_health.ipynb",
+    )
+    replace_table(
+        config.db_path,
+        "tickets",
+        pd.DataFrame([
+            {
+                "ticket_id": 1,
+                "created_at": "2026-03-30T10:00:00Z",
+                "resolved_at": None,
+                "service_name": "Printing",
+            }
+        ]),
+    )
+    replace_table(
+        config.db_path,
+        "survey_responses",
+        pd.DataFrame([
+            {
+                "response_id": 1,
+                "satisfaction_label": "Very Satisfied",
+                "survey_completed_at": "2026-03-31T12:00:00Z",
+            }
+        ]),
+    )
+
+    result = generate_executive_report(config)
+
+    report_path = tmp_path / "reports" / "executive_report.html"
+    assert report_path.exists()
+    assert "IT Executive Report" in report_path.read_text()
+    assert result["report_written"] == 1
+    assert "new_tickets_this_week" in result
