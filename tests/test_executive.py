@@ -48,6 +48,21 @@ def test_week_over_week_delta_pct_compares_current_to_prior_week():
     assert snapshot["week_over_week_delta_pct"] == pytest.approx(100.0)
 
 
+def test_week_over_week_delta_pct_excludes_prior_week_tickets_after_proportionate_cutoff():
+    # as_of = Wed Apr 1 12:00 → prior window = Mon Mar 23 00:00 – Wed Mar 25 12:00
+    tickets = pd.DataFrame([
+        {"ticket_id": 1, "created_at": "2026-03-30T10:00:00Z"},  # this week
+        {"ticket_id": 2, "created_at": "2026-03-23T10:00:00Z"},  # prior week, before cutoff — counted
+        {"ticket_id": 3, "created_at": "2026-03-26T10:00:00Z"},  # prior week Thu — after Wed cutoff — excluded
+    ])
+    as_of = pd.Timestamp("2026-04-01 12:00:00", tz="UTC")
+
+    snapshot = summarize_executive_snapshot(tickets, pd.DataFrame(), as_of=as_of)
+
+    # this_week=1, prior_week=1 (ticket 3 excluded) → 0.0% delta
+    assert snapshot["week_over_week_delta_pct"] == pytest.approx(0.0)
+
+
 def test_week_over_week_delta_pct_is_none_when_prior_week_empty():
     tickets = pd.DataFrame([
         {"ticket_id": 1, "created_at": "2026-03-30T10:00:00Z"},  # this week only
