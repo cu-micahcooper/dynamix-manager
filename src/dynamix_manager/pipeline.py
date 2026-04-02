@@ -11,7 +11,7 @@ from dynamix_manager.notebooks import (
     write_ticket_quality_notebook,
 )
 from dynamix_manager.planned_days_off import PLANNED_DAYS_OFF
-from dynamix_manager.config import RuntimeConfig
+from dynamix_manager.config import RuntimeConfig, survey_report_id
 from dynamix_manager.executive import summarize_executive_snapshot
 from dynamix_manager.reporting import (
     write_survey_health_report,
@@ -325,7 +325,13 @@ def materialize_ticket_linked_surveys(config: RuntimeConfig):
     return model
 
 
-def generate_executive_report(config: RuntimeConfig) -> dict[str, object]:
+def generate_executive_report(
+    config: RuntimeConfig,
+    client: TeamDynamixClient | None = None,
+) -> dict[str, object]:
+    if client is not None:
+        refresh_survey_slice(config=config, client=client, report_id=survey_report_id())
+
     tickets = read_table(config.db_path, "tickets") if table_exists(config.db_path, "tickets") else pd.DataFrame()
     surveys = (
         read_table(config.db_path, "survey_responses")

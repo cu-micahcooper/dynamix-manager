@@ -119,7 +119,7 @@ def main() -> None:
         print(json.dumps(result, indent=2))
 
     elif args.command == "generate-report":
-        result = pipeline.generate_executive_report(config=config)
+        result = pipeline.generate_executive_report(config=config, client=client)
         print(json.dumps(result, indent=2))
 
     else:

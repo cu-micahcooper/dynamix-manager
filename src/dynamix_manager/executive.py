@@ -165,7 +165,7 @@ def summarize_executive_snapshot(
             cutoff_6m = as_of - pd.DateOffset(months=6)
             recent = sc.loc[sc["survey_completed_at"] >= cutoff_6m].copy()
             if not recent.empty:
-                recent["month"] = recent["survey_completed_at"].dt.to_period("M")
+                recent["month"] = recent["survey_completed_at"].dt.tz_convert(None).dt.to_period("M")
                 trend = (
                     recent.groupby("month")["satisfaction_label"]
                     .agg(
