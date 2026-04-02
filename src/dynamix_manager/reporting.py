@@ -917,10 +917,15 @@ def render_executive_report_html(snapshot: dict) -> str:
     buckets_tw = snapshot.get("completion_hours_this_week", [])
     buckets_all = snapshot.get("completion_hours_all_time", [])
     _ref = buckets_all if buckets_all else buckets_tw
+
+    def _to_pct(buckets: list) -> list[float]:
+        total = sum(b["count"] for b in buckets) or 1
+        return [round(b["count"] / total * 100, 1) for b in buckets]
+
     chart_data_json = json.dumps({
         "labels": [b["label"] for b in _ref],
-        "this_week": [b["count"] for b in buckets_tw],
-        "all_time": [b["count"] for b in buckets_all],
+        "this_week": _to_pct(buckets_tw) if buckets_tw else [],
+        "all_time": _to_pct(buckets_all) if buckets_all else [],
         "this_week_label": snapshot.get("week_range_label", "This Week"),
     }).replace("</", r"<\/")
 
@@ -1029,7 +1034,7 @@ def render_executive_report_html(snapshot: dict) -> str:
         barmode: 'group',
         margin: {{ t: 20, r: 20, b: 80, l: 60 }},
         xaxis: {{ title: 'Business Hours' }},
-        yaxis: {{ title: 'Tickets', zeroline: false }},
+        yaxis: {{ title: '% of Tickets', ticksuffix: '%', zeroline: false }},
         legend: {{ orientation: 'h', y: -0.25 }},
         paper_bgcolor: 'white',
         plot_bgcolor: 'white',
