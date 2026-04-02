@@ -114,3 +114,113 @@ def test_completion_hours_this_week_lists_resolved_tickets():
 
     assert snapshot["completion_hours_this_week"] == [8.0]
     assert set(snapshot["completion_hours_all_time"]) == {8.0, 16.0}
+
+
+def test_satisfaction_counts_groups_by_label():
+    surveys = pd.DataFrame([
+        {"satisfaction_label": "Very Satisfied", "survey_completed_at": "2026-03-01T12:00:00Z"},
+        {"satisfaction_label": "Very Satisfied", "survey_completed_at": "2026-03-02T12:00:00Z"},
+        {"satisfaction_label": "Satisfied",      "survey_completed_at": "2026-03-03T12:00:00Z"},
+        {"satisfaction_label": "Dissatisfied",   "survey_completed_at": "2026-03-04T12:00:00Z"},
+    ])
+    snapshot = summarize_executive_snapshot(
+        pd.DataFrame(), surveys, as_of=pd.Timestamp("2026-04-01", tz="UTC")
+    )
+    assert snapshot["satisfaction_counts"] == {
+        "Very Satisfied": 2,
+        "Satisfied": 1,
+        "Dissatisfied": 1,
+    }
+
+
+def test_satisfaction_trend_includes_last_six_months():
+    surveys = pd.DataFrame([
+        {"satisfaction_label": "Very Satisfied", "survey_completed_at": "2026-03-15T12:00:00Z"},
+        {"satisfaction_label": "Dissatisfied",   "survey_completed_at": "2026-03-20T12:00:00Z"},
+        {"satisfaction_label": "Very Satisfied", "survey_completed_at": "2025-09-01T12:00:00Z"},  # >6 months ago
+    ])
+    as_of = pd.Timestamp("2026-04-01", tz="UTC")
+    snapshot = summarize_executive_snapshot(pd.DataFrame(), surveys, as_of=as_of)
+
+    months = [m["month"] for m in snapshot["satisfaction_trend"]]
+    assert "2026-03" in months
+    assert "2025-09" not in months
+
+    march = next(m for m in snapshot["satisfaction_trend"] if m["month"] == "2026-03")
+    assert march["total"] == 2
+    assert march["positive_rate"] == pytest.approx(0.5)
+
+
+def test_sla_compliance_rate_excludes_tickets_without_sla():
+    tickets = pd.DataFrame([
+        {"ticket_id": 1, "is_sla_violated": False},
+        {"ticket_id": 2, "is_sla_violated": False},
+        {"ticket_id": 3, "is_sla_violated": True},
+        {"ticket_id": 4, "is_sla_violated": None},   # no SLA — excluded
+    ])
+    snapshot = summarize_executive_snapshot(
+        tickets, pd.DataFrame(), as_of=pd.Timestamp("2026-04-01", tz="UTC")
+    )
+    assert snapshot["sla_compliance_rate"] == pytest.approx(2 / 3)
+
+
+def test_stale_open_count_excludes_resolved_and_recent_tickets():
+    tickets = pd.DataFrame([
+        {
+            "ticket_id": 1,
+            "created_at": "2026-03-01T08:00:00Z",   # ~22 biz days old — stale
+            "resolved_at": None,
+            "status_class": 1,
+        },
+        {
+            "ticket_id": 2,
+            "created_at": "2026-03-30T08:00:00Z",   # 2 biz days old — not stale
+            "resolved_at": None,
+            "status_class": 1,
+        },
+        {
+            "ticket_id": 3,
+            "created_at": "2026-01-01T08:00:00Z",
+            "resolved_at": "2026-03-01T08:00:00Z",  # resolved — excluded
+            "status_class": 3,
+        },
+    ])
+    as_of = pd.Timestamp("2026-04-01 12:00:00", tz="UTC")
+    snapshot = summarize_executive_snapshot(tickets, pd.DataFrame(), as_of=as_of)
+    assert snapshot["stale_open_count"] == 1
+
+
+def test_top_services_returns_top_5_by_count():
+    rows = [{"ticket_id": i, "service_name": "Printing"} for i in range(5)]
+    rows += [{"ticket_id": i + 100, "service_name": "Network"} for i in range(3)]
+    rows += [{"ticket_id": i + 200, "service_name": "Software"} for i in range(2)]
+    tickets = pd.DataFrame(rows)
+    snapshot = summarize_executive_snapshot(
+        tickets, pd.DataFrame(), as_of=pd.Timestamp("2026-04-01", tz="UTC")
+    )
+    assert snapshot["top_services"][0] == {"service_name": "Printing", "count": 5}
+    assert snapshot["top_services"][1] == {"service_name": "Network", "count": 3}
+
+
+def test_median_first_response_hours_uses_response_time_column():
+    tickets = pd.DataFrame([
+        {"response_time_hours": 2.0},
+        {"response_time_hours": 4.0},
+        {"response_time_hours": 6.0},
+    ])
+    snapshot = summarize_executive_snapshot(
+        tickets, pd.DataFrame(), as_of=pd.Timestamp("2026-04-01", tz="UTC")
+    )
+    assert snapshot["median_first_response_hours"] == pytest.approx(4.0)
+
+
+def test_unassigned_count_only_counts_open_tickets():
+    tickets = pd.DataFrame([
+        {"ticket_id": 1, "assignee_name": None,   "resolved_at": None,                   "status_class": 1},  # open, unassigned
+        {"ticket_id": 2, "assignee_name": "Alex", "resolved_at": None,                   "status_class": 1},  # open, assigned
+        {"ticket_id": 3, "assignee_name": None,   "resolved_at": "2026-03-01T10:00:00Z", "status_class": 3},  # resolved, unassigned
+    ])
+    snapshot = summarize_executive_snapshot(
+        tickets, pd.DataFrame(), as_of=pd.Timestamp("2026-04-01", tz="UTC")
+    )
+    assert snapshot["unassigned_count"] == 1
