@@ -253,3 +253,17 @@ def test_unassigned_count_only_counts_open_tickets():
         tickets, pd.DataFrame(), as_of=pd.Timestamp("2026-04-01", tz="UTC")
     )
     assert snapshot["unassigned_count"] == 1
+
+
+def test_customer_effort_counts_and_easy_rate_within_30d_window():
+    surveys = pd.DataFrame([
+        {"customer_effort_label": "Very Easy",  "survey_completed_at": "2026-03-30T12:00:00Z"},  # in window
+        {"customer_effort_label": "Easy",       "survey_completed_at": "2026-03-28T12:00:00Z"},  # in window
+        {"customer_effort_label": "Difficult",  "survey_completed_at": "2026-03-25T12:00:00Z"},  # in window
+        {"customer_effort_label": "Very Easy",  "survey_completed_at": "2026-02-01T12:00:00Z"},  # >30d — excluded
+    ])
+    as_of = pd.Timestamp("2026-04-01", tz="UTC")
+    snapshot = summarize_executive_snapshot(pd.DataFrame(), surveys, as_of=as_of)
+
+    assert snapshot["customer_effort_counts"] == {"Very Easy": 1, "Easy": 1, "Difficult": 1}
+    assert snapshot["customer_effort_easy_rate"] == pytest.approx(2 / 3)

@@ -902,6 +902,9 @@ def render_executive_report_html(snapshot: dict) -> str:
     )
     sla_str = f"{sla_rate * 100:.0f}%" if sla_rate is not None else "N/A"
     response_str = f"{median_response:.1f} hrs" if median_response is not None else "N/A"
+    easy_rate = snapshot.get("customer_effort_easy_rate")
+    effort_str = f"{easy_rate * 100:.0f}% easy" if easy_rate is not None else "N/A"
+    effort_period = escape(str(snapshot.get("customer_effort_period_label", "")))
 
     kpi_cards = "\n".join([
         _executive_kpi_card(
@@ -919,6 +922,7 @@ def render_executive_report_html(snapshot: dict) -> str:
             detail_html=_ticket_table(snapshot.get("unassigned_tickets_detail", []), tdx_base_url),
         ),
         _executive_kpi_card("Median First Response", response_str, "all-time"),
+        _executive_kpi_card("Customer Effort", effort_str, f"easy or very easy · {effort_period}"),
     ])
 
     # satisfaction counts table
@@ -957,6 +961,29 @@ def render_executive_report_html(snapshot: dict) -> str:
         )
     if not trend_rows:
         trend_rows = '<tr><td class="px-4 py-3 text-stone-500" colspan="3">No trend data</td></tr>'
+
+    # customer effort table
+    effort_label_order = ["Very Easy", "Easy", "Difficult", "Very Difficult"]
+    effort_counts = snapshot.get("customer_effort_counts", {})
+    total_effort = sum(effort_counts.values()) or 1
+    effort_rows = ""
+    for lbl in effort_label_order:
+        count = effort_counts.get(lbl, 0)
+        pct = count / total_effort * 100
+        color = "bg-green-400" if lbl in ("Very Easy", "Easy") else "bg-amber-400"
+        effort_rows += (
+            f'<tr class="border-b border-stone-100">'
+            f'<td class="px-4 py-3 text-sm text-stone-700">{escape(lbl)}</td>'
+            f'<td class="px-4 py-3 text-sm text-stone-700 text-right">{escape(str(count))}</td>'
+            f'<td class="px-4 py-3">'
+            f'  <div class="h-2 bg-stone-100 rounded">'
+            f'    <div class="h-2 {color} rounded" style="width:{int(pct)}%"></div>'
+            f'  </div>'
+            f'</td>'
+            f'</tr>'
+        )
+    if not effort_rows:
+        effort_rows = '<tr><td class="px-4 py-3 text-stone-500" colspan="3">No effort data</td></tr>'
 
     # top services table
     service_rows = ""
@@ -1046,6 +1073,23 @@ def render_executive_report_html(snapshot: dict) -> str:
             <tbody>{trend_rows}</tbody>
           </table>
         </div>
+      </div>
+    </section>
+
+    <!-- Customer Effort -->
+    <section>
+      <h2 class="text-lg font-semibold text-stone-700 mb-4">Customer Effort — {effort_period}</h2>
+      <div class="bg-white rounded-lg border border-stone-200 overflow-hidden max-w-sm">
+        <table class="w-full">
+          <thead class="bg-stone-50 border-b border-stone-200">
+            <tr>
+              <th class="px-4 py-3 text-left text-xs font-semibold text-stone-500 uppercase">Effort Level</th>
+              <th class="px-4 py-3 text-right text-xs font-semibold text-stone-500 uppercase">Count</th>
+              <th class="px-4 py-3 text-left text-xs font-semibold text-stone-500 uppercase">Share</th>
+            </tr>
+          </thead>
+          <tbody>{effort_rows}</tbody>
+        </table>
       </div>
     </section>
 

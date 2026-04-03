@@ -203,6 +203,28 @@ def summarize_executive_snapshot(
         result["satisfaction_trend"] = []
         result["satisfaction_period_label"] = ""
 
+    # --- customer effort ---
+    _EASY = {"Very Easy", "Easy"}
+    if not surveys.empty and "customer_effort_label" in surveys.columns and "survey_completed_at" in surveys.columns:
+        _completed_ce = pd.to_datetime(surveys["survey_completed_at"], utc=True, errors="coerce")
+        _cutoff_30d_ce = as_of - pd.Timedelta(days=30)
+        _effort_mask = (
+            (_completed_ce >= _cutoff_30d_ce) & (_completed_ce <= as_of)
+            & surveys["customer_effort_label"].notna()
+        )
+        effort_counts = surveys.loc[_effort_mask, "customer_effort_label"].value_counts().to_dict()
+        effort_total = sum(effort_counts.values())
+        result["customer_effort_counts"] = effort_counts
+        result["customer_effort_easy_rate"] = (
+            sum(effort_counts.get(k, 0) for k in _EASY) / effort_total
+            if effort_total > 0 else None
+        )
+        result["customer_effort_period_label"] = f"{_fmt(_cutoff_30d_ce)} – {_fmt(as_of)}"
+    else:
+        result["customer_effort_counts"] = {}
+        result["customer_effort_easy_rate"] = None
+        result["customer_effort_period_label"] = ""
+
     # --- SLA compliance ---
     if not tickets.empty and "is_sla_violated" in tickets.columns:
         sla_tracked = tickets["is_sla_violated"].notna()

@@ -38,6 +38,9 @@ def _sample_snapshot():
         "prior_week_range_label": "Mar 23 – Mar 25",
         "as_of_label": "Apr 1",
         "satisfaction_period_label": "Mar 2 – Apr 1",
+        "customer_effort_counts": {"Very Easy": 8, "Easy": 10, "Difficult": 4, "Very Difficult": 1},
+        "customer_effort_easy_rate": 0.78,
+        "customer_effort_period_label": "Mar 2 – Apr 1",
         "report_generated_at": "2026-04-01T12:00:00+00:00",
         "new_tickets_detail": [],
         "stale_tickets_detail": [],
@@ -101,6 +104,14 @@ def test_render_executive_report_html_includes_top_services():
 def test_render_executive_report_html_shows_week_label():
     html = render_executive_report_html(_sample_snapshot())
     assert "Mar 30" in html
+
+
+def test_render_executive_report_html_includes_customer_effort():
+    html = render_executive_report_html(_sample_snapshot())
+    assert "Customer Effort" in html
+    assert "78%" in html        # easy_rate = 0.78
+    assert "Very Easy" in html
+    assert "Difficult" in html
 
 
 def test_write_executive_report_creates_file(tmp_path: Path):
