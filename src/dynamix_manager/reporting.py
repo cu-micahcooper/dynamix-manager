@@ -821,28 +821,46 @@ def write_ticket_health_report(
 
 def _executive_kpi_card(label: str, value: str, sub: str = "", sub2: str = "", detail_html: str = "") -> str:
     # label, sub, sub2 are developer-controlled strings; value is escaped since it may contain arbitrary data
-    sub_html = f'<p class="text-sm text-stone-500 mt-1">{sub}</p>' if sub else ""
-    sub_html += f'<p class="text-sm text-stone-400 mt-0.5">{sub2}</p>' if sub2 else ""
+    sub_html = (
+        f'<p style="font-family:\'myriad-pro\',sans-serif; font-size:0.75rem; '
+        f'color:rgba(255,255,255,0.5); margin-top:0.35rem; letter-spacing:0.02em;">{sub}</p>'
+    ) if sub else ""
+    sub_html += (
+        f'<p style="font-family:\'myriad-pro\',sans-serif; font-size:0.72rem; '
+        f'color:rgba(251,185,58,0.65); margin-top:0.15rem;">{sub2}</p>'
+    ) if sub2 else ""
     detail = (
-        f'<details class="mt-3 text-xs">'
-        f'<summary class="cursor-pointer text-blue-600 hover:underline select-none">Show details</summary>'
-        f'<div class="mt-2 overflow-x-auto">{detail_html}</div>'
+        f'<details style="margin-top:0.85rem;">'
+        f'<summary style="cursor:pointer; font-family:\'myriad-pro\',sans-serif; font-size:0.68rem; '
+        f'color:rgba(251,185,58,0.75); letter-spacing:0.1em; text-transform:uppercase; '
+        f'list-style:none; user-select:none;">&#9656; Show details</summary>'
+        f'<div style="margin-top:0.6rem; overflow-x:auto;">{detail_html}</div>'
         f'</details>'
     ) if detail_html else ""
     return (
-        f'<div class="bg-white rounded-lg border border-stone-200 px-6 py-5">'
-        f'<p class="text-sm font-medium text-stone-500">{label}</p>'
-        f'<p class="text-3xl font-bold text-stone-900 mt-1">{escape(value)}</p>'
-        f"{sub_html}"
-        f"{detail}"
+        f'<div style="padding:1.4rem 1.6rem; background:rgba(0,0,0,0.18); '
+        f'border:1px solid rgba(251,185,58,0.1); border-top:2px solid rgba(251,185,58,0.45); '
+        f'animation:fadeUp 0.5s ease both;">'
+        f'<p style="font-family:\'myriad-pro\',sans-serif; font-size:0.65rem; font-weight:600; '
+        f'color:rgba(255,255,255,0.45); text-transform:uppercase; letter-spacing:0.14em; '
+        f'margin-bottom:0.5rem;">{label}</p>'
+        f'<p style="font-family:\'myriad-pro\',sans-serif; font-size:2.4rem; font-weight:700; '
+        f'color:#FBB93A; line-height:1; letter-spacing:-0.02em;">{escape(value)}</p>'
+        f"{sub_html}{detail}"
         f"</div>"
     )
 
 
 def _ticket_table(rows: list[dict], tdx_base_url: str | None) -> str:
     """Build a compact HTML table from ticket detail rows."""
+    _th = ('style="text-align:left; padding:0.3rem 0.6rem; font-family:\'myriad-pro\',sans-serif; '
+           'font-size:0.62rem; font-weight:600; color:rgba(255,255,255,0.35); text-transform:uppercase; '
+           'letter-spacing:0.1em; border-bottom:1px solid rgba(251,185,58,0.15);"')
+    _td = 'style="padding:0.3rem 0.6rem; font-size:0.72rem; color:rgba(255,255,255,0.7); border-bottom:1px solid rgba(255,255,255,0.05);"'
+    _td_nb = 'style="padding:0.3rem 0.6rem; font-size:0.72rem; color:rgba(255,255,255,0.7); white-space:nowrap; border-bottom:1px solid rgba(255,255,255,0.05);"'
+
     if not rows:
-        return '<p class="text-stone-400 py-2">No tickets</p>'
+        return f'<p style="font-family:\'myriad-pro\',sans-serif; font-size:0.72rem; color:rgba(255,255,255,0.3); padding:0.4rem 0;">No tickets</p>'
 
     def _link(row: dict) -> str:
         tid = row.get("ticket_id")
@@ -850,29 +868,26 @@ def _ticket_table(rows: list[dict], tdx_base_url: str | None) -> str:
         if tdx_base_url and tid and app_id:
             org = str(tdx_base_url).rstrip("/").removesuffix("/TDWebApi")
             url = f"{org}/TDNext/Apps/{int(app_id)}/Tickets/TicketDet?TicketID={int(tid)}"
-            return f'<a href="{escape(url)}" target="_blank" class="text-blue-600 hover:underline">{escape(str(tid))}</a>'
+            return (f'<a href="{escape(url)}" target="_blank" '
+                    f'style="color:#FBB93A; text-decoration:none; border-bottom:1px solid rgba(251,185,58,0.35);">'
+                    f'{escape(str(int(tid)))}</a>')
         return escape(str(tid or ""))
 
     header = (
-        '<table class="min-w-full text-xs border border-stone-200 mt-1">'
-        '<thead class="bg-stone-50">'
-        '<tr>'
-        '<th class="px-2 py-1 text-left border-b border-stone-200">ID</th>'
-        '<th class="px-2 py-1 text-left border-b border-stone-200">Title</th>'
-        '<th class="px-2 py-1 text-left border-b border-stone-200">Service</th>'
-        '<th class="px-2 py-1 text-left border-b border-stone-200">Team</th>'
-        '<th class="px-2 py-1 text-left border-b border-stone-200">Assignee</th>'
-        '</tr></thead><tbody>'
+        f'<table style="width:100%; border-collapse:collapse; font-family:\'minion-pro\',serif;">'
+        f'<thead><tr>'
+        f'<th {_th}>ID</th><th {_th}>Title</th>'
+        f'<th {_th}>Service</th><th {_th}>Assignee</th>'
+        f'</tr></thead><tbody>'
     )
     body = ""
     for row in rows:
         body += (
-            f'<tr class="border-b border-stone-100 hover:bg-stone-50">'
-            f'<td class="px-2 py-1 whitespace-nowrap">{_link(row)}</td>'
-            f'<td class="px-2 py-1">{escape(str(row.get("ticket_title") or ""))}</td>'
-            f'<td class="px-2 py-1 whitespace-nowrap">{escape(str(row.get("service_name") or ""))}</td>'
-            f'<td class="px-2 py-1 whitespace-nowrap">{escape(str(row.get("team_name") or ""))}</td>'
-            f'<td class="px-2 py-1 whitespace-nowrap">{escape(str(row.get("assignee_name") or ""))}</td>'
+            f'<tr>'
+            f'<td {_td_nb}>{_link(row)}</td>'
+            f'<td {_td}>{escape(str(row.get("ticket_title") or ""))}</td>'
+            f'<td {_td_nb}>{escape(str(row.get("service_name") or ""))}</td>'
+            f'<td {_td_nb}>{escape(str(row.get("assignee_name") or ""))}</td>'
             f'</tr>'
         )
     return header + body + "</tbody></table>"
@@ -965,7 +980,11 @@ def render_executive_report_html(snapshot: dict) -> str:
     if not trend_rows:
         trend_rows = '<tr><td class="px-4 py-3 text-stone-500" colspan="3">No trend data</td></tr>'
 
-    # customer effort table
+    # customer effort table rows
+    _td_e = ('style="padding:0.7rem 1rem; font-family:\'minion-pro\',serif; '
+             'font-size:0.88rem; color:rgba(255,255,255,0.8); border-bottom:1px solid rgba(255,255,255,0.06);"')
+    _td_e_r = ('style="padding:0.7rem 1rem; font-family:\'myriad-pro\',sans-serif; '
+               'font-size:0.88rem; color:#FBB93A; text-align:right; border-bottom:1px solid rgba(255,255,255,0.06);"')
     effort_label_order = ["Very Easy", "Easy", "Difficult", "Very Difficult"]
     effort_counts = snapshot.get("customer_effort_counts", {})
     total_effort = sum(effort_counts.values()) or 1
@@ -973,32 +992,39 @@ def render_executive_report_html(snapshot: dict) -> str:
     for lbl in effort_label_order:
         count = effort_counts.get(lbl, 0)
         pct = count / total_effort * 100
-        color = "bg-green-400" if lbl in ("Very Easy", "Easy") else "bg-amber-400"
+        bar_color = "#FBB93A" if lbl in ("Very Easy", "Easy") else "#F59536"
         effort_rows += (
-            f'<tr class="border-b border-stone-100">'
-            f'<td class="px-4 py-3 text-sm text-stone-700">{escape(lbl)}</td>'
-            f'<td class="px-4 py-3 text-sm text-stone-700 text-right">{escape(str(count))}</td>'
-            f'<td class="px-4 py-3">'
-            f'  <div class="h-2 bg-stone-100 rounded">'
-            f'    <div class="h-2 {color} rounded" style="width:{int(pct)}%"></div>'
+            f'<tr>'
+            f'<td {_td_e}>{escape(lbl)}</td>'
+            f'<td {_td_e_r}>{escape(str(count))}</td>'
+            f'<td style="padding:0.7rem 1rem; border-bottom:1px solid rgba(255,255,255,0.06); width:140px;">'
+            f'  <div style="height:4px; background:rgba(255,255,255,0.08); border-radius:2px;">'
+            f'    <div style="height:4px; background:{bar_color}; border-radius:2px; width:{int(pct)}%; '
+            f'         transition:width 0.8s ease;"></div>'
             f'  </div>'
             f'</td>'
             f'</tr>'
         )
     if not effort_rows:
-        effort_rows = '<tr><td class="px-4 py-3 text-stone-500" colspan="3">No effort data</td></tr>'
+        effort_rows = (f'<tr><td colspan="3" style="padding:1rem; font-family:\'myriad-pro\',sans-serif; '
+                       f'font-size:0.8rem; color:rgba(255,255,255,0.3);">No effort data</td></tr>')
 
-    # top services table
+    # top services table rows
+    _td_s = ('style="padding:0.7rem 1rem; font-family:\'minion-pro\',serif; '
+             'font-size:0.88rem; color:rgba(255,255,255,0.8); border-bottom:1px solid rgba(255,255,255,0.06);"')
+    _td_s_r = ('style="padding:0.7rem 1rem; font-family:\'myriad-pro\',sans-serif; font-weight:600; '
+               'font-size:0.88rem; color:#FBB93A; text-align:right; border-bottom:1px solid rgba(255,255,255,0.06);"')
     service_rows = ""
     for svc in snapshot.get("top_services", []):
         service_rows += (
-            f'<tr class="border-b border-stone-100">'
-            f'<td class="px-4 py-3 text-sm text-stone-700">{escape(str(svc.get("service_name") or ""))}</td>'
-            f'<td class="px-4 py-3 text-sm text-stone-700 text-right">{escape(str(svc.get("count") or 0))}</td>'
+            f'<tr>'
+            f'<td {_td_s}>{escape(str(svc.get("service_name") or ""))}</td>'
+            f'<td {_td_s_r}>{escape(str(svc.get("count") or 0))}</td>'
             f'</tr>'
         )
     if not service_rows:
-        service_rows = '<tr><td class="px-4 py-3 text-stone-500" colspan="2">No service data</td></tr>'
+        service_rows = (f'<tr><td colspan="2" style="padding:1rem; font-family:\'myriad-pro\',sans-serif; '
+                        f'font-size:0.8rem; color:rgba(255,255,255,0.3);">No service data</td></tr>')
 
     # plotly data — escape </script> injection
     buckets_tw = snapshot.get("completion_hours_this_week", [])
@@ -1016,72 +1042,162 @@ def render_executive_report_html(snapshot: dict) -> str:
         "this_week_label": snapshot.get("week_range_label", "This Week"),
     }).replace("</", r"<\/")
 
+    # table header style helpers
+    _th_style = ('style="padding:0.6rem 1rem; font-family:\'myriad-pro\',sans-serif; font-size:0.62rem; '
+                 'font-weight:600; color:rgba(255,255,255,0.35); text-transform:uppercase; letter-spacing:0.12em; '
+                 'text-align:left; border-bottom:1px solid rgba(251,185,58,0.15);"')
+    _th_style_r = ('style="padding:0.6rem 1rem; font-family:\'myriad-pro\',sans-serif; font-size:0.62rem; '
+                   'font-weight:600; color:rgba(255,255,255,0.35); text-transform:uppercase; letter-spacing:0.12em; '
+                   'text-align:right; border-bottom:1px solid rgba(251,185,58,0.15);"')
+
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>IT Executive Report</title>
-  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://use.typekit.net/apf8ssc.css" />
   <script src="https://cdn.plot.ly/plotly-3.4.0.min.js"></script>
+  <style>
+    :root {{
+      --cu-blue:   #003963;
+      --cu-blue-dk:#002843;
+      --cu-blue-md:#004d82;
+      --cu-gold:   #FBB93A;
+      --cu-orange: #F59536;
+    }}
+    *, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
+    html {{ scroll-behavior: smooth; }}
+    body {{
+      background: var(--cu-blue-dk);
+      color: #fff;
+      font-family: 'minion-pro', Georgia, serif;
+      font-size: 16px;
+      line-height: 1.65;
+      min-height: 100vh;
+    }}
+    /* Subtle noise grain */
+    body::after {{
+      content: '';
+      position: fixed;
+      inset: 0;
+      background-image: url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAADIAAAAyCAYAAAAeP4ixAAAABmJLR0QA/wD/AP+gvaeTAAAACXBIWXMAAA7EAAAOxAGVKw4bAAAAB3RJTUUH4QMQEiAZ7MrQKAAAAB1pVFh0Q29tbWVudAAAAAAAQ3JlYXRlZCB3aXRoIEdJTVBkLmUHAAAA+0lEQVRo3u3ZMQ6CQBCF4d+9hIWJFxDvYuMFPIKJiYknsLCwMPECJiYmJiYeQA8gJiYmJiYmJiYmJiYmJiY+VELZvd2d3Z3Z3dm9WTsBAAAAAAAAAAAAYLz3H+j9B3r/gd5/oPcf6P0Hev+B3n+g9x/o/Qd6/4Hef6D3H+j9B3r/gd5/oPcf6P0Hev+B3n+g9x/o/Qd6/4Hef6D3H+j9B3r/gd5/oPcf6P0Hev+B3n+g9x/o/Qd6/4Hef6D3H+j9B3r/gd5/oPcf6P0Hev+B3n+g9x/o/Qd6/4Hef6D3H+j9B3r/gd5/oPcf6P0Hev+B3n+g9x/o/Qd6/4Hef6D3H+j9B3o/AL8P1gAAAAAAAAAAAC8DAAAAAAAAAAAACwAAAAAAAAAAAACK7B8A");
+      opacity: 0.025;
+      pointer-events: none;
+      z-index: 9999;
+    }}
+    @keyframes fadeUp {{
+      from {{ opacity: 0; transform: translateY(10px); }}
+      to   {{ opacity: 1; transform: translateY(0); }}
+    }}
+    .section-label {{
+      font-family: 'myriad-pro', sans-serif;
+      font-size: 0.62rem;
+      font-weight: 600;
+      color: rgba(251,185,58,0.6);
+      text-transform: uppercase;
+      letter-spacing: 0.2em;
+      margin-bottom: 0.5rem;
+    }}
+    .section-title {{
+      font-family: 'myriad-pro', sans-serif;
+      font-size: 1.05rem;
+      font-weight: 600;
+      color: rgba(255,255,255,0.9);
+      letter-spacing: 0.01em;
+      margin-bottom: 1.25rem;
+      padding-bottom: 0.6rem;
+      border-bottom: 1px solid rgba(251,185,58,0.18);
+    }}
+    .data-table {{ width: 100%; border-collapse: collapse; }}
+    details summary::-webkit-details-marker {{ display: none; }}
+    details[open] summary {{ color: rgba(251,185,58,0.95); }}
+  </style>
 </head>
-<body class="bg-stone-50 font-sans text-stone-900">
-  <header class="bg-white border-b border-stone-200 px-8 py-6">
-    <h1 class="text-2xl font-bold">IT Executive Report</h1>
-    <p class="text-stone-500 text-sm mt-1">Week of {week_label} &nbsp;·&nbsp; Generated {generated_at}</p>
-  </header>
-  <main class="max-w-5xl mx-auto px-8 py-8 space-y-10">
+<body>
 
-    <!-- KPI Cards -->
-    <section>
-      <h2 class="text-lg font-semibold text-stone-700 mb-4">At a Glance</h2>
-      <div class="grid grid-cols-2 md:grid-cols-3 gap-4">
+  <!-- Header -->
+  <header style="background:var(--cu-blue); border-bottom:1px solid rgba(251,185,58,0.2); padding:2.5rem 3rem 2rem;">
+    <div style="max-width:1100px; margin:0 auto;">
+      <p style="font-family:'myriad-pro',sans-serif; font-size:0.62rem; font-weight:600;
+                color:rgba(251,185,58,0.6); text-transform:uppercase; letter-spacing:0.2em;
+                margin-bottom:0.5rem;">Cedarville University · Information Technology</p>
+      <h1 style="font-family:'myriad-pro',sans-serif; font-size:2rem; font-weight:700;
+                 color:#fff; letter-spacing:0.01em; line-height:1.1;">
+        Executive Report
+      </h1>
+      <div style="margin-top:0.6rem; display:flex; gap:2rem; align-items:baseline; flex-wrap:wrap;">
+        <span style="font-family:'minion-pro',serif; font-style:italic;
+                     font-size:1rem; color:var(--cu-gold);">Week of {week_label}</span>
+        <span style="font-family:'myriad-pro',sans-serif; font-size:0.72rem;
+                     color:rgba(255,255,255,0.35); letter-spacing:0.04em;">Generated {generated_at}</span>
+      </div>
+    </div>
+  </header>
+
+  <main style="max-width:1100px; margin:0 auto; padding:3rem 3rem 4rem;">
+
+    <!-- ── AT A GLANCE ── -->
+    <section style="margin-bottom:3.5rem; animation:fadeUp 0.4s ease both;">
+      <p class="section-label">At a Glance</p>
+      <div style="display:grid; grid-template-columns:repeat(auto-fill,minmax(200px,1fr)); gap:1px;
+                  background:rgba(251,185,58,0.08); border:1px solid rgba(251,185,58,0.08);">
         {kpi_cards}
       </div>
     </section>
 
-    <!-- Completion Time -->
-    <section>
-      <h2 class="text-lg font-semibold text-stone-700 mb-4">Ticket Completion Time — {week_range} vs All Time</h2>
-      <div class="bg-white rounded-lg border border-stone-200 p-4">
-        <div id="completion-chart" style="height:360px"></div>
+    <!-- ── COMPLETION TIME ── -->
+    <section style="margin-bottom:3.5rem; animation:fadeUp 0.5s ease 0.1s both;">
+      <p class="section-label">Ticket Volume</p>
+      <p class="section-title">Completion Time &ensp;—&ensp; {week_range} vs All Time</p>
+      <div style="background:rgba(0,0,0,0.18); border:1px solid rgba(251,185,58,0.1); padding:1rem 0.5rem;">
+        <div id="completion-chart" style="height:320px;"></div>
       </div>
     </section>
 
-    <!-- Customer Effort -->
-    <section>
-      <h2 class="text-lg font-semibold text-stone-700 mb-4">Customer Effort — {effort_period}</h2>
-      <div class="bg-white rounded-lg border border-stone-200 overflow-hidden max-w-sm">
-        <table class="w-full">
-          <thead class="bg-stone-50 border-b border-stone-200">
+    <!-- ── CUSTOMER EFFORT + TOP SERVICES (side by side) ── -->
+    <section style="margin-bottom:3.5rem; animation:fadeUp 0.5s ease 0.2s both;
+                    display:grid; grid-template-columns:1fr 1fr; gap:2rem;">
+
+      <div>
+        <p class="section-label">Survey Results</p>
+        <p class="section-title">Customer Effort &ensp;—&ensp; {effort_period}</p>
+        <table class="data-table">
+          <thead>
             <tr>
-              <th class="px-4 py-3 text-left text-xs font-semibold text-stone-500 uppercase">Effort Level</th>
-              <th class="px-4 py-3 text-right text-xs font-semibold text-stone-500 uppercase">Count</th>
-              <th class="px-4 py-3 text-left text-xs font-semibold text-stone-500 uppercase">Share</th>
+              <th {_th_style}>Effort Level</th>
+              <th {_th_style_r}>Count</th>
+              <th {_th_style}>Share</th>
             </tr>
           </thead>
           <tbody>{effort_rows}</tbody>
         </table>
       </div>
-    </section>
 
-    <!-- Top Services -->
-    <section>
-      <h2 class="text-lg font-semibold text-stone-700 mb-4">Top Request Categories — All Time</h2>
-      <div class="bg-white rounded-lg border border-stone-200 overflow-hidden max-w-sm">
-        <table class="w-full">
-          <thead class="bg-stone-50 border-b border-stone-200">
+      <div>
+        <p class="section-label">Ticket Breakdown</p>
+        <p class="section-title">Top Request Categories &ensp;—&ensp; All Time</p>
+        <table class="data-table">
+          <thead>
             <tr>
-              <th class="px-4 py-3 text-left text-xs font-semibold text-stone-500 uppercase">Service</th>
-              <th class="px-4 py-3 text-right text-xs font-semibold text-stone-500 uppercase">Tickets</th>
+              <th {_th_style}>Service</th>
+              <th {_th_style_r}>Tickets</th>
             </tr>
           </thead>
           <tbody>{service_rows}</tbody>
         </table>
       </div>
+
     </section>
 
   </main>
+
+  <footer style="border-top:1px solid rgba(251,185,58,0.12); padding:1.5rem 3rem;
+                 text-align:center; font-family:'myriad-pro',sans-serif;
+                 font-size:0.65rem; color:rgba(255,255,255,0.2); letter-spacing:0.08em;
+                 text-transform:uppercase;">
+    Cedarville University Information Technology &nbsp;·&nbsp; Confidential
+  </footer>
 
   <script>
     window.EXEC_CHART_DATA = {chart_data_json};
@@ -1093,26 +1209,39 @@ def render_executive_report_html(snapshot: dict) -> str:
           x: d.labels,
           y: d.all_time,
           name: 'All Time',
-          marker: {{ color: '#94a3b8' }},
+          marker: {{ color: 'rgba(251,185,58,0.35)' }},
         }},
         {{
           type: 'bar',
           x: d.labels,
           y: d.this_week,
           name: d.this_week_label,
-          marker: {{ color: '#3b82f6' }},
+          marker: {{ color: '#FBB93A' }},
         }},
       ];
       var layout = {{
         barmode: 'group',
-        margin: {{ t: 20, r: 20, b: 80, l: 60 }},
-        xaxis: {{ title: 'Business Hours' }},
-        yaxis: {{ title: '% of Tickets', ticksuffix: '%', zeroline: false }},
-        legend: {{ orientation: 'h', y: -0.25 }},
-        paper_bgcolor: 'white',
-        plot_bgcolor: 'white',
+        margin: {{ t: 16, r: 16, b: 80, l: 56 }},
+        xaxis: {{
+          title: {{ text: 'Business Hours', font: {{ family: 'myriad-pro, sans-serif', size: 11, color: 'rgba(255,255,255,0.4)' }} }},
+          tickfont: {{ family: 'myriad-pro, sans-serif', size: 11, color: 'rgba(255,255,255,0.5)' }},
+          gridcolor: 'rgba(255,255,255,0.05)',
+        }},
+        yaxis: {{
+          title: {{ text: '% of Tickets', font: {{ family: 'myriad-pro, sans-serif', size: 11, color: 'rgba(255,255,255,0.4)' }} }},
+          ticksuffix: '%',
+          zeroline: false,
+          tickfont: {{ family: 'myriad-pro, sans-serif', size: 11, color: 'rgba(255,255,255,0.5)' }},
+          gridcolor: 'rgba(255,255,255,0.06)',
+        }},
+        legend: {{
+          orientation: 'h', y: -0.28,
+          font: {{ family: 'myriad-pro, sans-serif', size: 11, color: 'rgba(255,255,255,0.6)' }},
+        }},
+        paper_bgcolor: 'rgba(0,0,0,0)',
+        plot_bgcolor: 'rgba(0,0,0,0)',
       }};
-      Plotly.newPlot('completion-chart', traces, layout, {{ responsive: true }});
+      Plotly.newPlot('completion-chart', traces, layout, {{ responsive: true, displayModeBar: false }});
     }})();
   </script>
 </body>
