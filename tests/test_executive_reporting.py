@@ -61,12 +61,11 @@ def test_render_executive_report_html_includes_kpi_values():
     assert "4.0" in html                   # median response all time
 
 
-def test_render_executive_report_html_includes_satisfaction_table():
+def test_render_executive_report_html_includes_customer_effort_section():
     html = render_executive_report_html(_sample_snapshot())
-    assert "Very Satisfied" in html
-    assert "100" in html
-    assert "Satisfied" in html
-    assert "Mar 2" in html   # satisfaction_period_label
+    assert "Customer Effort" in html
+    assert "Very Easy" in html
+    assert "Difficult" in html
 
 
 def test_render_executive_report_html_no_double_escaped_entities():

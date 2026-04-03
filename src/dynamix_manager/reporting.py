@@ -1047,37 +1047,6 @@ def render_executive_report_html(snapshot: dict) -> str:
       </div>
     </section>
 
-    <!-- Survey Satisfaction -->
-    <section>
-      <h2 class="text-lg font-semibold text-stone-700 mb-4">Survey Satisfaction — Received {escape(str(snapshot.get("satisfaction_period_label", week_range)))}</h2>
-      <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <div class="bg-white rounded-lg border border-stone-200 overflow-hidden">
-          <table class="w-full">
-            <thead class="bg-stone-50 border-b border-stone-200">
-              <tr>
-                <th class="px-4 py-3 text-left text-xs font-semibold text-stone-500 uppercase">Response</th>
-                <th class="px-4 py-3 text-right text-xs font-semibold text-stone-500 uppercase">Count</th>
-                <th class="px-4 py-3 text-left text-xs font-semibold text-stone-500 uppercase">Share</th>
-              </tr>
-            </thead>
-            <tbody>{sat_rows}</tbody>
-          </table>
-        </div>
-        <div class="bg-white rounded-lg border border-stone-200 overflow-hidden">
-          <table class="w-full">
-            <thead class="bg-stone-50 border-b border-stone-200">
-              <tr>
-                <th class="px-4 py-3 text-left text-xs font-semibold text-stone-500 uppercase">Month</th>
-                <th class="px-4 py-3 text-right text-xs font-semibold text-stone-500 uppercase">Surveys</th>
-                <th class="px-4 py-3 text-right text-xs font-semibold text-stone-500 uppercase">% Positive</th>
-              </tr>
-            </thead>
-            <tbody>{trend_rows}</tbody>
-          </table>
-        </div>
-      </div>
-    </section>
-
     <!-- Customer Effort -->
     <section>
       <h2 class="text-lg font-semibold text-stone-700 mb-4">Customer Effort — {effort_period}</h2>
