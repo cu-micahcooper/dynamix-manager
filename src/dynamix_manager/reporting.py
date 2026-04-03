@@ -819,9 +819,10 @@ def write_ticket_health_report(
     return output_path
 
 
-def _executive_kpi_card(label: str, value: str, sub: str = "", detail_html: str = "") -> str:
-    # label and sub are developer-controlled strings; value is escaped since it may contain arbitrary data
+def _executive_kpi_card(label: str, value: str, sub: str = "", sub2: str = "", detail_html: str = "") -> str:
+    # label, sub, sub2 are developer-controlled strings; value is escaped since it may contain arbitrary data
     sub_html = f'<p class="text-sm text-stone-500 mt-1">{sub}</p>' if sub else ""
+    sub_html += f'<p class="text-sm text-stone-400 mt-0.5">{sub2}</p>' if sub2 else ""
     detail = (
         f'<details class="mt-3 text-xs">'
         f'<summary class="cursor-pointer text-blue-600 hover:underline select-none">Show details</summary>'
@@ -910,7 +911,7 @@ def render_executive_report_html(snapshot: dict) -> str:
 
     kpi_cards = "\n".join([
         _executive_kpi_card(
-            "New Tickets", str(new_tickets), f"{week_range} · {ww_str}",
+            "New Tickets", str(new_tickets), week_range, ww_str,
             detail_html=_ticket_table(snapshot.get("new_tickets_detail", []), tdx_base_url),
         ),
         _executive_kpi_card("Avg Weekly Tickets", f"{avg_weekly:.1f}", "all-time baseline"),
