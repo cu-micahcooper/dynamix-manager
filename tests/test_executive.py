@@ -231,16 +231,23 @@ def test_top_services_returns_top_5_by_count():
     assert snapshot["top_services"][1] == {"service_name": "Network", "count": 3}
 
 
-def test_median_first_response_hours_computed_from_created_and_responded_at():
+def test_median_first_response_hours_this_week_and_all_time():
+    # as_of = Apr 2 (Thu); week starts Mar 30 (Mon)
     tickets = pd.DataFrame([
-        {"created_at": "2026-03-30T08:00:00Z", "responded_at": "2026-03-31T08:00:00Z"},  # 24 calendar hours
-        {"created_at": "2026-03-30T08:00:00Z", "responded_at": "2026-04-01T08:00:00Z"},  # 48 calendar hours
-        {"created_at": "2026-03-30T08:00:00Z", "responded_at": "2026-04-02T08:00:00Z"},  # 72 calendar hours
+        # responded this week
+        {"created_at": "2026-03-30T08:00:00Z", "responded_at": "2026-03-31T08:00:00Z"},  # 24h, responded Mon→Tue
+        {"created_at": "2026-03-30T08:00:00Z", "responded_at": "2026-04-01T08:00:00Z"},  # 48h, responded Mon→Wed
+        # responded before this week
+        {"created_at": "2026-03-10T08:00:00Z", "responded_at": "2026-03-12T08:00:00Z"},  # 48h, prior week
+        {"created_at": "2026-03-10T08:00:00Z", "responded_at": "2026-03-14T08:00:00Z"},  # 96h, prior week
     ])
-    snapshot = summarize_executive_snapshot(
-        tickets, pd.DataFrame(), as_of=pd.Timestamp("2026-04-02", tz="UTC")
-    )
-    assert snapshot["median_first_response_hours"] == pytest.approx(48.0)
+    as_of = pd.Timestamp("2026-04-02", tz="UTC")
+    snapshot = summarize_executive_snapshot(tickets, pd.DataFrame(), as_of=as_of)
+
+    # this week: [24, 48] → median 36h
+    assert snapshot["median_first_response_hours_this_week"] == pytest.approx(36.0)
+    # all time: [24, 48, 48, 96] → median 48h
+    assert snapshot["median_first_response_hours_all_time"] == pytest.approx(48.0)
 
 
 def test_unassigned_count_only_counts_open_tickets():

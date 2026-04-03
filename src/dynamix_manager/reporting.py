@@ -893,7 +893,8 @@ def render_executive_report_html(snapshot: dict) -> str:
     sla_rate = snapshot.get("sla_compliance_rate")
     stale = snapshot.get("stale_open_count", 0)
     unassigned = snapshot.get("unassigned_count", 0)
-    median_response = snapshot.get("median_first_response_hours")
+    median_response_tw = snapshot.get("median_first_response_hours_this_week")
+    median_response_all = snapshot.get("median_first_response_hours_all_time")
 
     ww_str = (
         f"{ww_delta:+.1f}% vs {prior_week_range}"
@@ -901,7 +902,8 @@ def render_executive_report_html(snapshot: dict) -> str:
         else f"no data for {prior_week_range}"
     )
     sla_str = f"{sla_rate * 100:.0f}%" if sla_rate is not None else "N/A"
-    response_str = f"{median_response:.1f} hrs" if median_response is not None else "N/A"
+    response_tw_str = f"{median_response_tw:.1f} hrs" if median_response_tw is not None else "N/A"
+    response_all_str = f"{median_response_all:.1f} hrs" if median_response_all is not None else "N/A"
     easy_rate = snapshot.get("customer_effort_easy_rate")
     effort_str = f"{easy_rate * 100:.0f}% easy" if easy_rate is not None else "N/A"
     effort_period = escape(str(snapshot.get("customer_effort_period_label", "")))
@@ -921,7 +923,7 @@ def render_executive_report_html(snapshot: dict) -> str:
             "Unassigned Open", str(unassigned), f"as of {as_of_label}",
             detail_html=_ticket_table(snapshot.get("unassigned_tickets_detail", []), tdx_base_url),
         ),
-        _executive_kpi_card("Median First Response", response_str, "all-time"),
+        _executive_kpi_card("Median First Response", response_tw_str, f"{week_range} · all-time: {response_all_str}"),
         _executive_kpi_card("Customer Effort", effort_str, f"easy or very easy · {effort_period}"),
     ])
 

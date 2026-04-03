@@ -320,11 +320,18 @@ def summarize_executive_snapshot(
         _mask = _responded.notna() & _created.notna() & (_responded > _created)
         if _mask.any():
             _hours = (_responded[_mask] - _created[_mask]).dt.total_seconds() / 3600
-            result["median_first_response_hours"] = float(_hours.median())
+            result["median_first_response_hours_all_time"] = float(_hours.median())
+            _tw_mask = _mask & (_responded >= ws) & (_responded <= as_of)
+            result["median_first_response_hours_this_week"] = (
+                float(((_responded[_tw_mask] - _created[_tw_mask]).dt.total_seconds() / 3600).median())
+                if _tw_mask.any() else None
+            )
         else:
-            result["median_first_response_hours"] = None
+            result["median_first_response_hours_all_time"] = None
+            result["median_first_response_hours_this_week"] = None
     else:
-        result["median_first_response_hours"] = None
+        result["median_first_response_hours_all_time"] = None
+        result["median_first_response_hours_this_week"] = None
 
     # --- unassigned open count ---
     if not tickets.empty:

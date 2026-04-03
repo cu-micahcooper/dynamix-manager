@@ -31,7 +31,8 @@ def _sample_snapshot():
         "satisfaction_trend": [
             {"month": "2026-03", "positive_rate": 0.85, "total": 50},
         ],
-        "median_first_response_hours": 2.5,
+        "median_first_response_hours_this_week": 2.5,
+        "median_first_response_hours_all_time": 4.0,
         "unassigned_count": 7,
         "week_label": "Mar 30 – Apr 5",
         "week_range_label": "Mar 30 – Apr 1",
@@ -56,7 +57,8 @@ def test_render_executive_report_html_includes_kpi_values():
     assert "87" in html                    # SLA compliance (87%)
     assert "3" in html                     # stale open
     assert "7" in html                     # unassigned
-    assert "2.5" in html                   # median response
+    assert "2.5" in html                   # median response this week
+    assert "4.0" in html                   # median response all time
 
 
 def test_render_executive_report_html_includes_satisfaction_table():
