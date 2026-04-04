@@ -68,6 +68,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Generate the executive snapshot report from cached data",
     )
 
+    # generate-email
+    subparsers.add_parser(
+        "generate-email",
+        help="Generate the executive email HTML from cached data",
+    )
+
     return parser
 
 
@@ -120,6 +126,10 @@ def main() -> None:
 
     elif args.command == "generate-report":
         result = pipeline.generate_executive_report(config=config, client=client)
+        print(json.dumps(result, indent=2))
+
+    elif args.command == "generate-email":
+        result = pipeline.generate_executive_email(config=config)
         print(json.dumps(result, indent=2))
 
     else:

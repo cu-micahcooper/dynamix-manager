@@ -295,10 +295,16 @@ def summarize_executive_snapshot(
         result["stale_open_count"] = 0
         result["stale_tickets_detail"] = []
 
-    # --- top services ---
+    # --- top services (this week only) ---
     if not tickets.empty and "service_name" in tickets.columns:
+        if "created_at" in tickets.columns:
+            _svc_created = _parse_created_at(tickets)
+            _svc_mask = (_svc_created >= ws) & (_svc_created <= as_of)
+            _svc_df = tickets.loc[_svc_mask]
+        else:
+            _svc_df = tickets
         top = (
-            tickets["service_name"]
+            _svc_df["service_name"]
             .dropna()
             .value_counts()
             .head(5)

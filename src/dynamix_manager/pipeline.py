@@ -17,6 +17,7 @@ from dynamix_manager.reporting import (
     write_survey_health_report,
     write_ticket_health_report,
     write_ticket_quality_report,
+    write_executive_email,
     write_executive_report,
 )
 from dynamix_manager.storage import read_table, replace_table, table_exists
@@ -395,6 +396,38 @@ def generate_executive_report(
         "report_written": int(report_path.exists()),
         "new_tickets_this_week": snapshot["new_tickets_this_week"],
         "avg_weekly_tickets": snapshot["avg_weekly_tickets_created"],
+        "stale_open_count": snapshot["stale_open_count"],
+    }
+
+
+def generate_executive_email(
+    config: RuntimeConfig,
+) -> dict[str, object]:
+    """Render the executive email HTML from cached data (no live sync)."""
+    tickets = read_table(config.db_path, "tickets") if table_exists(config.db_path, "tickets") else pd.DataFrame()
+    surveys = (
+        read_table(config.db_path, "survey_responses")
+        if table_exists(config.db_path, "survey_responses")
+        else pd.DataFrame()
+    )
+    days_off = (
+        read_table(config.db_path, "days_off")
+        if table_exists(config.db_path, "days_off")
+        else pd.DataFrame(columns=["holiday_date"])
+    )
+
+    snapshot = summarize_executive_snapshot(
+        tickets, surveys, days_off=days_off, tdx_base_url=config.base_url
+    )
+
+    artifact_root = _artifact_root(config)
+    email_path = artifact_root / "reports" / "executive_email.html"
+    write_executive_email(snapshot, email_path)
+
+    return {
+        "email_written": int(email_path.exists()),
+        "email_path": str(email_path),
+        "new_tickets_this_week": snapshot["new_tickets_this_week"],
         "stale_open_count": snapshot["stale_open_count"],
     }
 

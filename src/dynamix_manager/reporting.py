@@ -822,30 +822,30 @@ def write_ticket_health_report(
 def _executive_kpi_card(label: str, value: str, sub: str = "", sub2: str = "", detail_html: str = "") -> str:
     # label, sub, sub2 are developer-controlled strings; value is escaped since it may contain arbitrary data
     sub_html = (
-        f'<p style="font-family:\'myriad-pro\',sans-serif; font-size:0.75rem; '
-        f'color:rgba(255,255,255,0.5); margin-top:0.35rem; letter-spacing:0.02em;">{sub}</p>'
+        f'<p style="font-family:\'myriad-pro\',sans-serif; font-size:0.76rem; '
+        f'color:#6b7c93; margin-top:0.3rem; letter-spacing:0.01em;">{sub}</p>'
     ) if sub else ""
     sub_html += (
-        f'<p style="font-family:\'myriad-pro\',sans-serif; font-size:0.72rem; '
-        f'color:rgba(251,185,58,0.65); margin-top:0.15rem;">{sub2}</p>'
+        f'<p style="font-family:\'myriad-pro\',sans-serif; font-size:0.73rem; '
+        f'color:#8a9bb0; margin-top:0.1rem;">{sub2}</p>'
     ) if sub2 else ""
     detail = (
-        f'<details style="margin-top:0.85rem;">'
+        f'<details style="margin-top:0.8rem;">'
         f'<summary style="cursor:pointer; font-family:\'myriad-pro\',sans-serif; font-size:0.68rem; '
-        f'color:rgba(251,185,58,0.75); letter-spacing:0.1em; text-transform:uppercase; '
+        f'color:#8a9bb0; letter-spacing:0.08em; text-transform:uppercase; '
         f'list-style:none; user-select:none;">&#9656; Show details</summary>'
-        f'<div style="margin-top:0.6rem; overflow-x:auto;">{detail_html}</div>'
+        f'<div style="margin-top:0.5rem; overflow-x:auto;">{detail_html}</div>'
         f'</details>'
     ) if detail_html else ""
     return (
-        f'<div style="padding:1.4rem 1.6rem; background:rgba(0,0,0,0.18); '
-        f'border:1px solid rgba(251,185,58,0.1); border-top:2px solid rgba(251,185,58,0.45); '
-        f'animation:fadeUp 0.5s ease both;">'
-        f'<p style="font-family:\'myriad-pro\',sans-serif; font-size:0.65rem; font-weight:600; '
-        f'color:rgba(255,255,255,0.45); text-transform:uppercase; letter-spacing:0.14em; '
-        f'margin-bottom:0.5rem;">{label}</p>'
-        f'<p style="font-family:\'myriad-pro\',sans-serif; font-size:2.4rem; font-weight:700; '
-        f'color:#FBB93A; line-height:1; letter-spacing:-0.02em;">{escape(value)}</p>'
+        f'<div style="padding:1.5rem 1.75rem; background:#fff; '
+        f'border:1px solid #e4e8ee; border-top:3px solid #003963; '
+        f'box-shadow:0 1px 4px rgba(0,57,99,0.06); animation:fadeUp 0.5s ease both;">'
+        f'<p style="font-family:\'myriad-pro\',sans-serif; font-size:0.64rem; font-weight:600; '
+        f'color:#8a9bb0; text-transform:uppercase; letter-spacing:0.14em; '
+        f'margin-bottom:0.45rem;">{label}</p>'
+        f'<p style="font-family:\'myriad-pro\',sans-serif; font-size:2.25rem; font-weight:700; '
+        f'color:#003963; line-height:1; letter-spacing:-0.02em;">{escape(value)}</p>'
         f"{sub_html}{detail}"
         f"</div>"
     )
@@ -853,14 +853,14 @@ def _executive_kpi_card(label: str, value: str, sub: str = "", sub2: str = "", d
 
 def _ticket_table(rows: list[dict], tdx_base_url: str | None) -> str:
     """Build a compact HTML table from ticket detail rows."""
-    _th = ('style="text-align:left; padding:0.3rem 0.6rem; font-family:\'myriad-pro\',sans-serif; '
-           'font-size:0.62rem; font-weight:600; color:rgba(255,255,255,0.35); text-transform:uppercase; '
-           'letter-spacing:0.1em; border-bottom:1px solid rgba(251,185,58,0.15);"')
-    _td = 'style="padding:0.3rem 0.6rem; font-size:0.72rem; color:rgba(255,255,255,0.7); border-bottom:1px solid rgba(255,255,255,0.05);"'
-    _td_nb = 'style="padding:0.3rem 0.6rem; font-size:0.72rem; color:rgba(255,255,255,0.7); white-space:nowrap; border-bottom:1px solid rgba(255,255,255,0.05);"'
+    _th = ('style="text-align:left; padding:0.3rem 0.5rem; font-family:\'myriad-pro\',sans-serif; '
+           'font-size:0.6rem; font-weight:600; color:#8a9bb0; text-transform:uppercase; '
+           'letter-spacing:0.1em; border-bottom:1px solid #e4e8ee;"')
+    _td = 'style="padding:0.3rem 0.5rem; font-size:0.72rem; font-family:\'minion-pro\',serif; color:#3a4a5c; border-bottom:1px solid #f0f2f5;"'
+    _td_nb = 'style="padding:0.3rem 0.5rem; font-size:0.72rem; font-family:\'minion-pro\',serif; color:#3a4a5c; white-space:nowrap; border-bottom:1px solid #f0f2f5;"'
 
     if not rows:
-        return f'<p style="font-family:\'myriad-pro\',sans-serif; font-size:0.72rem; color:rgba(255,255,255,0.3); padding:0.4rem 0;">No tickets</p>'
+        return '<p style="font-family:\'myriad-pro\',sans-serif; font-size:0.72rem; color:#aab4c0; padding:0.4rem 0;">No tickets</p>'
 
     def _link(row: dict) -> str:
         tid = row.get("ticket_id")
@@ -869,12 +869,12 @@ def _ticket_table(rows: list[dict], tdx_base_url: str | None) -> str:
             org = str(tdx_base_url).rstrip("/").removesuffix("/TDWebApi")
             url = f"{org}/TDNext/Apps/{int(app_id)}/Tickets/TicketDet?TicketID={int(tid)}"
             return (f'<a href="{escape(url)}" target="_blank" '
-                    f'style="color:#FBB93A; text-decoration:none; border-bottom:1px solid rgba(251,185,58,0.35);">'
+                    f'style="color:#003963; text-decoration:none; border-bottom:1px solid rgba(0,57,99,0.25);">'
                     f'{escape(str(int(tid)))}</a>')
         return escape(str(tid or ""))
 
     header = (
-        f'<table style="width:100%; border-collapse:collapse; font-family:\'minion-pro\',serif;">'
+        f'<table style="width:100%; border-collapse:collapse;">'
         f'<thead><tr>'
         f'<th {_th}>ID</th><th {_th}>Title</th>'
         f'<th {_th}>Service</th><th {_th}>Assignee</th>'
@@ -921,7 +921,7 @@ def render_executive_report_html(snapshot: dict) -> str:
     response_tw_str = f"{median_response_tw:.1f} hrs" if median_response_tw is not None else "N/A"
     response_all_str = f"{median_response_all:.1f} hrs" if median_response_all is not None else "N/A"
     easy_rate = snapshot.get("customer_effort_easy_rate")
-    effort_str = f"{easy_rate * 100:.0f}% easy" if easy_rate is not None else "N/A"
+    effort_str = f"{easy_rate * 100:.0f}%" if easy_rate is not None else "N/A"
     effort_period = escape(str(snapshot.get("customer_effort_period_label", "")))
 
     kpi_cards = "\n".join([
@@ -981,10 +981,10 @@ def render_executive_report_html(snapshot: dict) -> str:
         trend_rows = '<tr><td class="px-4 py-3 text-stone-500" colspan="3">No trend data</td></tr>'
 
     # customer effort table rows
-    _td_e = ('style="padding:0.7rem 1rem; font-family:\'minion-pro\',serif; '
-             'font-size:0.88rem; color:rgba(255,255,255,0.8); border-bottom:1px solid rgba(255,255,255,0.06);"')
-    _td_e_r = ('style="padding:0.7rem 1rem; font-family:\'myriad-pro\',sans-serif; '
-               'font-size:0.88rem; color:#FBB93A; text-align:right; border-bottom:1px solid rgba(255,255,255,0.06);"')
+    _td_e = ('style="padding:0.65rem 0.9rem; font-family:\'minion-pro\',serif; '
+             'font-size:0.9rem; color:#2c3a4a; border-bottom:1px solid #f0f2f5;"')
+    _td_e_r = ('style="padding:0.65rem 0.9rem; font-family:\'myriad-pro\',sans-serif; font-weight:600; '
+               'font-size:0.88rem; color:#003963; text-align:right; border-bottom:1px solid #f0f2f5;"')
     effort_label_order = ["Very Easy", "Easy", "Difficult", "Very Difficult"]
     effort_counts = snapshot.get("customer_effort_counts", {})
     total_effort = sum(effort_counts.values()) or 1
@@ -992,28 +992,27 @@ def render_executive_report_html(snapshot: dict) -> str:
     for lbl in effort_label_order:
         count = effort_counts.get(lbl, 0)
         pct = count / total_effort * 100
-        bar_color = "#FBB93A" if lbl in ("Very Easy", "Easy") else "#F59536"
+        bar_color = "#003963" if lbl in ("Very Easy", "Easy") else "#F59536"
         effort_rows += (
             f'<tr>'
             f'<td {_td_e}>{escape(lbl)}</td>'
             f'<td {_td_e_r}>{escape(str(count))}</td>'
-            f'<td style="padding:0.7rem 1rem; border-bottom:1px solid rgba(255,255,255,0.06); width:140px;">'
-            f'  <div style="height:4px; background:rgba(255,255,255,0.08); border-radius:2px;">'
-            f'    <div style="height:4px; background:{bar_color}; border-radius:2px; width:{int(pct)}%; '
-            f'         transition:width 0.8s ease;"></div>'
+            f'<td style="padding:0.65rem 0.9rem; border-bottom:1px solid #f0f2f5; width:120px;">'
+            f'  <div style="height:3px; background:#e8ecf0; border-radius:2px;">'
+            f'    <div style="height:3px; background:{bar_color}; border-radius:2px; width:{int(pct)}%;"></div>'
             f'  </div>'
             f'</td>'
             f'</tr>'
         )
     if not effort_rows:
         effort_rows = (f'<tr><td colspan="3" style="padding:1rem; font-family:\'myriad-pro\',sans-serif; '
-                       f'font-size:0.8rem; color:rgba(255,255,255,0.3);">No effort data</td></tr>')
+                       f'font-size:0.8rem; color:#aab4c0;">No effort data</td></tr>')
 
     # top services table rows
-    _td_s = ('style="padding:0.7rem 1rem; font-family:\'minion-pro\',serif; '
-             'font-size:0.88rem; color:rgba(255,255,255,0.8); border-bottom:1px solid rgba(255,255,255,0.06);"')
-    _td_s_r = ('style="padding:0.7rem 1rem; font-family:\'myriad-pro\',sans-serif; font-weight:600; '
-               'font-size:0.88rem; color:#FBB93A; text-align:right; border-bottom:1px solid rgba(255,255,255,0.06);"')
+    _td_s = ('style="padding:0.65rem 0.9rem; font-family:\'minion-pro\',serif; '
+             'font-size:0.9rem; color:#2c3a4a; border-bottom:1px solid #f0f2f5;"')
+    _td_s_r = ('style="padding:0.65rem 0.9rem; font-family:\'myriad-pro\',sans-serif; font-weight:600; '
+               'font-size:0.88rem; color:#003963; text-align:right; border-bottom:1px solid #f0f2f5;"')
     service_rows = ""
     for svc in snapshot.get("top_services", []):
         service_rows += (
@@ -1024,7 +1023,7 @@ def render_executive_report_html(snapshot: dict) -> str:
         )
     if not service_rows:
         service_rows = (f'<tr><td colspan="2" style="padding:1rem; font-family:\'myriad-pro\',sans-serif; '
-                        f'font-size:0.8rem; color:rgba(255,255,255,0.3);">No service data</td></tr>')
+                        f'font-size:0.8rem; color:#aab4c0;">No service data</td></tr>')
 
     # plotly data — escape </script> injection
     buckets_tw = snapshot.get("completion_hours_this_week", [])
@@ -1046,9 +1045,12 @@ def render_executive_report_html(snapshot: dict) -> str:
     _th_style = ('style="padding:0.6rem 1rem; font-family:\'myriad-pro\',sans-serif; font-size:0.62rem; '
                  'font-weight:600; color:rgba(255,255,255,0.35); text-transform:uppercase; letter-spacing:0.12em; '
                  'text-align:left; border-bottom:1px solid rgba(251,185,58,0.15);"')
-    _th_style_r = ('style="padding:0.6rem 1rem; font-family:\'myriad-pro\',sans-serif; font-size:0.62rem; '
-                   'font-weight:600; color:rgba(255,255,255,0.35); text-transform:uppercase; letter-spacing:0.12em; '
-                   'text-align:right; border-bottom:1px solid rgba(251,185,58,0.15);"')
+    _th_style_r = ('style="padding:0.6rem 0.9rem; font-family:\'myriad-pro\',sans-serif; font-size:0.6rem; '
+                   'font-weight:600; color:#8a9bb0; text-transform:uppercase; letter-spacing:0.12em; '
+                   'text-align:right; border-bottom:1px solid #e4e8ee;"')
+    _th_style = ('style="padding:0.6rem 0.9rem; font-family:\'myriad-pro\',sans-serif; font-size:0.6rem; '
+                 'font-weight:600; color:#8a9bb0; text-transform:uppercase; letter-spacing:0.12em; '
+                 'text-align:left; border-bottom:1px solid #e4e8ee;"')
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -1059,143 +1061,129 @@ def render_executive_report_html(snapshot: dict) -> str:
   <link rel="stylesheet" href="https://use.typekit.net/apf8ssc.css" />
   <script src="https://cdn.plot.ly/plotly-3.4.0.min.js"></script>
   <style>
-    :root {{
-      --cu-blue:   #003963;
-      --cu-blue-dk:#002843;
-      --cu-blue-md:#004d82;
-      --cu-gold:   #FBB93A;
-      --cu-orange: #F59536;
-    }}
     *, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
     html {{ scroll-behavior: smooth; }}
     body {{
-      background: var(--cu-blue-dk);
-      color: #fff;
+      background: #f4f6f8;
+      color: #1a2534;
       font-family: 'minion-pro', Georgia, serif;
       font-size: 16px;
       line-height: 1.65;
       min-height: 100vh;
     }}
-    /* Subtle noise grain */
-    body::after {{
-      content: '';
-      position: fixed;
-      inset: 0;
-      background-image: url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAADIAAAAyCAYAAAAeP4ixAAAABmJLR0QA/wD/AP+gvaeTAAAACXBIWXMAAA7EAAAOxAGVKw4bAAAAB3RJTUUH4QMQEiAZ7MrQKAAAAB1pVFh0Q29tbWVudAAAAAAAQ3JlYXRlZCB3aXRoIEdJTVBkLmUHAAAA+0lEQVRo3u3ZMQ6CQBCF4d+9hIWJFxDvYuMFPIKJiYknsLCwMPECJiYmJiYeQA8gJiYmJiYmJiYmJiYmJiY+VELZvd2d3Z3Z3dm9WTsBAAAAAAAAAAAAYLz3H+j9B3r/gd5/oPcf6P0Hev+B3n+g9x/o/Qd6/4Hef6D3H+j9B3r/gd5/oPcf6P0Hev+B3n+g9x/o/Qd6/4Hef6D3H+j9B3r/gd5/oPcf6P0Hev+B3n+g9x/o/Qd6/4Hef6D3H+j9B3r/gd5/oPcf6P0Hev+B3n+g9x/o/Qd6/4Hef6D3H+j9B3r/gd5/oPcf6P0Hev+B3n+g9x/o/Qd6/4Hef6D3H+j9B3o/AL8P1gAAAAAAAAAAAC8DAAAAAAAAAAAACwAAAAAAAAAAAACK7B8A");
-      opacity: 0.025;
-      pointer-events: none;
-      z-index: 9999;
-    }}
     @keyframes fadeUp {{
-      from {{ opacity: 0; transform: translateY(10px); }}
+      from {{ opacity: 0; transform: translateY(8px); }}
       to   {{ opacity: 1; transform: translateY(0); }}
     }}
-    .section-label {{
+    .section-eyebrow {{
       font-family: 'myriad-pro', sans-serif;
-      font-size: 0.62rem;
+      font-size: 0.6rem;
       font-weight: 600;
-      color: rgba(251,185,58,0.6);
+      color: #8a9bb0;
       text-transform: uppercase;
-      letter-spacing: 0.2em;
-      margin-bottom: 0.5rem;
+      letter-spacing: 0.18em;
+      margin-bottom: 0.4rem;
     }}
-    .section-title {{
+    .section-heading {{
       font-family: 'myriad-pro', sans-serif;
-      font-size: 1.05rem;
+      font-size: 1rem;
       font-weight: 600;
-      color: rgba(255,255,255,0.9);
-      letter-spacing: 0.01em;
-      margin-bottom: 1.25rem;
-      padding-bottom: 0.6rem;
-      border-bottom: 1px solid rgba(251,185,58,0.18);
+      color: #003963;
+      letter-spacing: 0.005em;
+      margin-bottom: 1.2rem;
+      padding-bottom: 0.55rem;
+      border-bottom: 1px solid #d8dfe8;
+    }}
+    .card {{
+      background: #fff;
+      border: 1px solid #e4e8ee;
+      box-shadow: 0 1px 3px rgba(0,57,99,0.06);
     }}
     .data-table {{ width: 100%; border-collapse: collapse; }}
     details summary::-webkit-details-marker {{ display: none; }}
-    details[open] summary {{ color: rgba(251,185,58,0.95); }}
+    details[open] > summary {{ color: #003963; }}
   </style>
 </head>
 <body>
 
-  <!-- Header -->
-  <header style="background:var(--cu-blue); border-bottom:1px solid rgba(251,185,58,0.2); padding:2.5rem 3rem 2rem;">
+  <!-- Header: CU Blue band -->
+  <header style="background:#003963; padding:2rem 3rem 1.75rem;">
     <div style="max-width:1100px; margin:0 auto;">
-      <p style="font-family:'myriad-pro',sans-serif; font-size:0.62rem; font-weight:600;
-                color:rgba(251,185,58,0.6); text-transform:uppercase; letter-spacing:0.2em;
-                margin-bottom:0.5rem;">Cedarville University · Information Technology</p>
-      <h1 style="font-family:'myriad-pro',sans-serif; font-size:2rem; font-weight:700;
-                 color:#fff; letter-spacing:0.01em; line-height:1.1;">
-        Executive Report
-      </h1>
-      <div style="margin-top:0.6rem; display:flex; gap:2rem; align-items:baseline; flex-wrap:wrap;">
-        <span style="font-family:'minion-pro',serif; font-style:italic;
-                     font-size:1rem; color:var(--cu-gold);">Week of {week_label}</span>
-        <span style="font-family:'myriad-pro',sans-serif; font-size:0.72rem;
-                     color:rgba(255,255,255,0.35); letter-spacing:0.04em;">Generated {generated_at}</span>
+      <p style="font-family:'myriad-pro',sans-serif; font-size:0.6rem; font-weight:600;
+                color:rgba(251,185,58,0.75); text-transform:uppercase; letter-spacing:0.2em;
+                margin-bottom:0.45rem;">Cedarville University &nbsp;·&nbsp; Information Technology</p>
+      <h1 style="font-family:'myriad-pro',sans-serif; font-size:1.85rem; font-weight:700;
+                 color:#fff; letter-spacing:0.01em; line-height:1.15;">IT Executive Report</h1>
+      <div style="margin-top:0.55rem; display:flex; gap:1.75rem; align-items:baseline; flex-wrap:wrap;">
+        <span style="font-family:'minion-pro',serif; font-style:italic; font-size:0.95rem;
+                     color:#FBB93A;">Week of {week_label}</span>
+        <span style="font-family:'myriad-pro',sans-serif; font-size:0.7rem;
+                     color:rgba(255,255,255,0.4); letter-spacing:0.03em;">Generated {generated_at}</span>
       </div>
     </div>
   </header>
+  <!-- Thin gold rule under header -->
+  <div style="height:3px; background:linear-gradient(to right,#FBB93A,#F59536 40%,transparent);"></div>
 
-  <main style="max-width:1100px; margin:0 auto; padding:3rem 3rem 4rem;">
+  <main style="max-width:1100px; margin:0 auto; padding:2.5rem 3rem 4rem;">
 
     <!-- ── AT A GLANCE ── -->
-    <section style="margin-bottom:3.5rem; animation:fadeUp 0.4s ease both;">
-      <p class="section-label">At a Glance</p>
-      <div style="display:grid; grid-template-columns:repeat(auto-fill,minmax(200px,1fr)); gap:1px;
-                  background:rgba(251,185,58,0.08); border:1px solid rgba(251,185,58,0.08);">
+    <section style="margin-bottom:3rem; animation:fadeUp 0.4s ease both;">
+      <p class="section-eyebrow">At a Glance</p>
+      <div style="display:grid; grid-template-columns:repeat(auto-fill,minmax(195px,1fr)); gap:1rem;">
         {kpi_cards}
       </div>
     </section>
 
     <!-- ── COMPLETION TIME ── -->
-    <section style="margin-bottom:3.5rem; animation:fadeUp 0.5s ease 0.1s both;">
-      <p class="section-label">Ticket Volume</p>
-      <p class="section-title">Completion Time &ensp;—&ensp; {week_range} vs All Time</p>
-      <div style="background:rgba(0,0,0,0.18); border:1px solid rgba(251,185,58,0.1); padding:1rem 0.5rem;">
-        <div id="completion-chart" style="height:320px;"></div>
+    <section style="margin-bottom:3rem; animation:fadeUp 0.45s ease 0.05s both;">
+      <p class="section-eyebrow">Ticket Volume</p>
+      <p class="section-heading">Completion Time &ensp;—&ensp; {week_range} vs All Time</p>
+      <div class="card" style="padding:1rem 0.5rem;">
+        <div id="completion-chart" style="height:300px;"></div>
       </div>
     </section>
 
-    <!-- ── CUSTOMER EFFORT + TOP SERVICES (side by side) ── -->
-    <section style="margin-bottom:3.5rem; animation:fadeUp 0.5s ease 0.2s both;
+    <!-- ── CUSTOMER EFFORT + TOP SERVICES ── -->
+    <section style="margin-bottom:3rem; animation:fadeUp 0.45s ease 0.1s both;
                     display:grid; grid-template-columns:1fr 1fr; gap:2rem;">
 
       <div>
-        <p class="section-label">Survey Results</p>
-        <p class="section-title">Customer Effort &ensp;—&ensp; {effort_period}</p>
-        <table class="data-table">
-          <thead>
-            <tr>
+        <p class="section-eyebrow">Survey Results</p>
+        <p class="section-heading">Customer Effort &ensp;—&ensp; {effort_period}</p>
+        <div class="card">
+          <table class="data-table">
+            <thead><tr>
               <th {_th_style}>Effort Level</th>
               <th {_th_style_r}>Count</th>
               <th {_th_style}>Share</th>
-            </tr>
-          </thead>
-          <tbody>{effort_rows}</tbody>
-        </table>
+            </tr></thead>
+            <tbody>{effort_rows}</tbody>
+          </table>
+        </div>
       </div>
 
       <div>
-        <p class="section-label">Ticket Breakdown</p>
-        <p class="section-title">Top Request Categories &ensp;—&ensp; All Time</p>
-        <table class="data-table">
-          <thead>
-            <tr>
+        <p class="section-eyebrow">Ticket Breakdown</p>
+        <p class="section-heading">Top Request Categories &ensp;—&ensp; {week_range}</p>
+        <div class="card">
+          <table class="data-table">
+            <thead><tr>
               <th {_th_style}>Service</th>
               <th {_th_style_r}>Tickets</th>
-            </tr>
-          </thead>
-          <tbody>{service_rows}</tbody>
-        </table>
+            </tr></thead>
+            <tbody>{service_rows}</tbody>
+          </table>
+        </div>
       </div>
 
     </section>
 
   </main>
 
-  <footer style="border-top:1px solid rgba(251,185,58,0.12); padding:1.5rem 3rem;
-                 text-align:center; font-family:'myriad-pro',sans-serif;
-                 font-size:0.65rem; color:rgba(255,255,255,0.2); letter-spacing:0.08em;
-                 text-transform:uppercase;">
+  <footer style="border-top:1px solid #d8dfe8; padding:1.25rem 3rem;
+                 font-family:'myriad-pro',sans-serif; font-size:0.62rem;
+                 color:#aab4c0; letter-spacing:0.07em; text-transform:uppercase;">
     Cedarville University Information Technology &nbsp;·&nbsp; Confidential
   </footer>
 
@@ -1209,34 +1197,34 @@ def render_executive_report_html(snapshot: dict) -> str:
           x: d.labels,
           y: d.all_time,
           name: 'All Time',
-          marker: {{ color: 'rgba(251,185,58,0.35)' }},
+          marker: {{ color: '#c8d5e0' }},
         }},
         {{
           type: 'bar',
           x: d.labels,
           y: d.this_week,
           name: d.this_week_label,
-          marker: {{ color: '#FBB93A' }},
+          marker: {{ color: '#003963' }},
         }},
       ];
       var layout = {{
         barmode: 'group',
-        margin: {{ t: 16, r: 16, b: 80, l: 56 }},
+        margin: {{ t: 12, r: 16, b: 80, l: 52 }},
         xaxis: {{
-          title: {{ text: 'Business Hours', font: {{ family: 'myriad-pro, sans-serif', size: 11, color: 'rgba(255,255,255,0.4)' }} }},
-          tickfont: {{ family: 'myriad-pro, sans-serif', size: 11, color: 'rgba(255,255,255,0.5)' }},
-          gridcolor: 'rgba(255,255,255,0.05)',
+          title: {{ text: 'Business Hours', font: {{ family: 'myriad-pro, sans-serif', size: 11, color: '#8a9bb0' }} }},
+          tickfont: {{ family: 'myriad-pro, sans-serif', size: 11, color: '#8a9bb0' }},
+          gridcolor: '#edf0f4', linecolor: '#d8dfe8',
         }},
         yaxis: {{
-          title: {{ text: '% of Tickets', font: {{ family: 'myriad-pro, sans-serif', size: 11, color: 'rgba(255,255,255,0.4)' }} }},
+          title: {{ text: '% of Tickets', font: {{ family: 'myriad-pro, sans-serif', size: 11, color: '#8a9bb0' }} }},
           ticksuffix: '%',
           zeroline: false,
-          tickfont: {{ family: 'myriad-pro, sans-serif', size: 11, color: 'rgba(255,255,255,0.5)' }},
-          gridcolor: 'rgba(255,255,255,0.06)',
+          tickfont: {{ family: 'myriad-pro, sans-serif', size: 11, color: '#8a9bb0' }},
+          gridcolor: '#edf0f4',
         }},
         legend: {{
           orientation: 'h', y: -0.28,
-          font: {{ family: 'myriad-pro, sans-serif', size: 11, color: 'rgba(255,255,255,0.6)' }},
+          font: {{ family: 'myriad-pro, sans-serif', size: 11, color: '#6b7c93' }},
         }},
         paper_bgcolor: 'rgba(0,0,0,0)',
         plot_bgcolor: 'rgba(0,0,0,0)',
@@ -1252,6 +1240,344 @@ def render_executive_report_html(snapshot: dict) -> str:
 def write_executive_report(snapshot: dict, output_path: Path) -> Path:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(render_executive_report_html(snapshot))
+    return output_path
+
+
+# ─── Executive Email (HTML email, no JS, table-based layout) ──────────────────
+
+
+def _email_kpi_card(label: str, value: str, sub: str = "", sub2: str = "") -> str:
+    """KPI metric card for HTML email — inline styles, no JS."""
+    sub_html = (
+        f'<div style="font-family:Helvetica Neue,Helvetica,Arial,sans-serif;font-size:11px;'
+        f'color:#6b7c93;margin-top:4px;line-height:1.4;">{sub}</div>'
+    ) if sub else ""
+    sub2_html = (
+        f'<div style="font-family:Helvetica Neue,Helvetica,Arial,sans-serif;font-size:10px;'
+        f'color:#9aabb8;margin-top:2px;line-height:1.4;">{sub2}</div>'
+    ) if sub2 else ""
+    return (
+        f'<div style="border-top:3px solid #003963;padding:14px 16px 16px;background:#f7f9fc;">'
+        f'<div style="font-family:Helvetica Neue,Helvetica,Arial,sans-serif;font-size:9px;'
+        f'font-weight:700;color:#8a9bb0;text-transform:uppercase;letter-spacing:0.13em;'
+        f'margin-bottom:8px;">{label}</div>'
+        f'<div style="font-family:Georgia,\'Times New Roman\',serif;font-size:28px;'
+        f'font-weight:bold;color:#003963;line-height:1;margin-bottom:5px;">'
+        f'{escape(value)}</div>'
+        f'{sub_html}{sub2_html}'
+        f'</div>'
+    )
+
+
+def _email_completion_chart(
+    buckets_tw: list[dict],
+    buckets_all: list[dict],
+    week_range_label: str,
+) -> str:
+    """Dual horizontal bar chart for completion time — pure HTML tables, no JS."""
+    ref = buckets_all if buckets_all else buckets_tw
+    if not ref:
+        return ('<p style="font-family:Helvetica,Arial,sans-serif;font-size:12px;'
+                'color:#aab4c0;margin:0;">No data</p>')
+
+    total_tw = sum(b["count"] for b in buckets_tw) or 1
+    total_all = sum(b["count"] for b in buckets_all) or 1
+
+    def _bar_cell(pct: int, color: str) -> str:
+        inner = (
+            f'<td width="{pct}%" style="background:{color};height:7px;border-radius:2px;"></td>'
+            f'<td style="height:7px;"></td>'
+        ) if pct > 0 else '<td style="height:7px;"></td>'
+        return (
+            f'<table cellpadding="0" cellspacing="0" style="width:100%;">'
+            f'<tr>{inner}</tr></table>'
+        )
+
+    _hdr = ('style="font-family:Helvetica Neue,Helvetica,Arial,sans-serif;font-size:9px;'
+            'font-weight:700;color:#8a9bb0;text-transform:uppercase;letter-spacing:0.1em;'
+            'padding-bottom:10px;"')
+    _lbl = ('style="padding:7px 8px 7px 0;font-family:Helvetica Neue,Helvetica,Arial,sans-serif;'
+            'font-size:10px;color:#6b7c93;white-space:nowrap;vertical-align:middle;'
+            'border-bottom:1px solid #f0f2f5;"')
+    _bar = 'style="padding:7px 4px;vertical-align:middle;border-bottom:1px solid #f0f2f5;"'
+    _pct_tw = ('style="width:34px;padding:7px 0 7px 4px;font-family:Helvetica Neue,Helvetica,Arial,sans-serif;'
+               'font-size:10px;font-weight:700;color:#003963;text-align:right;white-space:nowrap;'
+               'vertical-align:middle;border-bottom:1px solid #f0f2f5;"')
+    _pct_all = ('style="width:34px;padding:7px 0 7px 4px;font-family:Helvetica Neue,Helvetica,Arial,sans-serif;'
+                'font-size:10px;font-weight:700;color:#6a90ad;text-align:right;white-space:nowrap;'
+                'vertical-align:middle;border-bottom:1px solid #f0f2f5;"')
+    _gap = 'style="width:12px;border-bottom:1px solid #f0f2f5;"'
+
+    rows = (
+        f'<table cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse;">'
+        f'<tr>'
+        f'<td width="68"></td>'
+        f'<td {_hdr}>{escape(str(week_range_label))}</td>'
+        f'<td width="34"></td>'
+        f'<td width="12"></td>'
+        f'<td {_hdr}>All Time</td>'
+        f'<td width="34"></td>'
+        f'</tr>'
+    )
+
+    for b in ref:
+        lbl = b["label"]
+        tw_count = next((x["count"] for x in buckets_tw if x["label"] == lbl), 0)
+        all_count = next((x["count"] for x in buckets_all if x["label"] == lbl), 0)
+        tw_pct = int(tw_count / total_tw * 100)
+        all_pct = int(all_count / total_all * 100)
+        rows += (
+            f'<tr>'
+            f'<td width="68" {_lbl}>{escape(lbl)}</td>'
+            f'<td {_bar}>{_bar_cell(tw_pct, "#003963")}</td>'
+            f'<td {_pct_tw}>{tw_pct}%</td>'
+            f'<td {_gap}></td>'
+            f'<td {_bar}>{_bar_cell(all_pct, "#6a90ad")}</td>'
+            f'<td {_pct_all}>{all_pct}%</td>'
+            f'</tr>'
+        )
+
+    return rows + '</table>'
+
+
+def render_executive_email_html(snapshot: dict) -> str:
+    """Render the executive snapshot as a self-contained HTML email (no JS, inline styles)."""
+    week_label = escape(str(snapshot.get("week_label", "")))
+    generated_at = escape(str(snapshot.get("report_generated_at", ""))[:10])
+    week_range = escape(str(snapshot.get("week_range_label", "")))
+    prior_week_range = escape(str(snapshot.get("prior_week_range_label", "")))
+    as_of_label = escape(str(snapshot.get("as_of_label", "")))
+    effort_period = escape(str(snapshot.get("customer_effort_period_label", "")))
+
+    new_tickets = snapshot.get("new_tickets_this_week", 0)
+    avg_weekly = snapshot.get("avg_weekly_tickets_created", 0.0)
+    ww_delta = snapshot.get("week_over_week_delta_pct")
+    sla_rate = snapshot.get("sla_compliance_rate")
+    stale = snapshot.get("stale_open_count", 0)
+    unassigned = snapshot.get("unassigned_count", 0)
+    median_tw = snapshot.get("median_first_response_hours_this_week")
+    median_all = snapshot.get("median_first_response_hours_all_time")
+    easy_rate = snapshot.get("customer_effort_easy_rate")
+
+    ww_str = (
+        f"{ww_delta:+.1f}% vs {prior_week_range}"
+        if ww_delta is not None else f"no data for {prior_week_range}"
+    )
+    sla_str = f"{sla_rate * 100:.0f}%" if sla_rate is not None else "N/A"
+    response_tw_str = f"{median_tw:.1f} hrs" if median_tw is not None else "N/A"
+    response_all_str = f"{median_all:.1f} hrs" if median_all is not None else "N/A"
+    effort_str = f"{easy_rate * 100:.0f}%" if easy_rate is not None else "N/A"
+
+    kpi_row_1 = (
+        f'<td width="50%" style="padding:0 6px 0 0;vertical-align:top;">'
+        f'{_email_kpi_card("New Tickets", str(new_tickets), week_range, ww_str)}</td>'
+        f'<td width="50%" style="padding:0 0 0 6px;vertical-align:top;">'
+        f'{_email_kpi_card("Avg Weekly Tickets", f"{avg_weekly:.1f}", "all-time baseline")}</td>'
+    )
+    kpi_row_2 = (
+        f'<td width="50%" style="padding:0 6px 0 0;vertical-align:top;">'
+        f'{_email_kpi_card("SLA Compliance", sla_str, "all open &amp; recently closed")}</td>'
+        f'<td width="50%" style="padding:0 0 0 6px;vertical-align:top;">'
+        f'{_email_kpi_card("Median First Response", response_tw_str, f"{week_range} &middot; all-time: {response_all_str}")}</td>'
+    )
+    kpi_row_3 = (
+        f'<td width="50%" style="padding:0 6px 0 0;vertical-align:top;">'
+        f'{_email_kpi_card("Stale Open (&gt;5 biz days)", str(stale), f"as of {as_of_label}")}</td>'
+        f'<td width="50%" style="padding:0 0 0 6px;vertical-align:top;">'
+        f'{_email_kpi_card("Unassigned Open", str(unassigned), f"as of {as_of_label}")}</td>'
+    )
+
+    completion_chart = _email_completion_chart(
+        snapshot.get("completion_hours_this_week", []),
+        snapshot.get("completion_hours_all_time", []),
+        week_range,
+    )
+
+    # customer effort rows
+    _EASY = {"Very Easy", "Easy"}
+    effort_label_order = ["Very Easy", "Easy", "Difficult", "Very Difficult"]
+    effort_counts = snapshot.get("customer_effort_counts", {})
+    total_effort = sum(effort_counts.values()) or 1
+    effort_rows = ""
+    for lbl in effort_label_order:
+        count = effort_counts.get(lbl, 0)
+        pct = int(count / total_effort * 100)
+        bar_color = "#003963" if lbl in _EASY else "#F59536"
+        bar_inner = (
+            f'<td width="{pct}%" style="background:{bar_color};height:6px;border-radius:1px;"></td>'
+            f'<td style="height:6px;"></td>'
+        ) if pct > 0 else '<td style="height:6px;"></td>'
+        effort_rows += (
+            f'<tr style="border-bottom:1px solid #f0f2f5;">'
+            f'<td style="padding:6px 8px 6px 0;font-family:Helvetica Neue,Helvetica,Arial,sans-serif;'
+            f'font-size:11px;color:#2c3a4a;vertical-align:middle;">{escape(lbl)}</td>'
+            f'<td style="padding:6px 4px;vertical-align:middle;">'
+            f'<table cellpadding="0" cellspacing="0" style="width:100%;">'
+            f'<tr>{bar_inner}</tr></table></td>'
+            f'<td width="34" style="padding:6px 0 6px 4px;font-family:Helvetica Neue,Helvetica,Arial,sans-serif;'
+            f'font-size:10px;font-weight:700;color:#003963;text-align:right;white-space:nowrap;'
+            f'vertical-align:middle;">{escape(str(count))}</td>'
+            f'</tr>'
+        )
+    if not effort_rows:
+        effort_rows = ('<tr><td colspan="3" style="padding:12px;font-family:Helvetica,Arial,sans-serif;'
+                       'font-size:11px;color:#aab4c0;">No data</td></tr>')
+
+    # top services rows
+    service_rows = ""
+    for svc in snapshot.get("top_services", []):
+        service_rows += (
+            f'<tr style="border-bottom:1px solid #f0f2f5;">'
+            f'<td style="padding:7px 8px 7px 0;font-family:Helvetica Neue,Helvetica,Arial,sans-serif;'
+            f'font-size:11px;color:#2c3a4a;">{escape(str(svc.get("service_name") or ""))}</td>'
+            f'<td style="padding:7px 0;font-family:Helvetica Neue,Helvetica,Arial,sans-serif;'
+            f'font-size:11px;font-weight:700;color:#003963;text-align:right;white-space:nowrap;">'
+            f'{escape(str(svc.get("count") or 0))}</td>'
+            f'</tr>'
+        )
+    if not service_rows:
+        service_rows = ('<tr><td colspan="2" style="padding:12px;font-family:Helvetica,Arial,sans-serif;'
+                        'font-size:11px;color:#aab4c0;">No data</td></tr>')
+
+    _eyebrow = ('font-family:Helvetica Neue,Helvetica,Arial,sans-serif;font-size:9px;'
+                'font-weight:700;color:#8a9bb0;text-transform:uppercase;letter-spacing:0.14em;'
+                'margin:0 0 4px;')
+    _heading = ('font-family:Georgia,\'Times New Roman\',serif;font-size:14px;'
+                'font-weight:bold;color:#003963;margin:0 0 16px;padding-bottom:10px;'
+                'border-bottom:1px solid #d8dfe8;')
+    _section = 'background:#ffffff;padding:28px 32px;'
+    _divider = ('<tr><td style="height:1px;background:#e4e8ee;font-size:1px;line-height:1px;">'
+                '&#8203;</td></tr>')
+
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+  <title>IT Executive Report</title>
+</head>
+<body style="margin:0;padding:0;background:#f0f2f6;font-family:Georgia,'Times New Roman',serif;">
+
+<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#f0f2f6;">
+  <tr>
+    <td align="center" style="padding:24px 16px;">
+
+      <table width="600" cellpadding="0" cellspacing="0" border="0"
+             style="max-width:600px;border-radius:4px;overflow:hidden;
+                    box-shadow:0 2px 8px rgba(0,57,99,0.12);">
+
+        <!-- HEADER -->
+        <tr>
+          <td style="background:#003963;padding:28px 32px 24px;">
+            <p style="font-family:Helvetica Neue,Helvetica,Arial,sans-serif;font-size:9px;
+                      font-weight:700;color:rgba(251,185,58,0.8);text-transform:uppercase;
+                      letter-spacing:0.2em;margin:0 0 8px 0;">
+              Cedarville University &nbsp;&middot;&nbsp; Information Technology
+            </p>
+            <h1 style="font-family:Georgia,'Times New Roman',serif;font-size:24px;
+                       font-weight:bold;color:#ffffff;margin:0 0 10px 0;line-height:1.2;">
+              IT Executive Report
+            </h1>
+            <table cellpadding="0" cellspacing="0" border="0">
+              <tr>
+                <td style="font-family:Georgia,'Times New Roman',serif;font-style:italic;
+                           font-size:14px;color:#FBB93A;padding-right:16px;">
+                  Week of {week_label}
+                </td>
+                <td style="font-family:Helvetica Neue,Helvetica,Arial,sans-serif;font-size:11px;
+                           color:rgba(255,255,255,0.4);">
+                  Generated {generated_at}
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+
+        <!-- GOLD RULE -->
+        <tr>
+          <td style="height:3px;background:linear-gradient(to right,#FBB93A,#F59536 40%,transparent);
+                     font-size:1px;line-height:1px;">&#8203;</td>
+        </tr>
+
+        <!-- AT A GLANCE -->
+        <tr>
+          <td style="{_section}">
+            <p style="{_eyebrow}">At a Glance</p>
+            <table cellpadding="0" cellspacing="0" width="100%">
+              <tr>{kpi_row_1}</tr>
+              <tr><td colspan="2" style="height:10px;"></td></tr>
+              <tr>{kpi_row_2}</tr>
+              <tr><td colspan="2" style="height:10px;"></td></tr>
+              <tr>{kpi_row_3}</tr>
+            </table>
+          </td>
+        </tr>
+
+        {_divider}
+
+        <!-- COMPLETION TIME -->
+        <tr>
+          <td style="{_section}">
+            <p style="{_eyebrow}">Ticket Volume</p>
+            <p style="{_heading}">Completion Time &mdash; {week_range} vs All Time</p>
+            {completion_chart}
+          </td>
+        </tr>
+
+        {_divider}
+
+        <!-- CUSTOMER EFFORT + TOP SERVICES -->
+        <tr>
+          <td style="{_section}">
+            <table cellpadding="0" cellspacing="0" width="100%">
+              <tr>
+                <td width="50%" style="vertical-align:top;padding-right:20px;">
+                  <p style="{_eyebrow}">Survey Results</p>
+                  <p style="{_heading}">Customer Effort &mdash; {effort_period}</p>
+                  <table cellpadding="0" cellspacing="0" width="100%">
+                    {effort_rows}
+                  </table>
+                  <p style="font-family:Helvetica Neue,Helvetica,Arial,sans-serif;font-size:10px;
+                             color:#6b7c93;margin:10px 0 0 0;">{effort_str} easy or very easy</p>
+                </td>
+                <td width="50%" style="vertical-align:top;padding-left:20px;
+                                       border-left:1px solid #e4e8ee;">
+                  <p style="{_eyebrow}">Ticket Breakdown</p>
+                  <p style="{_heading}">Top Request Categories &mdash; {week_range}</p>
+                  <table cellpadding="0" cellspacing="0" width="100%">
+                    {service_rows}
+                  </table>
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+
+        <!-- FOOTER -->
+        <tr>
+          <td style="background:#002a4a;padding:16px 32px;">
+            <p style="font-family:Helvetica Neue,Helvetica,Arial,sans-serif;font-size:9px;
+                      font-weight:600;color:rgba(255,255,255,0.35);text-transform:uppercase;
+                      letter-spacing:0.1em;margin:0;">
+              Cedarville University Information Technology &nbsp;&middot;&nbsp; Confidential
+            </p>
+          </td>
+        </tr>
+
+      </table>
+    </td>
+  </tr>
+</table>
+
+</body>
+</html>
+"""
+
+
+def write_executive_email(snapshot: dict, output_path: Path) -> Path:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(render_executive_email_html(snapshot))
     return output_path
 
 
