@@ -1,0 +1,249 @@
+from __future__ import annotations
+
+import pandas as pd
+
+
+def _fmt(ts: pd.Timestamp) -> str:
+    return ts.strftime("%b %-d")
+
+
+def _delta_pct(current: int, prior: int) -> float | None:
+    if prior == 0:
+        return None
+    return (current - prior) / prior * 100.0
+
+
+def _build_7day_windows(
+    as_of: pd.Timestamp, n: int = 8
+) -> list[tuple[pd.Timestamp, pd.Timestamp]]:
+    """Return n consecutive 7-day (start, end) pairs, oldest first, newest last.
+
+    The final window is always (as_of - 7d, as_of).
+    """
+    windows = []
+    for i in range(n, 0, -1):
+        w_end = as_of - pd.Timedelta(days=7 * (i - 1))
+        w_start = w_end - pd.Timedelta(days=7)
+        windows.append((w_start, w_end))
+    return windows
+
+
+def _weekly_series(dates: pd.Series, windows: list[tuple]) -> list[int]:
+    return [int(((dates >= s) & (dates <= e)).sum()) for s, e in windows]
+
+
+_SENTINEL_THRESHOLD = pd.Timestamp("2000-01-01", tz="UTC")
+
+
+def _count_open_at(
+    created: pd.Series,
+    resolved: pd.Series,
+    snapshot: pd.Timestamp,
+    *,
+    is_currently_open: "pd.Series | None" = None,
+) -> int:
+    """Return the number of tickets open at a specific point in time.
+
+    For tickets with a valid resolved_at (>= 2000), resolved_at is the sole
+    historical signal: open iff resolved_at > snapshot.
+
+    For tickets without a valid resolved_at (NaT or sentinel), we fall back to
+    current status_class via `is_currently_open`. TDX sometimes closes tickets
+    by changing status_class without setting resolved_at, so without this
+    fallback those tickets would be counted as "open forever" inflating the
+    sparkline by thousands.
+
+    If `is_currently_open` is not provided, falls back to treating NaT
+    resolved_at as "not yet resolved" (original behaviour, safe for tests).
+    """
+    was_created = created.notna() & (created <= snapshot)
+
+    if is_currently_open is not None:
+        # Tickets with a valid resolved_at → tracked by that date alone.
+        # Tickets without one (NaT / sentinel) → use current status_class.
+        has_valid_resolution = resolved.notna()
+        not_yet_resolved = (
+            (~has_valid_resolution & is_currently_open)            # no date → open now?
+            | (has_valid_resolution & (resolved > snapshot))       # has date → not yet resolved?
+        )
+    else:
+        not_yet_resolved = resolved.isna() | (resolved > snapshot)
+
+    return int((was_created & not_yet_resolved).sum())
+
+
+def _open_weekly_series(
+    tickets: pd.DataFrame, windows: list[tuple]
+) -> list[int]:
+    """Return open-ticket count at the end of each (start, end) window."""
+    n = len(tickets)
+    created = (
+        _parse_dates(tickets["created_at"])
+        if "created_at" in tickets.columns
+        else pd.Series([pd.NaT] * n, dtype="datetime64[ns, UTC]")
+    )
+    resolved = (
+        _parse_dates(tickets["resolved_at"])
+        if "resolved_at" in tickets.columns
+        else pd.Series([pd.NaT] * n, dtype="datetime64[ns, UTC]")
+    )
+    # TDX uses C# DateTime.MinValue ("0001-01-01") as a sentinel for "no date".
+    # Convert any resolved_at before year 2000 to NaT so it's treated as missing.
+    resolved = resolved.where(resolved.isna() | (resolved >= _SENTINEL_THRESHOLD), other=pd.NaT)
+
+    # Derive current open/closed from status_class so tickets that were closed
+    # without a resolved_at date don't inflate every historical window.
+    sc_col = (
+        pd.to_numeric(tickets["status_class"], errors="coerce")
+        if "status_class" in tickets.columns
+        else pd.Series([float("nan")] * n)
+    )
+    is_currently_open = ~sc_col.isin({3, 4})
+
+    return [_count_open_at(created, resolved, end, is_currently_open=is_currently_open) for _, end in windows]
+
+
+def _parse_dates(col: pd.Series) -> pd.Series:
+    return pd.to_datetime(col, utc=True, errors="coerce")
+
+
+def summarize_cfo_snapshot(
+    tickets: pd.DataFrame,
+    surveys: pd.DataFrame,
+    youtrack_projects: list[dict] | None = None,
+    as_of: pd.Timestamp | None = None,
+) -> dict[str, object]:
+    """Aggregate data for the CFO Update email.
+
+    All time periods use rolling 7-day windows relative to as_of:
+      - current period: (as_of - 7d, as_of)
+      - prior period:   (as_of - 14d, as_of - 7d)
+      - year-ago period: same window shifted back 52 weeks
+
+    YouTrack projects are passed in pre-fetched.
+    """
+    if as_of is None:
+        as_of = pd.Timestamp.now("UTC")
+    if as_of.tzinfo is None:
+        as_of = as_of.tz_localize("UTC")
+
+    period_start = as_of - pd.Timedelta(days=7)
+    prior_end = period_start
+    prior_start = prior_end - pd.Timedelta(days=7)
+    year_end = as_of - pd.Timedelta(weeks=52)
+    year_start = year_end - pd.Timedelta(days=7)
+
+    result: dict[str, object] = {
+        "period_label": f"{_fmt(period_start)} – {_fmt(as_of)}",
+        "week_range_label": f"{_fmt(period_start)} – {_fmt(as_of)}",
+        "prior_week_range_label": f"{_fmt(prior_start)} – {_fmt(prior_end)}",
+        "year_ago_range_label": f"{_fmt(year_start)} – {_fmt(year_end)}",
+        "report_generated_at": as_of.isoformat(),
+        "as_of_label": _fmt(as_of),
+    }
+
+    # ── Ticket volume ──────────────────────────────────────────────────────────
+    if not tickets.empty and "created_at" in tickets.columns:
+        created = _parse_dates(tickets["created_at"])
+        tw_created = int(((created >= period_start) & (created <= as_of)).sum())
+        pw_created = int(((created >= prior_start) & (created <= prior_end)).sum())
+        ya_created = int(((created >= year_start) & (created <= year_end)).sum())
+    else:
+        tw_created = pw_created = ya_created = 0
+
+    if not tickets.empty and "resolved_at" in tickets.columns:
+        resolved = _parse_dates(tickets["resolved_at"])
+        tw_closed = int((resolved.notna() & (resolved >= period_start) & (resolved <= as_of)).sum())
+        pw_closed = int((resolved.notna() & (resolved >= prior_start) & (resolved <= prior_end)).sum())
+        ya_closed = int((resolved.notna() & (resolved >= year_start) & (resolved <= year_end)).sum())
+    else:
+        tw_closed = pw_closed = ya_closed = 0
+
+    result.update(
+        {
+            "tickets_created_this_week": tw_created,
+            "tickets_created_prior_week": pw_created,
+            "tickets_created_year_ago": ya_created,
+            "tickets_created_ww_delta_pct": _delta_pct(tw_created, pw_created),
+            "tickets_created_yy_delta_pct": _delta_pct(tw_created, ya_created),
+            "tickets_closed_this_week": tw_closed,
+            "tickets_closed_prior_week": pw_closed,
+            "tickets_closed_year_ago": ya_closed,
+            "tickets_closed_ww_delta_pct": _delta_pct(tw_closed, pw_closed),
+            "tickets_closed_yy_delta_pct": _delta_pct(tw_closed, ya_closed),
+        }
+    )
+
+    # ── Total open tickets ─────────────────────────────────────────────────────
+    if not tickets.empty:
+        sc_col = (
+            pd.to_numeric(tickets["status_class"], errors="coerce")
+            if "status_class" in tickets.columns
+            else pd.Series([float("nan")] * len(tickets))
+        )
+        resolved_col = (
+            _parse_dates(tickets["resolved_at"])
+            if "resolved_at" in tickets.columns
+            else pd.Series([pd.NaT] * len(tickets))
+        )
+        open_mask = ~sc_col.isin({3, 4}) & resolved_col.isna()
+        result["total_open_tickets"] = int(open_mask.sum())
+    else:
+        result["total_open_tickets"] = 0
+
+    # ── 8-period trends (rolling 7-day windows) ────────────────────────────────
+    windows = _build_7day_windows(as_of, n=8)
+    period_labels = [_fmt(s) for s, _ in windows]
+
+    if not tickets.empty and "created_at" in tickets.columns:
+        created_series = _parse_dates(tickets["created_at"])
+        result["created_weekly"] = [
+            {"week": lbl, "count": c}
+            for lbl, c in zip(period_labels, _weekly_series(created_series, windows))
+        ]
+    else:
+        result["created_weekly"] = [{"week": lbl, "count": 0} for lbl in period_labels]
+
+    if not tickets.empty and "resolved_at" in tickets.columns:
+        resolved_series = _parse_dates(tickets["resolved_at"])
+        result["closed_weekly"] = [
+            {"week": lbl, "count": c}
+            for lbl, c in zip(period_labels, _weekly_series(resolved_series, windows))
+        ]
+    else:
+        result["closed_weekly"] = [{"week": lbl, "count": 0} for lbl in period_labels]
+
+    if not tickets.empty:
+        result["open_weekly"] = [
+            {"week": lbl, "count": c}
+            for lbl, c in zip(period_labels, _open_weekly_series(tickets, windows))
+        ]
+    else:
+        result["open_weekly"] = [{"week": lbl, "count": 0} for lbl in period_labels]
+
+    # ── Survey: last 7 days ────────────────────────────────────────────────────
+    _EASY = {"Very Easy", "Easy"}
+
+    if not surveys.empty and "customer_effort_label" in surveys.columns and "survey_completed_at" in surveys.columns:
+        completed = _parse_dates(surveys["survey_completed_at"])
+        mask = (completed >= period_start) & (completed <= as_of) & surveys["customer_effort_label"].notna()
+        effort_counts: dict = surveys.loc[mask, "customer_effort_label"].value_counts().to_dict()
+        effort_total = sum(effort_counts.values())
+        easy_rate: float | None = (
+            sum(effort_counts.get(k, 0) for k in _EASY) / effort_total
+            if effort_total > 0 else None
+        )
+    else:
+        effort_counts = {}
+        effort_total = 0
+        easy_rate = None
+
+    result["survey_effort_counts"] = effort_counts
+    result["survey_effort_total"] = effort_total
+    result["survey_easy_rate"] = easy_rate
+    result["survey_period_label"] = f"{_fmt(period_start)} – {_fmt(as_of)}"
+
+    # ── YouTrack projects ──────────────────────────────────────────────────────
+    result["youtrack_projects"] = youtrack_projects or []
+
+    return result

@@ -918,8 +918,13 @@ def render_executive_report_html(snapshot: dict) -> str:
         else f"no data for {prior_week_range}"
     )
     sla_str = f"{sla_rate * 100:.0f}%" if sla_rate is not None else "N/A"
-    response_tw_str = f"{median_response_tw:.1f} hrs" if median_response_tw is not None else "N/A"
     response_all_str = f"{median_response_all:.1f} hrs" if median_response_all is not None else "N/A"
+    if median_response_tw is not None:
+        response_tw_str = f"{median_response_tw:.1f} hrs"
+        response_sub_str = f"{week_range} · all-time: {response_all_str}"
+    else:
+        response_tw_str = response_all_str
+        response_sub_str = f"all-time · no data for {week_range}"
     easy_rate = snapshot.get("customer_effort_easy_rate")
     effort_str = f"{easy_rate * 100:.0f}%" if easy_rate is not None else "N/A"
     effort_period = escape(str(snapshot.get("customer_effort_period_label", "")))
@@ -939,7 +944,7 @@ def render_executive_report_html(snapshot: dict) -> str:
             "Unassigned Open", str(unassigned), f"as of {as_of_label}",
             detail_html=_ticket_table(snapshot.get("unassigned_tickets_detail", []), tdx_base_url),
         ),
-        _executive_kpi_card("Median First Response", response_tw_str, f"{week_range} · all-time: {response_all_str}"),
+        _executive_kpi_card("Median First Response", response_tw_str, response_sub_str),
         _executive_kpi_card("Customer Effort", effort_str, f"easy or very easy · {effort_period}"),
     ])
 
@@ -1005,8 +1010,8 @@ def render_executive_report_html(snapshot: dict) -> str:
             f'</tr>'
         )
     if not effort_rows:
-        effort_rows = (f'<tr><td colspan="3" style="padding:1rem; font-family:\'myriad-pro\',sans-serif; '
-                       f'font-size:0.8rem; color:#aab4c0;">No effort data</td></tr>')
+        effort_rows = ('<tr><td colspan="3" style="padding:1rem; font-family:\'myriad-pro\',sans-serif; '
+                       'font-size:0.8rem; color:#aab4c0;">No effort data</td></tr>')
 
     # top services table rows
     _td_s = ('style="padding:0.65rem 0.9rem; font-family:\'minion-pro\',serif; '
@@ -1022,8 +1027,8 @@ def render_executive_report_html(snapshot: dict) -> str:
             f'</tr>'
         )
     if not service_rows:
-        service_rows = (f'<tr><td colspan="2" style="padding:1rem; font-family:\'myriad-pro\',sans-serif; '
-                        f'font-size:0.8rem; color:#aab4c0;">No service data</td></tr>')
+        service_rows = ('<tr><td colspan="2" style="padding:1rem; font-family:\'myriad-pro\',sans-serif; '
+                        'font-size:0.8rem; color:#aab4c0;">No service data</td></tr>')
 
     # plotly data — escape </script> injection
     buckets_tw = snapshot.get("completion_hours_this_week", [])
@@ -1364,8 +1369,13 @@ def render_executive_email_html(snapshot: dict) -> str:
         if ww_delta is not None else f"no data for {prior_week_range}"
     )
     sla_str = f"{sla_rate * 100:.0f}%" if sla_rate is not None else "N/A"
-    response_tw_str = f"{median_tw:.1f} hrs" if median_tw is not None else "N/A"
     response_all_str = f"{median_all:.1f} hrs" if median_all is not None else "N/A"
+    if median_tw is not None:
+        response_tw_str = f"{median_tw:.1f} hrs"
+        response_sub_str = f"{week_range} &middot; all-time: {response_all_str}"
+    else:
+        response_tw_str = response_all_str
+        response_sub_str = f"all-time &middot; no data for {week_range}"
     effort_str = f"{easy_rate * 100:.0f}%" if easy_rate is not None else "N/A"
 
     kpi_row_1 = (
@@ -1378,7 +1388,7 @@ def render_executive_email_html(snapshot: dict) -> str:
         f'<td width="50%" style="padding:0 6px 0 0;vertical-align:top;">'
         f'{_email_kpi_card("SLA Compliance", sla_str, "all open &amp; recently closed")}</td>'
         f'<td width="50%" style="padding:0 0 0 6px;vertical-align:top;">'
-        f'{_email_kpi_card("Median First Response", response_tw_str, f"{week_range} &middot; all-time: {response_all_str}")}</td>'
+        f'{_email_kpi_card("Median First Response", response_tw_str, response_sub_str)}</td>'
     )
     kpi_row_3 = (
         f'<td width="50%" style="padding:0 6px 0 0;vertical-align:top;">'
@@ -1578,6 +1588,430 @@ def render_executive_email_html(snapshot: dict) -> str:
 def write_executive_email(snapshot: dict, output_path: Path) -> Path:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(render_executive_email_html(snapshot))
+    return output_path
+
+
+# ── CFO Update email ──────────────────────────────────────────────────────────
+
+_LABEL_H = 10  # fixed height of the value-label row above each bar
+
+
+def _cfo_sparkline(
+    weekly: list[dict],
+    *,
+    max_h: int = 28,
+    bar_w: int = 5,
+    gap: int = 2,
+    current_color: str = "#003963",
+    prior_color: str = "#b8cede",
+    min_h: int = 2,
+    period_days: int = 7,
+) -> str:
+    """Render a vertical bar sparkline as nested email-safe HTML tables.
+
+    weekly: list of {"week": label, "count": n}, oldest first, newest last.
+    The final entry is highlighted as the current period.
+
+    Bars are scaled from 0 to max so heights are proportional to absolute values.
+    The current-period count is shown as a small label above the rightmost bar.
+    A caption row shows the date range and period unit.
+    """
+    if not weekly:
+        return ""
+    counts = [w["count"] for w in weekly]
+    n = len(counts)
+    total_w = n * bar_w + (n - 1) * gap
+
+    # Scale from 0 so bar heights are proportional to absolute values
+    hi = max(counts) or 1  # guard against all-zero
+
+    bars = ""
+    for i, (w, count) in enumerate(zip(weekly, counts)):
+        is_current = i == n - 1
+        color = current_color if is_current else prior_color
+        bar_h = max(min_h, round(count / hi * max_h))
+        spacer_h = max_h - bar_h
+
+        # Show the current period's value as a small label above its bar
+        if is_current:
+            label_td = (
+                f'<td height="{_LABEL_H}" '
+                f'style="height:{_LABEL_H}px;font-family:Helvetica Neue,Helvetica,Arial,sans-serif;'
+                f'font-size:6px;font-weight:700;color:{current_color};'
+                f'text-align:center;white-space:nowrap;vertical-align:bottom;'
+                f'line-height:{_LABEL_H}px;">{count}</td>'
+            )
+        else:
+            label_td = (
+                f'<td height="{_LABEL_H}" '
+                f'style="height:{_LABEL_H}px;font-size:1px;line-height:1px;">&#8203;</td>'
+            )
+
+        bars += (
+            f'<td width="{bar_w}" style="padding:0 {gap // 2}px 0 0;vertical-align:bottom;">'
+            f'<table cellpadding="0" cellspacing="0" border="0" style="width:{bar_w}px;">'
+            f'<tr>{label_td}</tr>'
+            f'<tr><td height="{spacer_h}" style="height:{spacer_h}px;font-size:1px;line-height:1px;">&#8203;</td></tr>'
+            f'<tr><td height="{bar_h}" style="height:{bar_h}px;background:{color};'
+            f'font-size:1px;line-height:1px;border-radius:1px 1px 0 0;" '
+            f'title="{escape(w["week"])}: {escape(str(count))}">&#8203;</td></tr>'
+            f'</table>'
+            f'</td>'
+        )
+
+    # Caption: date range + period unit
+    first = escape(weekly[0]["week"])
+    last = escape(weekly[-1]["week"])
+    unit = f"{period_days}d"
+    caption = (
+        f'<tr><td colspan="{n}" '
+        f'style="font-family:Helvetica Neue,Helvetica,Arial,sans-serif;'
+        f'font-size:7px;color:#aab4c0;padding-top:3px;white-space:nowrap;'
+        f'letter-spacing:0.02em;">'
+        f'{first} &#8594; {last} &nbsp;&middot;&nbsp; {unit} periods'
+        f'</td></tr>'
+    )
+
+    return (
+        f'<table cellpadding="0" cellspacing="0" border="0" '
+        f'style="width:{total_w}px;border-collapse:collapse;">'
+        f'<tr style="vertical-align:bottom;">{bars}</tr>'
+        f'{caption}'
+        f'</table>'
+    )
+
+
+def _cfo_delta_badge(pct: float | None, prior_label: str) -> str:
+    """Render a compact delta badge: e.g. '+12% vs prior week'."""
+    if pct is None:
+        return (
+            '<span style="font-family:Helvetica Neue,Helvetica,Arial,sans-serif;'
+            'font-size:9px;color:#aab4c0;">no prior data</span>'
+        )
+    arrow = "&#9650;" if pct >= 0 else "&#9660;"
+    color = "#c0392b" if pct > 0 else ("#27ae60" if pct < 0 else "#8a9bb0")
+    sign = "+" if pct >= 0 else ""
+    return (
+        f'<span style="font-family:Helvetica Neue,Helvetica,Arial,sans-serif;'
+        f'font-size:9px;font-weight:700;color:{color};">'
+        f'{arrow} {sign}{pct:.1f}%</span>'
+        f'<span style="font-family:Helvetica Neue,Helvetica,Arial,sans-serif;'
+        f'font-size:9px;color:#aab4c0;"> vs {escape(prior_label)}</span>'
+    )
+
+
+def _cfo_volume_row(
+    label: str,
+    tw: int,
+    pw: int,
+    ya: int,
+    ww_pct: float | None,
+    yy_pct: float | None,
+    prior_week_label: str,
+    year_ago_label: str,
+    sparkline_html: str = "",
+) -> str:
+    """One row in the ticket volume comparison table."""
+    _cell = (
+        'style="padding:10px 12px;vertical-align:top;'
+        'border-bottom:1px solid #edf0f4;"'
+    )
+    _num = (
+        'style="font-family:Georgia,\'Times New Roman\',serif;font-size:20px;'
+        'font-weight:bold;color:#003963;line-height:1;display:block;margin-bottom:2px;"'
+    )
+    _sub = (
+        'style="font-family:Helvetica Neue,Helvetica,Arial,sans-serif;'
+        'font-size:9px;color:#8a9bb0;display:block;margin-top:2px;"'
+    )
+    _lbl = (
+        'style="padding:10px 12px 10px 0;vertical-align:middle;'
+        'border-bottom:1px solid #edf0f4;font-family:Helvetica Neue,Helvetica,Arial,sans-serif;'
+        'font-size:11px;font-weight:600;color:#2c3a4a;white-space:nowrap;"'
+    )
+    _spark_cell = (
+        'style="padding:10px 0 10px 12px;vertical-align:middle;'
+        'border-bottom:1px solid #edf0f4;"'
+    )
+    spark_td = f'<td {_spark_cell}>{sparkline_html}</td>' if sparkline_html else ""
+    return (
+        f'<tr>'
+        f'<td {_lbl}>{escape(label)}</td>'
+        f'<td {_cell}>'
+        f'  <span {_num}>{escape(str(tw))}</span>'
+        f'  <span {_sub}>last 7 days</span>'
+        f'</td>'
+        f'<td {_cell}>'
+        f'  <span {_num} style="color:#6a90ad;">{escape(str(pw))}</span>'
+        f'  <span {_sub}>{escape(prior_week_label)}</span>'
+        f'  <br/>{_cfo_delta_badge(ww_pct, "prior 7 days")}'
+        f'</td>'
+        f'<td {_cell}>'
+        f'  <span {_num} style="color:#6a90ad;">{escape(str(ya))}</span>'
+        f'  <span {_sub}>{escape(year_ago_label)}</span>'
+        f'  <br/>{_cfo_delta_badge(yy_pct, "year ago")}'
+        f'</td>'
+        f'{spark_td}'
+        f'</tr>'
+    )
+
+
+def render_cfo_email_html(snapshot: dict) -> str:
+    """Render the CFO Update as a self-contained HTML email (no JS, inline styles)."""
+    period_label = escape(str(snapshot.get("period_label") or snapshot.get("week_range_label", "")))
+    generated_at = escape(str(snapshot.get("report_generated_at", ""))[:10])
+    week_range = period_label
+    prior_week_range = snapshot.get("prior_week_range_label", "prior week")
+    year_ago_range = snapshot.get("year_ago_range_label", "year ago")
+
+    total_open = snapshot.get("total_open_tickets", 0)
+    projects: list[dict] = snapshot.get("youtrack_projects", [])
+
+    # ── Sparklines ────────────────────────────────────────────────────────────
+    created_spark = _cfo_sparkline(snapshot.get("created_weekly", []))
+    closed_spark = _cfo_sparkline(snapshot.get("closed_weekly", []))
+    open_spark = _cfo_sparkline(snapshot.get("open_weekly", []))
+    has_spark = bool(created_spark)
+
+    # ── Ticket volume rows ─────────────────────────────────────────────────────
+    created_row = _cfo_volume_row(
+        "Created",
+        snapshot.get("tickets_created_this_week", 0),
+        snapshot.get("tickets_created_prior_week", 0),
+        snapshot.get("tickets_created_year_ago", 0),
+        snapshot.get("tickets_created_ww_delta_pct"),
+        snapshot.get("tickets_created_yy_delta_pct"),
+        prior_week_range,
+        year_ago_range,
+        sparkline_html=created_spark,
+    )
+    closed_row = _cfo_volume_row(
+        "Closed",
+        snapshot.get("tickets_closed_this_week", 0),
+        snapshot.get("tickets_closed_prior_week", 0),
+        snapshot.get("tickets_closed_year_ago", 0),
+        snapshot.get("tickets_closed_ww_delta_pct"),
+        snapshot.get("tickets_closed_yy_delta_pct"),
+        prior_week_range,
+        year_ago_range,
+        sparkline_html=closed_spark,
+    )
+
+    # ── In Progress issues (from board sprint) ─────────────────────────────────
+    _LOREM = (
+        "Lorem ipsum dolor sit amet, consectetur adipiscing elit. "
+        "Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua."
+    )
+    project_rows = ""
+    for p in projects[:30]:
+        summary = escape(str(p.get("summary") or p.get("name") or ""))
+        badge = escape(str(p.get("it_team") or p.get("team_name") or p.get("short_name") or ""))
+        assignee = escape(str(p.get("assignee") or p.get("leader_name") or ""))
+        assignee_cell = (
+            f'<span style="font-family:Helvetica Neue,Helvetica,Arial,sans-serif;'
+            f'font-size:9px;color:#8a9bb0;">{assignee}</span>'
+            if assignee else ""
+        )
+        project_rows += (
+            f'<tr style="border-bottom:1px solid #f0f2f5;">'
+            f'<td style="padding:8px 8px 8px 0;vertical-align:top;width:80px;">'
+            f'  <span style="font-family:Helvetica Neue,Helvetica,Arial,sans-serif;'
+            f'  font-size:8px;font-weight:700;color:#fff;background:#003963;'
+            f'  padding:2px 5px;border-radius:2px;letter-spacing:0.04em;white-space:nowrap;">{badge}</span>'
+            f'</td>'
+            f'<td style="padding:8px 0;vertical-align:top;">'
+            f'  <span style="font-family:Helvetica Neue,Helvetica,Arial,sans-serif;'
+            f'  font-size:11px;font-weight:600;color:#2c3a4a;display:block;margin-bottom:3px;">{summary}</span>'
+            f'  <span style="font-family:Helvetica Neue,Helvetica,Arial,sans-serif;'
+            f'  font-size:10px;color:#8a9bb0;font-style:italic;">[{_LOREM}]</span>'
+            f'</td>'
+            f'<td style="padding:8px 0 8px 8px;vertical-align:top;text-align:right;white-space:nowrap;">'
+            f'  {assignee_cell}'
+            f'</td>'
+            f'</tr>'
+        )
+    if not project_rows:
+        project_rows = (
+            '<tr><td colspan="3" style="padding:10px;font-family:Helvetica,Arial,sans-serif;'
+            'font-size:10px;color:#aab4c0;">No projects found</td></tr>'
+        )
+
+    # ── Shared style tokens ────────────────────────────────────────────────────
+    _eyebrow = (
+        'font-family:Helvetica Neue,Helvetica,Arial,sans-serif;font-size:9px;'
+        'font-weight:700;color:#8a9bb0;text-transform:uppercase;letter-spacing:0.14em;'
+        'margin:0 0 4px;'
+    )
+    _heading = (
+        'font-family:Georgia,\'Times New Roman\',serif;font-size:14px;'
+        'font-weight:bold;color:#003963;margin:0 0 14px;padding-bottom:8px;'
+        'border-bottom:1px solid #d8dfe8;'
+    )
+    _section = 'background:#ffffff;padding:24px 28px;'
+    _divider = (
+        '<tr><td style="height:1px;background:#e4e8ee;font-size:1px;line-height:1px;">'
+        '&#8203;</td></tr>'
+    )
+    _col_hdr = (
+        'style="padding:0 12px 8px;font-family:Helvetica Neue,Helvetica,Arial,sans-serif;'
+        'font-size:9px;font-weight:700;color:#8a9bb0;text-transform:uppercase;'
+        'letter-spacing:0.1em;text-align:center;border-bottom:2px solid #e4e8ee;"'
+    )
+    trend_hdr = f'<td {_col_hdr}>8-Wk Trend</td>' if has_spark else ''
+
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+  <title>CFO Update &mdash; IT</title>
+</head>
+<body style="margin:0;padding:0;background:#f0f2f6;font-family:Georgia,'Times New Roman',serif;">
+
+<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#f0f2f6;">
+  <tr>
+    <td align="center" style="padding:24px 16px;">
+
+      <table width="600" cellpadding="0" cellspacing="0" border="0"
+             style="max-width:600px;border-radius:4px;overflow:hidden;
+                    box-shadow:0 2px 8px rgba(0,57,99,0.12);">
+
+        <!-- HEADER -->
+        <tr>
+          <td style="background:#003963;padding:24px 28px 20px;">
+            <p style="font-family:Helvetica Neue,Helvetica,Arial,sans-serif;font-size:9px;
+                      font-weight:700;color:rgba(251,185,58,0.8);text-transform:uppercase;
+                      letter-spacing:0.2em;margin:0 0 6px 0;">
+              Cedarville University &nbsp;&middot;&nbsp; Information Technology
+            </p>
+            <h1 style="font-family:Georgia,'Times New Roman',serif;font-size:22px;
+                       font-weight:bold;color:#ffffff;margin:0 0 8px 0;line-height:1.2;">
+              CFO Update
+            </h1>
+            <table cellpadding="0" cellspacing="0" border="0">
+              <tr>
+                <td style="font-family:Georgia,'Times New Roman',serif;font-style:italic;
+                           font-size:13px;color:#FBB93A;padding-right:14px;">
+                  {period_label}
+                </td>
+                <td style="font-family:Helvetica Neue,Helvetica,Arial,sans-serif;font-size:10px;
+                           color:rgba(255,255,255,0.4);">
+                  Generated {generated_at}
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+
+        <!-- GOLD RULE -->
+        <tr>
+          <td style="height:3px;background:linear-gradient(to right,#FBB93A,#F59536 40%,transparent);
+                     font-size:1px;line-height:1px;">&#8203;</td>
+        </tr>
+
+        <!-- DISCUSSION -->
+        <tr>
+          <td style="{_section}">
+            <p style="{_eyebrow}">For Discussion</p>
+            <p style="{_heading}">Discussion</p>
+            <ul style="font-family:Helvetica Neue,Helvetica,Arial,sans-serif;font-size:12px;
+                       color:#2c3a4a;line-height:1.7;margin:0;padding-left:18px;">
+              <li style="margin-bottom:6px;">[Replace with your first discussion point for this week.]</li>
+              <li style="margin-bottom:6px;">[Replace with your second discussion point or key highlight.]</li>
+              <li style="margin-bottom:6px;">[Replace with any risk, blocker, or upcoming milestone.]</li>
+              <li>[Replace with a request for input or decision needed.]</li>
+            </ul>
+          </td>
+        </tr>
+
+        {_divider}
+
+        <!-- TICKET VOLUME -->
+        <tr>
+          <td style="{_section}">
+            <p style="{_eyebrow}">Activity</p>
+            <p style="{_heading}">Ticket Volume &mdash; {week_range}</p>
+            <table cellpadding="0" cellspacing="0" width="100%"
+                   style="border-collapse:collapse;">
+              <tr>
+                <td width="80"></td>
+                <td {_col_hdr}>Last 7 Days</td>
+                <td {_col_hdr}>Prior 7 Days</td>
+                <td {_col_hdr}>Year Ago</td>
+                {trend_hdr}
+              </tr>
+              {created_row}
+              {closed_row}
+            </table>
+          </td>
+        </tr>
+
+        {_divider}
+
+        <!-- OPEN TICKETS KPI -->
+        <tr>
+          <td style="{_section}">
+            <p style="{_eyebrow}">Queue Depth</p>
+            <p style="{_heading}">Open Tickets</p>
+            <table cellpadding="0" cellspacing="0" border="0">
+              <tr>
+                <td style="padding-right:20px;vertical-align:middle;">
+                  <span style="font-family:Georgia,'Times New Roman',serif;font-size:48px;
+                               font-weight:bold;color:#003963;line-height:1;">
+                    {escape(str(total_open))}
+                  </span>
+                </td>
+                <td style="vertical-align:middle;padding-right:20px;">
+                  <span style="font-family:Helvetica Neue,Helvetica,Arial,sans-serif;font-size:11px;
+                               color:#6b7c93;display:block;line-height:1.5;">
+                    total open as of {escape(snapshot.get("as_of_label", ""))}
+                  </span>
+                </td>
+                {'<td style="vertical-align:bottom;">' + open_spark + '</td>' if open_spark else ''}
+              </tr>
+            </table>
+          </td>
+        </tr>
+
+        {_divider}
+
+        <!-- PROJECTS -->
+        <tr>
+          <td style="{_section}">
+            <p style="{_eyebrow}">Projects</p>
+            <p style="{_heading}">In Progress Projects</p>
+            <table cellpadding="0" cellspacing="0" width="100%"
+                   style="border-collapse:collapse;">
+              {project_rows}
+            </table>
+          </td>
+        </tr>
+
+        <!-- FOOTER -->
+        <tr>
+          <td style="background:#002a4a;padding:14px 28px;">
+            <p style="font-family:Helvetica Neue,Helvetica,Arial,sans-serif;font-size:9px;
+                      font-weight:600;color:rgba(255,255,255,0.35);text-transform:uppercase;
+                      letter-spacing:0.1em;margin:0;">
+              Cedarville University Information Technology &nbsp;&middot;&nbsp; Confidential
+            </p>
+          </td>
+        </tr>
+
+      </table>
+    </td>
+  </tr>
+</table>
+
+</body>
+</html>
+"""
+
+
+def write_cfo_email(snapshot: dict, output_path: Path) -> Path:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(render_cfo_email_html(snapshot))
     return output_path
 
 

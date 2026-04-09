@@ -53,3 +53,26 @@ def test_normalize_ticket_rows_extracts_fields_needed_for_survey_join():
     assert df.loc[0, "resolved_at"] == "2026-03-01T09:00:00Z"
     assert df.loc[0, "sla_name"] == "Standard"
     assert not bool(df.loc[0, "is_sla_violated"])
+
+
+def test_normalize_ticket_rows_treats_csharp_datetime_min_as_none():
+    """RespondedDate / CompletedDate of 0001-01-01 is a C# DateTime.MinValue sentinel; store as None."""
+    rows = [
+        {
+            "ID": 99,
+            "Title": "Open ticket",
+            "CreatedDate": "2026-04-01T08:00:00Z",
+            "ModifiedDate": "2026-04-07T10:00:00Z",
+            "RespondedDate": "0001-01-01T00:00:00",
+            "CompletedDate": "0001-01-01T00:00:00",
+            "RespondByDate": "0001-01-01T00:00:00",
+            "ResolveByDate": "0001-01-01T00:00:00",
+        }
+    ]
+
+    df = normalize_ticket_rows(rows)
+
+    assert df.loc[0, "responded_at"] is None
+    assert df.loc[0, "resolved_at"] is None
+    assert df.loc[0, "respond_by_at"] is None
+    assert df.loc[0, "resolve_by_at"] is None

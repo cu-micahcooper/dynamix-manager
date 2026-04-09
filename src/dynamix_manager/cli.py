@@ -74,6 +74,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Generate the executive email HTML from cached data",
     )
 
+    # generate-cfo-email
+    subparsers.add_parser(
+        "generate-cfo-email",
+        help="Generate the CFO Update email from cached TDX data + live YouTrack projects",
+    )
+
     return parser
 
 
@@ -130,6 +136,10 @@ def main() -> None:
 
     elif args.command == "generate-email":
         result = pipeline.generate_executive_email(config=config)
+        print(json.dumps(result, indent=2))
+
+    elif args.command == "generate-cfo-email":
+        result = pipeline.generate_cfo_email(config=config)
         print(json.dumps(result, indent=2))
 
     else:

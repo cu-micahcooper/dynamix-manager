@@ -12,6 +12,13 @@ def build_ticket_search_filters(modified_from: str | None = None) -> dict[str, o
     return payload
 
 
+def _clean_date(value: object) -> object:
+    """Return None for C# DateTime.MinValue (0001-01-01) sentinels; pass other values through."""
+    if isinstance(value, str) and value.startswith("0001-"):
+        return None
+    return value
+
+
 def normalize_ticket_rows(rows: Iterable[dict]) -> pd.DataFrame:
     normalized = []
     for row in rows:
@@ -29,15 +36,15 @@ def normalize_ticket_rows(rows: Iterable[dict]) -> pd.DataFrame:
                 "assignee_uid": row.get("RespondedUid") or row.get("ResponsibleUid"),
                 "requestor_name": row.get("RequestorName"),
                 "requestor_uid": row.get("RequestorUid"),
-                "created_at": row.get("CreatedDate"),
-                "modified_at": row.get("ModifiedDate"),
-                "responded_at": row.get("RespondedDate"),
-                "resolved_at": row.get("CompletedDate"),
+                "created_at": _clean_date(row.get("CreatedDate")),
+                "modified_at": _clean_date(row.get("ModifiedDate")),
+                "responded_at": _clean_date(row.get("RespondedDate")),
+                "resolved_at": _clean_date(row.get("CompletedDate")),
                 "completed_by_name": row.get("CompletedFullName"),
                 "sla_name": row.get("SlaName"),
-                "sla_begin_at": row.get("SlaBeginDate"),
-                "respond_by_at": row.get("RespondByDate"),
-                "resolve_by_at": row.get("ResolveByDate"),
+                "sla_begin_at": _clean_date(row.get("SlaBeginDate")),
+                "respond_by_at": _clean_date(row.get("RespondByDate")),
+                "resolve_by_at": _clean_date(row.get("ResolveByDate")),
                 "is_sla_violated": row.get("IsSlaViolated"),
                 "is_sla_respond_by_violated": row.get("IsSlaRespondByViolated"),
                 "is_sla_resolve_by_violated": row.get("IsSlaResolveByViolated"),

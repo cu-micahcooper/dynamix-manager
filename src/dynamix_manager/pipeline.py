@@ -12,6 +12,7 @@ from dynamix_manager.notebooks import (
 )
 from dynamix_manager.planned_days_off import PLANNED_DAYS_OFF
 from dynamix_manager.config import RuntimeConfig, survey_report_id
+from dynamix_manager.cfo import summarize_cfo_snapshot
 from dynamix_manager.executive import summarize_executive_snapshot
 from dynamix_manager.reporting import (
     write_survey_health_report,
@@ -19,7 +20,10 @@ from dynamix_manager.reporting import (
     write_ticket_quality_report,
     write_executive_email,
     write_executive_report,
+    write_cfo_email,
 )
+from dynamix_manager.gmail import create_draft, credentials_available
+from dynamix_manager.youtrack import fetch_youtrack_inprogress_projects
 from dynamix_manager.storage import read_table, replace_table, table_exists
 from dynamix_manager.ticket_quality import (
     build_ticket_quality_flags,
@@ -429,6 +433,59 @@ def generate_executive_email(
         "email_path": str(email_path),
         "new_tickets_this_week": snapshot["new_tickets_this_week"],
         "stale_open_count": snapshot["stale_open_count"],
+    }
+
+
+def generate_cfo_email(
+    config: RuntimeConfig,
+) -> dict[str, object]:
+    """Render the CFO Update email from cached TDX data + live YouTrack projects."""
+    tickets = read_table(config.db_path, "tickets") if table_exists(config.db_path, "tickets") else pd.DataFrame()
+    surveys = (
+        read_table(config.db_path, "survey_responses")
+        if table_exists(config.db_path, "survey_responses")
+        else pd.DataFrame()
+    )
+
+    youtrack_projects: list[dict] = []
+    if config.youtrack_base and config.youtrack_token:
+        try:
+            youtrack_projects = fetch_youtrack_inprogress_projects(
+                config.youtrack_base, config.youtrack_token,
+                board_id=config.youtrack_board_id,
+            )
+        except Exception:
+            youtrack_projects = []
+
+    snapshot = summarize_cfo_snapshot(tickets, surveys, youtrack_projects=youtrack_projects)
+
+    artifact_root = _artifact_root(config)
+    email_path = artifact_root / "reports" / "cfo_email.html"
+    write_cfo_email(snapshot, email_path)
+
+    draft_id = None
+    if credentials_available(config.gmail_token_path):
+        try:
+            week_label = snapshot.get("week_label", "")
+            subject = f"CFO Update \u2013 IT | {week_label}"
+            draft = create_draft(
+                subject=subject,
+                html_body=email_path.read_text(),
+                to=config.gmail_draft_to or "",
+                token_path_override=config.gmail_token_path,
+            )
+            draft_id = draft.get("id")
+        except Exception as exc:
+            print(f"[gmail] Draft creation skipped: {exc}")
+
+    return {
+        "email_written": int(email_path.exists()),
+        "email_path": str(email_path),
+        "tickets_created_this_week": snapshot["tickets_created_this_week"],
+        "tickets_closed_this_week": snapshot["tickets_closed_this_week"],
+        "total_open_tickets": snapshot["total_open_tickets"],
+        "youtrack_project_count": len(youtrack_projects),
+        "gmail_draft_id": draft_id,
     }
 
 
