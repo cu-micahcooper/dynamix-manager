@@ -23,13 +23,38 @@ _SNAPSHOT = {
     "tickets_closed_ww_delta_pct": 7.1,
     "tickets_closed_yy_delta_pct": 20.0,
     "total_open_tickets": 117,
+    "total_open_tickets_prior_week": 105,
+    "total_open_tickets_ww_delta": 12,
     "created_weekly": _WEEKLY,
     "closed_weekly": _WEEKLY,
     "open_weekly": _WEEKLY,
-    "youtrack_projects": [
-        {"id": "IPS-20", "summary": "MyCU2", "it_team": "User Services", "assignee": "Jane Doe", "project_short": "IPS"},
-        {"id": "TOPS-1144", "summary": "Bolthouse Academic Center Construction", "it_team": "Tech Ops", "assignee": "", "project_short": "TOPS"},
+    "survey_comments": [
+        {
+            "survey_completed_at": "2025-04-08T11:00:00+00:00",
+            "satisfaction_label": "Very Satisfied",
+            "commenter_name": "Jane Doe",
+            "ticket_title": "Password Reset",
+            "team_name": "Client Services",
+            "comment_text": "Helpful support",
+        },
+        {
+            "survey_completed_at": "2025-04-07T09:00:00+00:00",
+            "satisfaction_label": "Satisfied",
+            "commenter_name": "John Smith",
+            "ticket_title": "Laptop does not connect to the campus wireless network after update",
+            "team_name": "Infrastructure",
+            "comment_text": "Quick turnaround",
+        },
     ],
+    "youtrack_projects": [
+        {"id": "IPS-20", "summary": "MyCU2", "it_team": "User Services", "assignee": "Jane Doe", "project_short": "IPS", "is_new_this_week": True},
+        {"id": "TOPS-1144", "summary": "Bolthouse Academic Center Construction", "it_team": "Tech Ops", "assignee": "", "project_short": "TOPS", "is_new_this_week": False},
+    ],
+    "youtrack_project_movement": {
+        "in_progress_count": 2,
+        "new_this_week": 1,
+        "completed_this_week": 1,
+    },
 }
 
 
@@ -57,6 +82,37 @@ def test_cfo_email_shows_ticket_counts():
 def test_cfo_email_shows_open_tickets():
     html = render_cfo_email_html(_SNAPSHOT)
     assert "117" in html
+    assert "+12 vs prior week" in html
+
+
+def test_cfo_email_shows_survey_comments():
+    html = render_cfo_email_html(_SNAPSHOT)
+    assert "Survey Comments" in html
+    assert "Helpful support" in html
+    assert "Apr 8 · Very Satisfied · Password Reset" in html
+    assert "Quick turnaround" in html
+    assert "Jane Doe" in html
+    assert "John Smith" in html
+    assert "border-top:1px solid #e8edf3" not in html
+    assert "Laptop does not connect to the campus wireless network..." in html
+    assert "Laptop does not connect to the campus wireless network after update" not in html
+
+
+def test_cfo_email_escapes_survey_comments():
+    snapshot = dict(_SNAPSHOT)
+    snapshot["survey_comments"] = [
+        {
+            "survey_completed_at": "2025-04-08T11:00:00+00:00",
+            "satisfaction_label": "Satisfied",
+            "team_name": "Client Services",
+            "comment_text": '<script>alert("xss")</script>',
+        }
+    ]
+
+    html = render_cfo_email_html(snapshot)
+
+    assert '<script>alert("xss")</script>' not in html
+    assert "&lt;script&gt;alert(&quot;xss&quot;)&lt;/script&gt;" in html
 
 
 def test_cfo_email_shows_delta_badge():
@@ -70,6 +126,8 @@ def test_cfo_email_shows_youtrack_projects():
     assert "MyCU2" in html                                  # issue summary
     assert "Tech Ops" in html                               # IT Team badge
     assert "Bolthouse Academic Center Construction" in html  # issue summary
+    assert "2 in progress · 1 new this week · 1 completed this week" in html
+    assert "NEW THIS WEEK" in html
 
 
 def test_cfo_email_shows_header():
@@ -112,7 +170,14 @@ def test_cfo_email_no_data_graceful():
         "tickets_closed_ww_delta_pct": None,
         "tickets_closed_yy_delta_pct": None,
         "total_open_tickets": 0,
+        "total_open_tickets_prior_week": 0,
+        "total_open_tickets_ww_delta": 0,
         "youtrack_projects": [],
+        "youtrack_project_movement": {
+            "in_progress_count": 0,
+            "new_this_week": 0,
+            "completed_this_week": 0,
+        },
     }
     html = render_cfo_email_html(empty_snapshot)
     assert "no prior data" in html

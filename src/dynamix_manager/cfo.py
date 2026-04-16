@@ -2,6 +2,16 @@ from __future__ import annotations
 
 import pandas as pd
 
+_YOUTRACK_DONE_STAGES = {
+    "done",
+    "closed",
+    "resolved",
+    "fixed",
+    "completed",
+    "cancelled",
+    "canceled",
+}
+
 
 def _fmt(ts: pd.Timestamp) -> str:
     return ts.strftime("%b %-d")
@@ -107,10 +117,72 @@ def _parse_dates(col: pd.Series) -> pd.Series:
     return pd.to_datetime(col, utc=True, errors="coerce")
 
 
+def _recent_survey_comments(
+    surveys: pd.DataFrame,
+    tickets: pd.DataFrame | None = None,
+    *,
+    period_start: pd.Timestamp,
+    as_of: pd.Timestamp,
+    limit: int = 5,
+) -> list[dict[str, str]]:
+    if surveys.empty or "survey_completed_at" not in surveys.columns or "comment_text" not in surveys.columns:
+        return []
+
+    comments = surveys.copy()
+    comments["survey_completed_at"] = _parse_dates(comments["survey_completed_at"])
+    comments["comment_text"] = comments["comment_text"].astype("string").fillna("")
+    mask = (
+        comments["survey_completed_at"].notna()
+        & (comments["survey_completed_at"] >= period_start)
+        & (comments["survey_completed_at"] <= as_of)
+        & comments["comment_text"].str.strip().ne("")
+    )
+    comments = comments.loc[mask].sort_values("survey_completed_at", ascending=False)
+    if comments.empty:
+        return []
+
+    if (
+        tickets is not None
+        and not tickets.empty
+        and "ticket_id" in comments.columns
+        and "ticket_id" in tickets.columns
+        and "ticket_title" in tickets.columns
+    ):
+        ticket_titles = tickets.loc[:, ["ticket_id", "ticket_title"]].drop_duplicates(
+            subset=["ticket_id"], keep="last"
+        )
+        comments = comments.merge(ticket_titles, how="left", on="ticket_id")
+
+    columns = [
+        col
+        for col in [
+            "survey_completed_at",
+            "satisfaction_label",
+            "commenter_name",
+            "ticket_title",
+            "team_name",
+            "comment_text",
+        ]
+        if col in comments.columns
+    ]
+    rows: list[dict[str, str]] = []
+    for row in comments.loc[:, columns].head(limit).to_dict(orient="records"):
+        normalized: dict[str, str] = {}
+        for key, value in row.items():
+            if key == "survey_completed_at":
+                normalized[key] = pd.Timestamp(value).isoformat()
+            elif pd.isna(value):
+                normalized[key] = ""
+            else:
+                normalized[key] = str(value)
+        rows.append(normalized)
+    return rows
+
+
 def summarize_cfo_snapshot(
     tickets: pd.DataFrame,
     surveys: pd.DataFrame,
-    youtrack_projects: list[dict] | None = None,
+    youtrack_projects: list[dict] | dict[str, object] | None = None,
     as_of: pd.Timestamp | None = None,
 ) -> dict[str, object]:
     """Aggregate data for the CFO Update email.
@@ -175,22 +247,6 @@ def summarize_cfo_snapshot(
     )
 
     # ── Total open tickets ─────────────────────────────────────────────────────
-    if not tickets.empty:
-        sc_col = (
-            pd.to_numeric(tickets["status_class"], errors="coerce")
-            if "status_class" in tickets.columns
-            else pd.Series([float("nan")] * len(tickets))
-        )
-        resolved_col = (
-            _parse_dates(tickets["resolved_at"])
-            if "resolved_at" in tickets.columns
-            else pd.Series([pd.NaT] * len(tickets))
-        )
-        open_mask = ~sc_col.isin({3, 4}) & resolved_col.isna()
-        result["total_open_tickets"] = int(open_mask.sum())
-    else:
-        result["total_open_tickets"] = 0
-
     # ── 8-period trends (rolling 7-day windows) ────────────────────────────────
     windows = _build_7day_windows(as_of, n=8)
     period_labels = [_fmt(s) for s, _ in windows]
@@ -214,12 +270,21 @@ def summarize_cfo_snapshot(
         result["closed_weekly"] = [{"week": lbl, "count": 0} for lbl in period_labels]
 
     if not tickets.empty:
+        open_counts = _open_weekly_series(tickets, windows)
         result["open_weekly"] = [
             {"week": lbl, "count": c}
-            for lbl, c in zip(period_labels, _open_weekly_series(tickets, windows))
+            for lbl, c in zip(period_labels, open_counts)
         ]
+        result["total_open_tickets"] = int(open_counts[-1])
+        result["total_open_tickets_prior_week"] = int(open_counts[-2]) if len(open_counts) > 1 else 0
     else:
         result["open_weekly"] = [{"week": lbl, "count": 0} for lbl in period_labels]
+        result["total_open_tickets"] = 0
+        result["total_open_tickets_prior_week"] = 0
+
+    result["total_open_tickets_ww_delta"] = (
+        result["total_open_tickets"] - result["total_open_tickets_prior_week"]
+    )
 
     # ── Survey: last 7 days ────────────────────────────────────────────────────
     _EASY = {"Very Easy", "Easy"}
@@ -242,8 +307,76 @@ def summarize_cfo_snapshot(
     result["survey_effort_total"] = effort_total
     result["survey_easy_rate"] = easy_rate
     result["survey_period_label"] = f"{_fmt(period_start)} – {_fmt(as_of)}"
+    result["survey_comments"] = _recent_survey_comments(
+        surveys,
+        tickets,
+        period_start=period_start,
+        as_of=as_of,
+    )
 
     # ── YouTrack projects ──────────────────────────────────────────────────────
-    result["youtrack_projects"] = youtrack_projects or []
+    project_rows: list[dict] = []
+    sprint_issues: list[dict] = []
+    if isinstance(youtrack_projects, dict):
+        project_rows = list(youtrack_projects.get("projects") or [])
+        sprint_issues = list(youtrack_projects.get("sprint_issues") or [])
+    else:
+        project_rows = list(youtrack_projects or [])
+
+    project_movement = {
+        "in_progress_count": len(project_rows),
+        "new_this_week": 0,
+        "completed_this_week": 0,
+    }
+    if sprint_issues:
+        sprint_frame = pd.DataFrame(sprint_issues)
+        created = (
+            _parse_dates(sprint_frame["created_at"])
+            if "created_at" in sprint_frame.columns
+            else pd.Series([pd.NaT] * len(sprint_frame), dtype="datetime64[ns, UTC]")
+        )
+        resolved = (
+            _parse_dates(sprint_frame["resolved_at"])
+            if "resolved_at" in sprint_frame.columns
+            else pd.Series([pd.NaT] * len(sprint_frame), dtype="datetime64[ns, UTC]")
+        )
+        updated = (
+            _parse_dates(sprint_frame["updated_at"])
+            if "updated_at" in sprint_frame.columns
+            else pd.Series([pd.NaT] * len(sprint_frame), dtype="datetime64[ns, UTC]")
+        )
+        stage = (
+            sprint_frame["stage"].astype("string").str.strip().str.lower()
+            if "stage" in sprint_frame.columns
+            else pd.Series([""] * len(sprint_frame), dtype="string")
+        )
+        project_movement["new_this_week"] = int(
+            (created.notna() & (created >= period_start) & (created <= as_of)).sum()
+        )
+        new_issue_ids = set(
+            sprint_frame.loc[
+                created.notna() & (created >= period_start) & (created <= as_of),
+                "id",
+            ].astype("string")
+        )
+        completed_mask = (
+            resolved.notna() & (resolved >= period_start) & (resolved <= as_of)
+        ) | (
+            resolved.isna()
+            & stage.isin(_YOUTRACK_DONE_STAGES)
+            & updated.notna()
+            & (updated >= period_start)
+            & (updated <= as_of)
+        )
+        project_movement["completed_this_week"] = int(completed_mask.sum())
+        project_rows = [
+            {
+                **project,
+                "is_new_this_week": str(project.get("id") or "") in new_issue_ids,
+            }
+            for project in project_rows
+        ]
+    result["youtrack_projects"] = project_rows
+    result["youtrack_project_movement"] = project_movement
 
     return result

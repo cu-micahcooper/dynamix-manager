@@ -9,6 +9,7 @@ from dynamix_manager.pipeline import (
     cache_survey_report,
     cache_ticket_context,
     discover_ticket_app,
+    generate_cfo_email,
     generate_executive_report,
     materialize_ticket_linked_surveys,
     refresh_survey_slice,
@@ -881,3 +882,52 @@ def test_generate_executive_report_writes_html_and_returns_summary(tmp_path):
     assert "IT Executive Report" in report_path.read_text()
     assert result["report_written"] == 1
     assert "new_tickets_this_week" in result
+
+
+def test_generate_cfo_email_uses_period_label_in_draft_subject(tmp_path, monkeypatch):
+    config = RuntimeConfig(
+        base_url="https://example.test",
+        app_id="1234",
+        username="user",
+        password="pass",
+        db_path=tmp_path / "analytics.duckdb",
+        report_output_path=tmp_path / "survey_health.html",
+        notebook_output_path=tmp_path / "survey_health.ipynb",
+        gmail_token_path=str(tmp_path / "gmail-token.json"),
+        gmail_draft_to="cfo@example.test",
+    )
+    replace_table(config.db_path, "tickets", pd.DataFrame([{"ticket_id": 1}]).iloc[0:0])
+    replace_table(config.db_path, "survey_responses", pd.DataFrame([{"response_id": 1}]).iloc[0:0])
+
+    monkeypatch.setattr(
+        "dynamix_manager.pipeline.fetch_youtrack_inprogress_projects",
+        lambda *args, **kwargs: [],
+    )
+
+    captured: dict[str, str] = {}
+
+    def fake_create_draft(*, subject: str, html_body: str, to: str, token_path_override: str | None = None):
+        captured["subject"] = subject
+        captured["to"] = to
+        captured["html_body"] = html_body
+        captured["token_path_override"] = token_path_override or ""
+        return {"id": "draft-123"}
+
+    monkeypatch.setattr("dynamix_manager.pipeline.credentials_available", lambda path: True)
+    monkeypatch.setattr("dynamix_manager.pipeline.create_draft", fake_create_draft)
+    monkeypatch.setattr(
+        "dynamix_manager.pipeline.summarize_cfo_snapshot",
+        lambda tickets, surveys, youtrack_projects=None: {
+            "period_label": "Apr 8 – Apr 15",
+            "tickets_created_this_week": 0,
+            "tickets_closed_this_week": 0,
+            "total_open_tickets": 0,
+            "youtrack_projects": [],
+        },
+    )
+
+    result = generate_cfo_email(config)
+
+    assert captured["subject"] == "CFO Update – IT | Apr 8 – Apr 15"
+    assert captured["to"] == "cfo@example.test"
+    assert result["gmail_draft_id"] == "draft-123"

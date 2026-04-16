@@ -447,7 +447,7 @@ def generate_cfo_email(
         else pd.DataFrame()
     )
 
-    youtrack_projects: list[dict] = []
+    youtrack_projects: list[dict] | dict[str, object] = []
     if config.youtrack_base and config.youtrack_token:
         try:
             youtrack_projects = fetch_youtrack_inprogress_projects(
@@ -466,8 +466,8 @@ def generate_cfo_email(
     draft_id = None
     if credentials_available(config.gmail_token_path):
         try:
-            week_label = snapshot.get("week_label", "")
-            subject = f"CFO Update \u2013 IT | {week_label}"
+            period_label = snapshot.get("period_label") or snapshot.get("week_range_label") or ""
+            subject = f"CFO Update \u2013 IT | {period_label}"
             draft = create_draft(
                 subject=subject,
                 html_body=email_path.read_text(),
@@ -484,7 +484,11 @@ def generate_cfo_email(
         "tickets_created_this_week": snapshot["tickets_created_this_week"],
         "tickets_closed_this_week": snapshot["tickets_closed_this_week"],
         "total_open_tickets": snapshot["total_open_tickets"],
-        "youtrack_project_count": len(youtrack_projects),
+        "youtrack_project_count": len(
+            youtrack_projects.get("projects", youtrack_projects)
+            if isinstance(youtrack_projects, dict)
+            else youtrack_projects
+        ),
         "gmail_draft_id": draft_id,
     }
 

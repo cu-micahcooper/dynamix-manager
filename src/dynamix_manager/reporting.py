@@ -1765,7 +1765,27 @@ def render_cfo_email_html(snapshot: dict) -> str:
     year_ago_range = snapshot.get("year_ago_range_label", "year ago")
 
     total_open = snapshot.get("total_open_tickets", 0)
+    total_open_prior = snapshot.get("total_open_tickets_prior_week", 0)
+    total_open_delta = snapshot.get("total_open_tickets_ww_delta", 0)
     projects: list[dict] = snapshot.get("youtrack_projects", [])
+    project_movement: dict[str, int] = snapshot.get("youtrack_project_movement", {})
+    survey_comments: list[dict] = snapshot.get("survey_comments", [])
+
+    def _truncate_metadata(text: str, max_length: int = 58) -> str:
+        clean = text.strip()
+        if len(clean) <= max_length:
+            return clean
+        return clean[: max_length - 3].rstrip() + "..."
+
+    def _signed_count(value: int) -> str:
+        return f"+{value}" if value > 0 else str(value)
+
+    def _trend_color(value: int, *, positive: str, negative: str, neutral: str) -> str:
+        if value > 0:
+            return positive
+        if value < 0:
+            return negative
+        return neutral
 
     # ── Sparklines ────────────────────────────────────────────────────────────
     created_spark = _cfo_sparkline(snapshot.get("created_weekly", []))
@@ -1807,6 +1827,15 @@ def render_cfo_email_html(snapshot: dict) -> str:
         summary = escape(str(p.get("summary") or p.get("name") or ""))
         badge = escape(str(p.get("it_team") or p.get("team_name") or p.get("short_name") or ""))
         assignee = escape(str(p.get("assignee") or p.get("leader_name") or ""))
+        new_badge = ""
+        if p.get("is_new_this_week"):
+            new_badge = (
+                '<span style="display:inline-block;margin-left:8px;vertical-align:middle;'
+                'font-family:Helvetica Neue,Helvetica,Arial,sans-serif;font-size:8px;'
+                'font-weight:700;color:#8a4b00;background:#fef3c7;padding:2px 6px;'
+                'border-radius:999px;letter-spacing:0.08em;white-space:nowrap;">'
+                'NEW THIS WEEK</span>'
+            )
         assignee_cell = (
             f'<span style="font-family:Helvetica Neue,Helvetica,Arial,sans-serif;'
             f'font-size:9px;color:#8a9bb0;">{assignee}</span>'
@@ -1821,7 +1850,7 @@ def render_cfo_email_html(snapshot: dict) -> str:
             f'</td>'
             f'<td style="padding:8px 0;vertical-align:top;">'
             f'  <span style="font-family:Helvetica Neue,Helvetica,Arial,sans-serif;'
-            f'  font-size:11px;font-weight:600;color:#2c3a4a;display:block;margin-bottom:3px;">{summary}</span>'
+            f'  font-size:11px;font-weight:600;color:#2c3a4a;display:block;margin-bottom:3px;">{summary}{new_badge}</span>'
             f'  <span style="font-family:Helvetica Neue,Helvetica,Arial,sans-serif;'
             f'  font-size:10px;color:#8a9bb0;font-style:italic;">[{_LOREM}]</span>'
             f'</td>'
@@ -1834,6 +1863,88 @@ def render_cfo_email_html(snapshot: dict) -> str:
         project_rows = (
             '<tr><td colspan="3" style="padding:10px;font-family:Helvetica,Arial,sans-serif;'
             'font-size:10px;color:#aab4c0;">No projects found</td></tr>'
+        )
+
+    project_summary_html = (
+        '<p style="font-family:Helvetica Neue,Helvetica,Arial,sans-serif;font-size:11px;'
+        'color:#6b7c93;line-height:1.6;margin:0 0 14px;">'
+        + escape(
+            " · ".join(
+                [
+                    f"{int(project_movement.get('in_progress_count', len(projects)))} in progress",
+                    f"{int(project_movement.get('new_this_week', 0))} new this week",
+                    f"{int(project_movement.get('completed_this_week', 0))} completed this week",
+                ]
+            )
+        )
+        + "</p>"
+    )
+
+    open_trend_color = _trend_color(
+        int(total_open_delta),
+        positive="#b54708",
+        negative="#027a48",
+        neutral="#6b7c93",
+    )
+    open_trend_label = (
+        f"{_signed_count(int(total_open_delta))} vs prior week"
+        if "total_open_tickets_prior_week" in snapshot
+        else "baseline pending prior week data"
+    )
+
+    comment_rows = ""
+    for item in survey_comments[:5]:
+        raw_completed = item.get("survey_completed_at")
+        completed_label = ""
+        if raw_completed:
+            completed_ts = pd.to_datetime(raw_completed, utc=True, errors="coerce")
+            if pd.notna(completed_ts):
+                completed_label = completed_ts.strftime("%b %-d")
+        meta_parts = [
+            part
+            for part in [
+                completed_label,
+                str(item.get("satisfaction_label") or "").strip(),
+                _truncate_metadata(
+                    str(item.get("ticket_title") or "").strip()
+                    or str(item.get("team_name") or "").strip()
+                ),
+            ]
+            if part
+        ]
+        meta_html = ""
+        if meta_parts:
+            meta_html = (
+                '<p style="font-family:Helvetica Neue,Helvetica,Arial,sans-serif;font-size:9px;'
+                'font-weight:700;color:#8a9bb0;text-transform:uppercase;letter-spacing:0.08em;'
+                'margin:0 0 6px;">'
+                + escape(" · ".join(meta_parts))
+                + "</p>"
+            )
+        commenter_name = str(item.get("commenter_name") or "").strip()
+        signature_html = ""
+        if commenter_name:
+            signature_html = (
+                '<div style="margin-top:10px;padding-top:2px;">'
+                '<p style="font-family:Georgia,\'Times New Roman\',serif;font-size:11px;'
+                'font-style:italic;color:#003963;margin:0;">'
+                + escape(commenter_name)
+                + "</p></div>"
+            )
+        comment_rows += (
+            '<tr style="border-bottom:1px solid #f0f2f5;"><td style="padding:12px 0;">'
+            + meta_html
+            + '<p style="font-family:Georgia,\'Times New Roman\',serif;font-size:12px;'
+              'line-height:1.6;color:#2c3a4a;margin:0;">'
+            + escape(str(item.get("comment_text") or ""))
+            + "</p>"
+            + signature_html
+            + "</td></tr>"
+        )
+    if not comment_rows:
+        comment_rows = (
+            '<tr><td style="padding:10px 0;font-family:Helvetica,Arial,sans-serif;'
+            'font-size:10px;color:#aab4c0;">No survey comments received in this period</td></tr>'
         )
 
     # ── Shared style tokens ────────────────────────────────────────────────────
@@ -1967,6 +2078,10 @@ def render_cfo_email_html(snapshot: dict) -> str:
                                color:#6b7c93;display:block;line-height:1.5;">
                     total open as of {escape(snapshot.get("as_of_label", ""))}
                   </span>
+                  <span style="font-family:Helvetica Neue,Helvetica,Arial,sans-serif;font-size:10px;
+                               font-weight:700;color:{open_trend_color};display:block;line-height:1.5;">
+                    {escape(open_trend_label)}
+                  </span>
                 </td>
                 {'<td style="vertical-align:bottom;">' + open_spark + '</td>' if open_spark else ''}
               </tr>
@@ -1979,8 +2094,23 @@ def render_cfo_email_html(snapshot: dict) -> str:
         <!-- PROJECTS -->
         <tr>
           <td style="{_section}">
+            <p style="{_eyebrow}">Voice of Customer</p>
+            <p style="{_heading}">Survey Comments</p>
+            <table cellpadding="0" cellspacing="0" width="100%"
+                   style="border-collapse:collapse;">
+              {comment_rows}
+            </table>
+          </td>
+        </tr>
+
+        {_divider}
+
+        <!-- PROJECTS -->
+        <tr>
+          <td style="{_section}">
             <p style="{_eyebrow}">Projects</p>
             <p style="{_heading}">In Progress Projects</p>
+            {project_summary_html}
             <table cellpadding="0" cellspacing="0" width="100%"
                    style="border-collapse:collapse;">
               {project_rows}

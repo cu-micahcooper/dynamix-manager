@@ -74,6 +74,26 @@ def test_total_open_tickets_excludes_resolved_and_completed():
     assert snap["total_open_tickets"] == 2
 
 
+def test_total_open_tickets_week_over_week_delta_uses_open_series():
+    tickets = _make_tickets(
+        created_dates=[
+            "2025-03-25T09:00:00Z",
+            "2025-04-02T09:00:00Z",
+            "2025-04-08T09:00:00Z",
+        ],
+        resolved_dates=[
+            None,
+            None,
+            None,
+        ],
+        status_classes=[1, 1, 1],
+    )
+    snap = summarize_cfo_snapshot(tickets, pd.DataFrame(), as_of=_AS_OF)
+    assert snap["total_open_tickets_prior_week"] == 2
+    assert snap["total_open_tickets"] == 3
+    assert snap["total_open_tickets_ww_delta"] == 1
+
+
 def test_delta_pct_computed_correctly():
     tickets = _make_tickets(
         created_dates=[
@@ -112,6 +132,71 @@ def test_survey_easy_rate_partial():
     assert snap["survey_easy_rate"] == pytest.approx(0.5)
 
 
+def test_survey_comments_use_same_7_day_window_as_ticket_metrics():
+    tickets = pd.DataFrame(
+        [
+            {"ticket_id": 1, "ticket_title": "Password Reset"},
+            {
+                "ticket_id": 2,
+                "ticket_title": "Laptop does not connect to the campus wireless network after update",
+            },
+        ]
+    )
+    surveys = pd.DataFrame(
+        [
+            {
+                "ticket_id": 1,
+                "survey_completed_at": "2025-04-08T11:00:00Z",
+                "satisfaction_label": "Very Satisfied",
+                "commenter_name": "Jane Doe",
+                "comment_text": "Helpful support",
+                "team_name": "Client Services",
+            },
+            {
+                "ticket_id": 2,
+                "survey_completed_at": "2025-04-07T09:00:00Z",
+                "satisfaction_label": "Satisfied",
+                "commenter_name": "John Smith",
+                "comment_text": "Quick turnaround",
+                "team_name": "Infrastructure",
+            },
+            {
+                "survey_completed_at": "2025-03-31T08:59:59Z",
+                "satisfaction_label": "Dissatisfied",
+                "comment_text": "Outside the current window",
+                "team_name": "Client Services",
+            },
+            {
+                "survey_completed_at": "2025-04-08T12:00:00Z",
+                "satisfaction_label": "Satisfied",
+                "comment_text": "   ",
+                "team_name": "Client Services",
+            },
+        ]
+    )
+
+    snap = summarize_cfo_snapshot(tickets, surveys, as_of=_AS_OF)
+
+    assert snap["survey_comments"] == [
+        {
+            "survey_completed_at": "2025-04-08T11:00:00+00:00",
+            "satisfaction_label": "Very Satisfied",
+            "commenter_name": "Jane Doe",
+            "ticket_title": "Password Reset",
+            "team_name": "Client Services",
+            "comment_text": "Helpful support",
+        },
+        {
+            "survey_completed_at": "2025-04-07T09:00:00+00:00",
+            "satisfaction_label": "Satisfied",
+            "commenter_name": "John Smith",
+            "ticket_title": "Laptop does not connect to the campus wireless network after update",
+            "team_name": "Infrastructure",
+            "comment_text": "Quick turnaround",
+        },
+    ]
+
+
 def test_youtrack_projects_passed_through():
     projects = [
         {"name": "Support", "short_name": "SUP", "description": "", "leader_name": "Jane"},
@@ -121,6 +206,70 @@ def test_youtrack_projects_passed_through():
         pd.DataFrame(), pd.DataFrame(), youtrack_projects=projects, as_of=_AS_OF
     )
     assert snap["youtrack_projects"] == projects
+
+
+def test_youtrack_project_movement_uses_same_7_day_window():
+    youtrack_snapshot = {
+        "projects": [
+            {"id": "YT-1", "summary": "Portal refresh", "it_team": "Apps", "assignee": "Jane"},
+            {"id": "YT-2", "summary": "Wireless refresh", "it_team": "Infra", "assignee": "John"},
+        ],
+        "sprint_issues": [
+            {
+                "id": "YT-1",
+                "summary": "Portal refresh",
+                "stage": "In Progress",
+                "created_at": "2025-04-08T10:00:00+00:00",
+                "resolved_at": "",
+                "updated_at": "2025-04-08T10:00:00+00:00",
+            },
+            {
+                "id": "YT-2",
+                "summary": "Wireless refresh",
+                "stage": "Done",
+                "created_at": "2025-03-25T10:00:00+00:00",
+                "resolved_at": "2025-04-08T14:00:00+00:00",
+                "updated_at": "2025-04-08T14:00:00+00:00",
+            },
+            {
+                "id": "YT-3",
+                "summary": "Outside window",
+                "stage": "Done",
+                "created_at": "2025-03-20T10:00:00+00:00",
+                "resolved_at": "2025-03-31T14:00:00+00:00",
+                "updated_at": "2025-03-31T14:00:00+00:00",
+            },
+        ],
+    }
+
+    snap = summarize_cfo_snapshot(
+        pd.DataFrame(),
+        pd.DataFrame(),
+        youtrack_projects=youtrack_snapshot,
+        as_of=_AS_OF,
+    )
+
+    assert snap["youtrack_projects"] == [
+        {
+            "id": "YT-1",
+            "summary": "Portal refresh",
+            "it_team": "Apps",
+            "assignee": "Jane",
+            "is_new_this_week": True,
+        },
+        {
+            "id": "YT-2",
+            "summary": "Wireless refresh",
+            "it_team": "Infra",
+            "assignee": "John",
+            "is_new_this_week": False,
+        },
+    ]
+    assert snap["youtrack_project_movement"] == {
+        "in_progress_count": 2,
+        "new_this_week": 1,
+        "completed_this_week": 1,
+    }
 
 
 def test_weekly_trend_has_8_entries():

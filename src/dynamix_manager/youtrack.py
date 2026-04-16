@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import requests
 
 
@@ -8,7 +10,7 @@ _PROJECTS_FIELDS = (
     "leader(id,login,name),team(name)"
 )
 _SPRINT_ISSUE_FIELDS = (
-    "idReadable,summary,project(shortName),"
+    "idReadable,summary,created,resolved,updated,project(shortName),"
     "customFields(name,value(name,login))"
 )
 _DONE_STAGES = {"done", "closed", "resolved", "fixed", "completed", "cancelled", "canceled"}
@@ -27,6 +29,16 @@ def _get_custom_field(issue: dict, field_name: str) -> str:
             return val.get("name") or val.get("login") or ""
         return str(val)
     return ""
+
+
+def _normalize_youtrack_datetime(value: object) -> str:
+    if value in (None, ""):
+        return ""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return datetime.fromtimestamp(float(value) / 1000.0, tz=UTC).isoformat()
+    if isinstance(value, str) and value.isdigit():
+        return datetime.fromtimestamp(float(value) / 1000.0, tz=UTC).isoformat()
+    return str(value)
 
 
 def fetch_youtrack_projects(
@@ -64,7 +76,7 @@ def fetch_youtrack_inprogress_projects(
     *,
     board_id: str | None = None,
     top: int = 500,
-) -> list[dict]:
+) -> dict[str, list[dict]]:
     """Return current-sprint issues with Stage = 'In Progress' from the agile board.
 
     Uses /api/agiles/{board_id}/sprints/current to get the board's current sprint,
@@ -90,16 +102,26 @@ def fetch_youtrack_inprogress_projects(
     all_issues: list[dict] = sprint.get("issues") or []
 
     results = []
+    sprint_issues = []
     for issue in all_issues:
         stage = _get_custom_field(issue, "Stage").strip()
-        if stage != "In Progress":
-            continue
-        results.append({
+        normalized_issue = {
             "id": issue.get("idReadable", ""),
             "summary": issue.get("summary", ""),
             "it_team": _get_custom_field(issue, "IT Team"),
             "assignee": _get_custom_field(issue, "Assignee"),
             "project_short": (issue.get("project") or {}).get("shortName", ""),
-        })
+            "stage": stage,
+            "created_at": _normalize_youtrack_datetime(issue.get("created")),
+            "resolved_at": _normalize_youtrack_datetime(issue.get("resolved")),
+            "updated_at": _normalize_youtrack_datetime(issue.get("updated")),
+        }
+        sprint_issues.append(normalized_issue)
+        if stage != "In Progress":
+            continue
+        results.append(normalized_issue)
 
-    return sorted(results, key=lambda i: (i["it_team"].lower(), i["summary"].lower()))
+    return {
+        "projects": sorted(results, key=lambda i: (i["it_team"].lower(), i["summary"].lower())),
+        "sprint_issues": sprint_issues,
+    }
