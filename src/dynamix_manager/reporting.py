@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import base64
 from html import escape
 from pathlib import Path
+import subprocess
+import tempfile
 
 import pandas as pd
 
@@ -16,6 +19,185 @@ _SURVEY_JSON_COLUMNS = [
     "ticket_linked",
     "comment_text",
 ]
+
+_HEADER_BURST_FONT_STACK = (
+    "Georgia, Hoefler Text, Times New Roman, serif"
+)
+_HEADER_BURST_FONT_PATHS = [
+    Path("/System/Library/Fonts/Supplemental/Georgia Bold.ttf"),
+    Path("/System/Library/Fonts/Supplemental/Hoefler Text.ttc"),
+    Path("/System/Library/Fonts/Supplemental/Times New Roman Bold.ttf"),
+]
+_LIGHT_PANEL_PIXEL_DATA_URI = (
+    "data:image/png;base64,"
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAIGNIUk0AAHomAACAhAAA+gAAAIDoAAB1MAAA6mAAADqYAAAXcJy6UTwAAAAGYktHRAD/AP8A/6C9p5MAAAAHdElNRQfqBBcMDx2uwdLQAAAAJXRFWHRkYXRlOmNyZWF0ZQAyMDI2LTA0LTIzVDEyOjE1OjI5KzAwOjAwZ7gXsgAAACV0RVh0ZGF0ZTptb2RpZnkAMjAyNi0wNC0yM1QxMjoxNToyOSswMDowMBblrw4AAAAodEVYdGRhdGU6dGltZXN0YW1wADIwMjYtMDQtMjNUMTI6MTU6MjkrMDA6MDBB8I7RAAAADUlEQVQI12P4/ev7fwAJzAPsuF9sUwAAAABJRU5ErkJggg=="
+)
+
+
+def _burst_line_layout(text: str) -> list[str]:
+    clean = " ".join(text.strip().split())
+    words = clean.split()
+    if not words:
+        return ["Watch This Space"]
+    if len(clean) <= 14 or len(words) == 1:
+        return [" ".join(words)]
+
+    target_lines = 2 if len(clean) <= 20 else 3
+
+    def _score(lines: list[str]) -> tuple[int, int, int]:
+        lengths = [len(line) for line in lines]
+        return (max(lengths), max(lengths) - min(lengths), sum(lengths))
+
+    if target_lines == 2 and len(words) >= 2:
+        options = [
+            [" ".join(words[:idx]), " ".join(words[idx:])]
+            for idx in range(1, len(words))
+        ]
+        return min(options, key=_score)
+
+    if target_lines == 3 and len(words) >= 3:
+        options = [
+            [
+                " ".join(words[:first]),
+                " ".join(words[first:second]),
+                " ".join(words[second:]),
+            ]
+            for first in range(1, len(words) - 1)
+            for second in range(first + 1, len(words))
+        ]
+        return min(options, key=_score)
+
+    midpoint = max(1, len(words) // 2)
+    return [" ".join(words[:midpoint]), " ".join(words[midpoint:])]
+
+
+def _build_header_burst_svg(tagline: str) -> str:
+    burst_lines = _burst_line_layout(tagline)
+    if len(burst_lines) == 1:
+        burst_specs = [(72, 17, burst_lines[0])]
+    elif len(burst_lines) == 2:
+        burst_specs = [(62, 14, burst_lines[0]), (82, 16, burst_lines[1])]
+    else:
+        burst_specs = [(56, 12, burst_lines[0]), (73, 16, burst_lines[1]), (91, 12, burst_lines[2])]
+
+    burst_text_layers = ""
+    for y, size, line in burst_specs:
+        burst_text_layers += (
+            '<text x="90" y="'
+            + str(y + 3)
+            + '" text-anchor="middle" font-family="'
+            + _HEADER_BURST_FONT_STACK
+            + '" font-size="'
+            + str(size)
+            + '" font-weight="700" letter-spacing="0.3" fill="#7d5b13" opacity="0.24">'
+            + escape(line)
+            + "</text>"
+            '<text x="90" y="'
+            + str(y)
+            + '" text-anchor="middle" font-family="'
+            + _HEADER_BURST_FONT_STACK
+            + '" font-size="'
+            + str(size)
+            + '" font-weight="700" letter-spacing="0.3" fill="#003963">'
+            + escape(line)
+            + "</text>"
+        )
+
+    return (
+        '<svg width="180" height="130" viewBox="0 0 180 130" xmlns="http://www.w3.org/2000/svg" '
+        'role="img" aria-label="Weekly tagline">'
+        '<polygon points="90,8 108,22 134,14 138,40 167,39 157,63 180,78 160,94 167,122 138,118 '
+        '134,114 108,106 90,122 72,106 46,114 42,88 13,89 23,65 0,50 20,35 13,8 42,12 46,16 72,22" '
+        'fill="#FBB93A" stroke="#ffffff" stroke-width="4"/>'
+        '<polygon points="90,20 106,32 128,25 132,47 156,47 148,67 168,79 149,92 156,112 132,109 '
+        '128,105 106,98 90,112 74,98 52,105 48,83 24,84 32,64 12,53 31,40 24,20 48,23 52,27 74,32" '
+        'fill="#ffe8ad" opacity="0.55"/>'
+        '<g transform="rotate(12 90 72)">'
+        + burst_text_layers
+        + "</g></svg>"
+    )
+
+
+def _header_burst_font_path() -> Path:
+    for candidate in _HEADER_BURST_FONT_PATHS:
+        if candidate.exists():
+            return candidate
+    raise FileNotFoundError("No usable header burst font file found")
+
+
+def _magick_annotate_text(line: str) -> str:
+    return line.replace("\\", "\\\\").replace('"', r"\"")
+
+
+def render_header_burst_png(tagline: str) -> bytes:
+    burst_lines = _burst_line_layout(tagline)
+    if len(burst_lines) == 1:
+        burst_specs = [(0, 17, burst_lines[0])]
+    elif len(burst_lines) == 2:
+        burst_specs = [(-10, 14, burst_lines[0]), (12, 16, burst_lines[1])]
+    else:
+        burst_specs = [(-17, 12, burst_lines[0]), (0, 16, burst_lines[1]), (17, 12, burst_lines[2])]
+
+    font_path = _header_burst_font_path()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        png_path = Path(tmpdir) / "header_burst.png"
+        command = [
+            "/opt/homebrew/bin/magick",
+            "-size",
+            "180x130",
+            "canvas:none",
+            "-fill",
+            "#FBB93A",
+            "-stroke",
+            "#ffffff",
+            "-strokewidth",
+            "4",
+            "-draw",
+            "polygon 90,8 108,22 134,14 138,40 167,39 157,63 180,78 160,94 167,122 138,118 "
+            "134,114 108,106 90,122 72,106 46,114 42,88 13,89 23,65 0,50 20,35 13,8 42,12 46,16 72,22",
+            "-fill",
+            "#ffe8ad",
+            "-stroke",
+            "none",
+            "-draw",
+            "polygon 90,20 106,32 128,25 132,47 156,47 148,67 168,79 149,92 156,112 132,109 "
+            "128,105 106,98 90,112 74,98 52,105 48,83 24,84 32,64 12,53 31,40 24,20 48,23 52,27 74,32",
+            "-font",
+            str(font_path),
+            "-gravity",
+            "center",
+        ]
+        for y_offset, size, line in burst_specs:
+            text = _magick_annotate_text(line)
+            command.extend(
+                [
+                    "-fill",
+                    "#7d5b13",
+                    "-stroke",
+                    "none",
+                    "-pointsize",
+                    str(size),
+                    "-annotate",
+                    f"12x12+0{y_offset + 2:+d}",
+                    text,
+                    "-fill",
+                    "#003963",
+                    "-stroke",
+                    "none",
+                    "-pointsize",
+                    str(size),
+                    "-annotate",
+                    f"12x12+0{y_offset:+d}",
+                    text,
+                ]
+            )
+        command.append(f"PNG32:{png_path}")
+        subprocess.run(command, check=True, capture_output=True)
+        return png_path.read_bytes()
+
+
+def header_burst_png_data_uri(tagline: str) -> str:
+    return "data:image/png;base64," + base64.b64encode(render_header_burst_png(tagline)).decode("ascii")
 
 
 def _serialize_survey_rows(frame: pd.DataFrame) -> str:
@@ -1467,15 +1649,15 @@ def render_executive_email_html(snapshot: dict) -> str:
   <meta http-equiv="X-UA-Compatible" content="IE=edge" />
   <title>IT Executive Report</title>
 </head>
-<body style="margin:0;padding:0;background:#f0f2f6;font-family:Georgia,'Times New Roman',serif;">
+<body style="margin:0;padding:0;background:#edf1f5;font-family:Georgia,'Times New Roman',serif;">
 
-<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#f0f2f6;">
+<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#edf1f5;">
   <tr>
-    <td align="center" style="padding:24px 16px;">
+    <td align="center" style="padding:28px 16px;">
 
       <table width="600" cellpadding="0" cellspacing="0" border="0"
-             style="max-width:600px;border-radius:4px;overflow:hidden;
-                    box-shadow:0 2px 8px rgba(0,57,99,0.12);">
+             style="max-width:600px;border-radius:6px;overflow:hidden;
+                    box-shadow:0 8px 24px rgba(0,57,99,0.08);">
 
         <!-- HEADER -->
         <tr>
@@ -1637,7 +1819,7 @@ def _cfo_sparkline(
             label_td = (
                 f'<td height="{_LABEL_H}" '
                 f'style="height:{_LABEL_H}px;font-family:Helvetica Neue,Helvetica,Arial,sans-serif;'
-                f'font-size:6px;font-weight:700;color:{current_color};'
+                f'font-size:7px;font-weight:700;color:{current_color};'
                 f'text-align:center;white-space:nowrap;vertical-align:bottom;'
                 f'line-height:{_LABEL_H}px;">{count}</td>'
             )
@@ -1666,7 +1848,7 @@ def _cfo_sparkline(
     caption = (
         f'<tr><td colspan="{n}" '
         f'style="font-family:Helvetica Neue,Helvetica,Arial,sans-serif;'
-        f'font-size:7px;color:#aab4c0;padding-top:3px;white-space:nowrap;'
+        f'font-size:9px;color:#7b8da2;padding-top:5px;white-space:nowrap;'
         f'letter-spacing:0.02em;">'
         f'{first} &#8594; {last} &nbsp;&middot;&nbsp; {unit} periods'
         f'</td></tr>'
@@ -1686,17 +1868,17 @@ def _cfo_delta_badge(pct: float | None, prior_label: str) -> str:
     if pct is None:
         return (
             '<span style="font-family:Helvetica Neue,Helvetica,Arial,sans-serif;'
-            'font-size:9px;color:#aab4c0;">no prior data</span>'
+            'font-size:10px;color:#8597aa;">no prior data</span>'
         )
     arrow = "&#9650;" if pct >= 0 else "&#9660;"
-    color = "#c0392b" if pct > 0 else ("#27ae60" if pct < 0 else "#8a9bb0")
+    color = "#b54708" if pct > 0 else ("#027a48" if pct < 0 else "#5f7186")
     sign = "+" if pct >= 0 else ""
     return (
         f'<span style="font-family:Helvetica Neue,Helvetica,Arial,sans-serif;'
-        f'font-size:9px;font-weight:700;color:{color};">'
+        f'font-size:10px;font-weight:700;color:{color};">'
         f'{arrow} {sign}{pct:.1f}%</span>'
         f'<span style="font-family:Helvetica Neue,Helvetica,Arial,sans-serif;'
-        f'font-size:9px;color:#aab4c0;"> vs {escape(prior_label)}</span>'
+        f'font-size:10px;color:#73859a;"> vs {escape(prior_label)}</span>'
     )
 
 
@@ -1707,8 +1889,10 @@ def _cfo_volume_row(
     ya: int,
     ww_pct: float | None,
     yy_pct: float | None,
+    current_period_label: str,
     prior_week_label: str,
     year_ago_label: str,
+    prior_delta_label: str,
     sparkline_html: str = "",
 ) -> str:
     """One row in the ticket volume comparison table."""
@@ -1722,12 +1906,12 @@ def _cfo_volume_row(
     )
     _sub = (
         'style="font-family:Helvetica Neue,Helvetica,Arial,sans-serif;'
-        'font-size:9px;color:#8a9bb0;display:block;margin-top:2px;"'
+        'font-size:10px;color:#617489;display:block;margin-top:4px;"'
     )
     _lbl = (
         'style="padding:10px 12px 10px 0;vertical-align:middle;'
         'border-bottom:1px solid #edf0f4;font-family:Helvetica Neue,Helvetica,Arial,sans-serif;'
-        'font-size:11px;font-weight:600;color:#2c3a4a;white-space:nowrap;"'
+        'font-size:12px;font-weight:600;color:#243447;white-space:nowrap;"'
     )
     _spark_cell = (
         'style="padding:10px 0 10px 12px;vertical-align:middle;'
@@ -1739,12 +1923,12 @@ def _cfo_volume_row(
         f'<td {_lbl}>{escape(label)}</td>'
         f'<td {_cell}>'
         f'  <span {_num}>{escape(str(tw))}</span>'
-        f'  <span {_sub}>last 7 days</span>'
+        f'  <span {_sub}>{escape(current_period_label)}</span>'
         f'</td>'
         f'<td {_cell}>'
         f'  <span {_num} style="color:#6a90ad;">{escape(str(pw))}</span>'
         f'  <span {_sub}>{escape(prior_week_label)}</span>'
-        f'  <br/>{_cfo_delta_badge(ww_pct, "prior 7 days")}'
+        f'  <br/>{_cfo_delta_badge(ww_pct, prior_delta_label)}'
         f'</td>'
         f'<td {_cell}>'
         f'  <span {_num} style="color:#6a90ad;">{escape(str(ya))}</span>'
@@ -1756,20 +1940,28 @@ def _cfo_volume_row(
     )
 
 
-def render_cfo_email_html(snapshot: dict) -> str:
+def render_cfo_email_html(snapshot: dict, *, header_burst_img_src: str | None = None) -> str:
     """Render the CFO Update as a self-contained HTML email (no JS, inline styles)."""
     period_label = escape(str(snapshot.get("period_label") or snapshot.get("week_range_label", "")))
     generated_at = escape(str(snapshot.get("report_generated_at", ""))[:10])
     week_range = period_label
     prior_week_range = snapshot.get("prior_week_range_label", "prior week")
     year_ago_range = snapshot.get("year_ago_range_label", "year ago")
+    volume_period_label = str(snapshot.get("volume_period_label") or "last 7 days")
+    prior_volume_period_label = str(snapshot.get("prior_volume_period_label") or "prior 7 days")
 
     total_open = snapshot.get("total_open_tickets", 0)
-    total_open_prior = snapshot.get("total_open_tickets_prior_week", 0)
     total_open_delta = snapshot.get("total_open_tickets_ww_delta", 0)
     projects: list[dict] = snapshot.get("youtrack_projects", [])
     project_movement: dict[str, int] = snapshot.get("youtrack_project_movement", {})
     survey_comments: list[dict] = snapshot.get("survey_comments", [])
+    survey_satisfaction_counts: dict[str, int] = snapshot.get("survey_satisfaction_counts", {})
+    survey_satisfaction_total = int(snapshot.get("survey_satisfaction_total", 0) or 0)
+    survey_trailing_year_counts: dict[str, int] = snapshot.get(
+        "survey_satisfaction_counts_trailing_year",
+        {},
+    )
+    survey_trailing_year_total = int(snapshot.get("survey_satisfaction_total_trailing_year", 0) or 0)
 
     def _truncate_metadata(text: str, max_length: int = 58) -> str:
         clean = text.strip()
@@ -1801,8 +1993,10 @@ def render_cfo_email_html(snapshot: dict) -> str:
         snapshot.get("tickets_created_year_ago", 0),
         snapshot.get("tickets_created_ww_delta_pct"),
         snapshot.get("tickets_created_yy_delta_pct"),
+        volume_period_label,
         prior_week_range,
         year_ago_range,
+        prior_volume_period_label,
         sparkline_html=created_spark,
     )
     closed_row = _cfo_volume_row(
@@ -1812,8 +2006,10 @@ def render_cfo_email_html(snapshot: dict) -> str:
         snapshot.get("tickets_closed_year_ago", 0),
         snapshot.get("tickets_closed_ww_delta_pct"),
         snapshot.get("tickets_closed_yy_delta_pct"),
+        volume_period_label,
         prior_week_range,
         year_ago_range,
+        prior_volume_period_label,
         sparkline_html=closed_spark,
     )
 
@@ -1830,31 +2026,32 @@ def render_cfo_email_html(snapshot: dict) -> str:
         new_badge = ""
         if p.get("is_new_this_week"):
             new_badge = (
-                '<span style="display:inline-block;margin-left:8px;vertical-align:middle;'
-                'font-family:Helvetica Neue,Helvetica,Arial,sans-serif;font-size:8px;'
-                'font-weight:700;color:#8a4b00;background:#fef3c7;padding:2px 6px;'
-                'border-radius:999px;letter-spacing:0.08em;white-space:nowrap;">'
-                'NEW THIS WEEK</span>'
+                '<span style="display:inline-block;margin-left:7px;vertical-align:1px;'
+                'font-family:Georgia,\'Times New Roman\',serif;font-size:10px;'
+                'font-weight:bold;font-style:italic;color:#003963;background:#FBB93A;'
+                'border:1px solid #d99a27;border-radius:2px;padding:1px 6px 2px;'
+                'line-height:1.1;letter-spacing:0.01em;white-space:nowrap;">'
+                'New</span>'
             )
         assignee_cell = (
             f'<span style="font-family:Helvetica Neue,Helvetica,Arial,sans-serif;'
-            f'font-size:9px;color:#8a9bb0;">{assignee}</span>'
+            f'font-size:10px;color:#5f7287;">{assignee}</span>'
             if assignee else ""
         )
         project_rows += (
-            f'<tr style="border-bottom:1px solid #f0f2f5;">'
-            f'<td style="padding:8px 8px 8px 0;vertical-align:top;width:80px;">'
+            f'<tr style="border-bottom:1px solid #edf1f5;">'
+            f'<td style="padding:10px 10px 10px 0;vertical-align:top;width:84px;">'
             f'  <span style="font-family:Helvetica Neue,Helvetica,Arial,sans-serif;'
-            f'  font-size:8px;font-weight:700;color:#fff;background:#003963;'
-            f'  padding:2px 5px;border-radius:2px;letter-spacing:0.04em;white-space:nowrap;">{badge}</span>'
+            f'  font-size:9px;font-weight:700;color:#fff;background:#003963;'
+            f'  padding:3px 7px;border-radius:999px;letter-spacing:0.04em;white-space:nowrap;">{badge}</span>'
             f'</td>'
-            f'<td style="padding:8px 0;vertical-align:top;">'
+            f'<td style="padding:10px 0;vertical-align:top;">'
             f'  <span style="font-family:Helvetica Neue,Helvetica,Arial,sans-serif;'
-            f'  font-size:11px;font-weight:600;color:#2c3a4a;display:block;margin-bottom:3px;">{summary}{new_badge}</span>'
+            f'  font-size:12px;font-weight:600;color:#243447;display:block;margin-bottom:4px;line-height:1.4;">{summary}{new_badge}</span>'
             f'  <span style="font-family:Helvetica Neue,Helvetica,Arial,sans-serif;'
-            f'  font-size:10px;color:#8a9bb0;font-style:italic;">[{_LOREM}]</span>'
+            f'  font-size:12px;color:#6f8094;font-style:italic;line-height:1.55;">[{_LOREM}]</span>'
             f'</td>'
-            f'<td style="padding:8px 0 8px 8px;vertical-align:top;text-align:right;white-space:nowrap;">'
+            f'<td style="padding:10px 0 10px 12px;vertical-align:top;text-align:right;white-space:nowrap;">'
             f'  {assignee_cell}'
             f'</td>'
             f'</tr>'
@@ -1862,12 +2059,12 @@ def render_cfo_email_html(snapshot: dict) -> str:
     if not project_rows:
         project_rows = (
             '<tr><td colspan="3" style="padding:10px;font-family:Helvetica,Arial,sans-serif;'
-            'font-size:10px;color:#aab4c0;">No projects found</td></tr>'
+            'font-size:11px;color:#7d8ea2;">No projects moved this week. Either calm prevailed or the paperwork did.</td></tr>'
         )
 
     project_summary_html = (
-        '<p style="font-family:Helvetica Neue,Helvetica,Arial,sans-serif;font-size:11px;'
-        'color:#6b7c93;line-height:1.6;margin:0 0 14px;">'
+        '<p style="font-family:Helvetica Neue,Helvetica,Arial,sans-serif;font-size:12px;'
+        'color:#56697f;line-height:1.7;margin:0 0 16px;">'
         + escape(
             " · ".join(
                 [
@@ -1892,8 +2089,78 @@ def render_cfo_email_html(snapshot: dict) -> str:
         else "baseline pending prior week data"
     )
 
+    def _survey_distribution_card(title: str, subtitle: str, counts: dict[str, int], total: int) -> str:
+        rows = ""
+        for label, count in counts.items():
+            pct = (count / total * 100.0) if total else 0.0
+            rows += (
+                '<tr>'
+                '<td style="padding:4px 10px 4px 0;font-family:Helvetica Neue,Helvetica,Arial,sans-serif;'
+                'font-size:11px;color:#243447;white-space:nowrap;">'
+                + escape(label)
+                + '</td>'
+                '<td style="padding:4px 0;width:100%;">'
+                '<table cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">'
+                '<tr>'
+                '<td style="background:#d9e2ec;border-radius:999px;height:8px;font-size:1px;line-height:1px;">'
+                '<div style="background:#003963;height:8px;border-radius:999px;width:'
+                + f"{pct:.1f}%"
+                + ';"></div>'
+                '</td>'
+                '</tr>'
+                '</table>'
+                '</td>'
+                '<td style="padding:4px 0 4px 10px;font-family:Helvetica Neue,Helvetica,Arial,sans-serif;'
+                'font-size:12px;font-weight:700;color:#5f7186;text-align:right;white-space:nowrap;">'
+                + escape(f"{count} ({pct:.0f}%)")
+                + '</td>'
+                '</tr>'
+            )
+        if not rows:
+            rows = (
+                '<tr><td style="padding:6px 0;font-family:Helvetica Neue,Helvetica,Arial,sans-serif;'
+                'font-size:11px;color:#7d8ea2;">No scored responses</td></tr>'
+            )
+        return (
+            '<td style="width:50%;padding:0 6px;vertical-align:top;">'
+            '<div style="padding:16px 18px;background:#f3efe7;border:1px solid #d2dbe4;border-radius:6px;">'
+            '<p style="font-family:Helvetica Neue,Helvetica,Arial,sans-serif;font-size:11px;font-weight:700;'
+            'color:#52667b;text-transform:uppercase;letter-spacing:0.05em;margin:0 0 8px;">'
+            + escape(title)
+            + '</p>'
+            '<p style="font-family:Helvetica Neue,Helvetica,Arial,sans-serif;font-size:12px;color:#576a80;'
+            'line-height:1.6;margin:0 0 12px;">'
+            + escape(subtitle)
+            + '</p>'
+            '<table cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">'
+            + rows
+            + '</table></div></td>'
+        )
+
+    survey_chart_html = (
+        '<div style="margin:0 0 22px;">'
+        '<p style="font-family:Helvetica Neue,Helvetica,Arial,sans-serif;font-size:11px;font-weight:700;'
+        'color:#52667b;text-transform:uppercase;letter-spacing:0.05em;margin:0 0 12px;">'
+        'Survey Snapshot</p>'
+        '<table cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;margin:0 -6px;">'
+        '<tr>'
+        + _survey_distribution_card(
+            "Past 7 Days",
+            f"{survey_satisfaction_total} scored responses in this period",
+            survey_satisfaction_counts,
+            survey_satisfaction_total,
+        )
+        + _survey_distribution_card(
+            "Past 12 Months",
+            f"{survey_trailing_year_total} scored responses in this rolling year",
+            survey_trailing_year_counts,
+            survey_trailing_year_total,
+        )
+        + '</tr></table></div>'
+    )
+
     comment_rows = ""
-    for item in survey_comments[:5]:
+    for item in survey_comments:
         raw_completed = item.get("survey_completed_at")
         completed_label = ""
         if raw_completed:
@@ -1915,9 +2182,9 @@ def render_cfo_email_html(snapshot: dict) -> str:
         meta_html = ""
         if meta_parts:
             meta_html = (
-                '<p style="font-family:Helvetica Neue,Helvetica,Arial,sans-serif;font-size:9px;'
-                'font-weight:700;color:#8a9bb0;text-transform:uppercase;letter-spacing:0.08em;'
-                'margin:0 0 6px;">'
+                '<p style="font-family:Helvetica Neue,Helvetica,Arial,sans-serif;font-size:11px;'
+                'font-weight:700;color:#5f7186;letter-spacing:0.01em;'
+                'margin:0 0 8px;">'
                 + escape(" · ".join(meta_parts))
                 + "</p>"
             )
@@ -1925,17 +2192,17 @@ def render_cfo_email_html(snapshot: dict) -> str:
         signature_html = ""
         if commenter_name:
             signature_html = (
-                '<div style="margin-top:10px;padding-top:2px;">'
-                '<p style="font-family:Georgia,\'Times New Roman\',serif;font-size:11px;'
+                '<div style="margin-top:12px;padding-top:2px;">'
+                '<p style="font-family:Georgia,\'Times New Roman\',serif;font-size:12px;'
                 'font-style:italic;color:#003963;margin:0;">'
                 + escape(commenter_name)
                 + "</p></div>"
             )
         comment_rows += (
-            '<tr style="border-bottom:1px solid #f0f2f5;"><td style="padding:12px 0;">'
+            '<tr style="border-bottom:1px solid #edf1f5;"><td style="padding:14px 0;">'
             + meta_html
-            + '<p style="font-family:Georgia,\'Times New Roman\',serif;font-size:12px;'
-              'line-height:1.6;color:#2c3a4a;margin:0;">'
+            + '<p style="font-family:Georgia,\'Times New Roman\',serif;font-size:13px;'
+              'line-height:1.7;color:#253446;margin:0;">'
             + escape(str(item.get("comment_text") or ""))
             + "</p>"
             + signature_html
@@ -1944,31 +2211,49 @@ def render_cfo_email_html(snapshot: dict) -> str:
     if not comment_rows:
         comment_rows = (
             '<tr><td style="padding:10px 0;font-family:Helvetica,Arial,sans-serif;'
-            'font-size:10px;color:#aab4c0;">No survey comments received in this period</td></tr>'
+            'font-size:11px;color:#7d8ea2;">No survey comments landed this period. Either smooth sailing or disciplined silence.</td></tr>'
         )
 
     # ── Shared style tokens ────────────────────────────────────────────────────
     _eyebrow = (
-        'font-family:Helvetica Neue,Helvetica,Arial,sans-serif;font-size:9px;'
-        'font-weight:700;color:#8a9bb0;text-transform:uppercase;letter-spacing:0.14em;'
-        'margin:0 0 4px;'
+        'font-family:Helvetica Neue,Helvetica,Arial,sans-serif;font-size:11px;'
+        'font-weight:700;color:#51657a;text-transform:uppercase;letter-spacing:0.08em;'
+        'margin:0 0 6px;'
     )
     _heading = (
-        'font-family:Georgia,\'Times New Roman\',serif;font-size:14px;'
-        'font-weight:bold;color:#003963;margin:0 0 14px;padding-bottom:8px;'
-        'border-bottom:1px solid #d8dfe8;'
+        'font-family:Georgia,\'Times New Roman\',serif;font-size:17px;'
+        'font-weight:bold;color:#003963;margin:0 0 18px;padding-bottom:10px;'
+        'border-bottom:1px solid #d8e0e9;line-height:1.25;'
     )
-    _section = 'background:#ffffff;padding:24px 28px;'
+    _section = (
+        'background:#fbfaf7;background-color:#fbfaf7;'
+        f'background-image:url({_LIGHT_PANEL_PIXEL_DATA_URI});background-repeat:repeat;'
+        'padding:28px 30px;'
+    )
     _divider = (
-        '<tr><td style="height:1px;background:#e4e8ee;font-size:1px;line-height:1px;">'
+        '<tr><td style="height:1px;background:#cfd8e1;font-size:1px;line-height:1px;">'
         '&#8203;</td></tr>'
     )
     _col_hdr = (
         'style="padding:0 12px 8px;font-family:Helvetica Neue,Helvetica,Arial,sans-serif;'
-        'font-size:9px;font-weight:700;color:#8a9bb0;text-transform:uppercase;'
-        'letter-spacing:0.1em;text-align:center;border-bottom:2px solid #e4e8ee;"'
+        'font-size:11px;font-weight:700;color:#52667b;text-transform:uppercase;'
+        'letter-spacing:0.05em;text-align:center;border-bottom:2px solid #e4e8ee;"'
     )
     trend_hdr = f'<td {_col_hdr}>8-Wk Trend</td>' if has_spark else ''
+    header_burst_row = ""
+    if header_burst_img_src:
+        header_burst_row = (
+            '<tr>'
+            '<td style="height:0;padding:0;font-size:0;line-height:0;">'
+            '<div align="right" style="height:0;overflow:visible;margin:-72px -14px -44px 0;">'
+            '<img src="'
+            + escape(header_burst_img_src)
+            + '" width="180" height="130" alt="Weekly tagline" '
+              'style="display:block;border:0;outline:none;text-decoration:none;">'
+            '</div>'
+            '</td>'
+            '</tr>'
+        )
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -1976,55 +2261,59 @@ def render_cfo_email_html(snapshot: dict) -> str:
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+  <meta name="color-scheme" content="light" />
+  <meta name="supported-color-schemes" content="light" />
   <title>CFO Update &mdash; IT</title>
 </head>
-<body style="margin:0;padding:0;background:#f0f2f6;font-family:Georgia,'Times New Roman',serif;">
+<body bgcolor="#dbe2ea" style="margin:0;padding:0;background:#dbe2ea;background-color:#dbe2ea;font-family:Georgia,'Times New Roman',serif;">
 
-<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#f0f2f6;">
+<table width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#dbe2ea" style="background:#dbe2ea;background-color:#dbe2ea;">
   <tr>
-    <td align="center" style="padding:24px 16px;">
+    <td align="center" style="padding:28px 16px;">
 
-      <table width="600" cellpadding="0" cellspacing="0" border="0"
-             style="max-width:600px;border-radius:4px;overflow:hidden;
-                    box-shadow:0 2px 8px rgba(0,57,99,0.12);">
+      <table width="600" cellpadding="0" cellspacing="0" border="0" bgcolor="#fbfaf7" background="{_LIGHT_PANEL_PIXEL_DATA_URI}"
+             style="max-width:600px;border-radius:6px;overflow:hidden;background:#fbfaf7;background-color:#fbfaf7;
+                    background-image:url('{_LIGHT_PANEL_PIXEL_DATA_URI}');background-repeat:repeat;
+                    box-shadow:0 8px 22px rgba(31,57,83,0.08);">
 
         <!-- HEADER -->
         <tr>
-          <td style="background:#003963;padding:24px 28px 20px;">
-            <p style="font-family:Helvetica Neue,Helvetica,Arial,sans-serif;font-size:9px;
-                      font-weight:700;color:rgba(251,185,58,0.8);text-transform:uppercase;
-                      letter-spacing:0.2em;margin:0 0 6px 0;">
+          <td bgcolor="#003963" style="background:#003963;background-color:#003963;padding:28px 30px 22px;">
+            <p style="font-family:Helvetica Neue,Helvetica,Arial,sans-serif;font-size:10px;
+                      font-weight:700;color:#f5c96a;
+                      letter-spacing:0.08em;margin:0 0 8px 0;">
               Cedarville University &nbsp;&middot;&nbsp; Information Technology
             </p>
-            <h1 style="font-family:Georgia,'Times New Roman',serif;font-size:22px;
-                       font-weight:bold;color:#ffffff;margin:0 0 8px 0;line-height:1.2;">
+            <h1 style="font-family:Georgia,'Times New Roman',serif;font-size:24px;
+                       font-weight:bold;color:#ffffff;margin:0 0 10px 0;line-height:1.15;">
               CFO Update
             </h1>
             <table cellpadding="0" cellspacing="0" border="0">
               <tr>
                 <td style="font-family:Georgia,'Times New Roman',serif;font-style:italic;
-                           font-size:13px;color:#FBB93A;padding-right:14px;">
+                           font-size:14px;color:#FBB93A;padding-right:16px;">
                   {period_label}
                 </td>
-                <td style="font-family:Helvetica Neue,Helvetica,Arial,sans-serif;font-size:10px;
-                           color:rgba(255,255,255,0.4);">
+                <td style="font-family:Helvetica Neue,Helvetica,Arial,sans-serif;font-size:11px;
+                           color:#d0deea;">
                   Generated {generated_at}
                 </td>
               </tr>
             </table>
           </td>
         </tr>
+        {header_burst_row}
 
         <!-- GOLD RULE -->
         <tr>
-          <td style="height:3px;background:linear-gradient(to right,#FBB93A,#F59536 40%,transparent);
+          <td bgcolor="#FBB93A" style="height:4px;background:#FBB93A;background:linear-gradient(to right,#FBB93A,#F59536 40%,transparent);
                      font-size:1px;line-height:1px;">&#8203;</td>
         </tr>
 
         <!-- DISCUSSION -->
         <tr>
-          <td style="{_section}">
-            <p style="{_eyebrow}">For Discussion</p>
+          <td bgcolor="#fbfaf7" background="{_LIGHT_PANEL_PIXEL_DATA_URI}" style="{_section}">
+            <p style="{_eyebrow}">Leadership Notes</p>
             <p style="{_heading}">Discussion</p>
             <ul style="font-family:Helvetica Neue,Helvetica,Arial,sans-serif;font-size:12px;
                        color:#2c3a4a;line-height:1.7;margin:0;padding-left:18px;">
@@ -2040,7 +2329,7 @@ def render_cfo_email_html(snapshot: dict) -> str:
 
         <!-- TICKET VOLUME -->
         <tr>
-          <td style="{_section}">
+          <td bgcolor="#fbfaf7" background="{_LIGHT_PANEL_PIXEL_DATA_URI}" style="{_section}">
             <p style="{_eyebrow}">Activity</p>
             <p style="{_heading}">Ticket Volume &mdash; {week_range}</p>
             <table cellpadding="0" cellspacing="0" width="100%"
@@ -2062,7 +2351,7 @@ def render_cfo_email_html(snapshot: dict) -> str:
 
         <!-- OPEN TICKETS KPI -->
         <tr>
-          <td style="{_section}">
+          <td bgcolor="#fbfaf7" background="{_LIGHT_PANEL_PIXEL_DATA_URI}" style="{_section}">
             <p style="{_eyebrow}">Queue Depth</p>
             <p style="{_heading}">Open Tickets</p>
             <table cellpadding="0" cellspacing="0" border="0">
@@ -2074,12 +2363,12 @@ def render_cfo_email_html(snapshot: dict) -> str:
                   </span>
                 </td>
                 <td style="vertical-align:middle;padding-right:20px;">
-                  <span style="font-family:Helvetica Neue,Helvetica,Arial,sans-serif;font-size:11px;
-                               color:#6b7c93;display:block;line-height:1.5;">
+                  <span style="font-family:Helvetica Neue,Helvetica,Arial,sans-serif;font-size:12px;
+                               color:#586b81;display:block;line-height:1.6;">
                     total open as of {escape(snapshot.get("as_of_label", ""))}
                   </span>
-                  <span style="font-family:Helvetica Neue,Helvetica,Arial,sans-serif;font-size:10px;
-                               font-weight:700;color:{open_trend_color};display:block;line-height:1.5;">
+                  <span style="font-family:Helvetica Neue,Helvetica,Arial,sans-serif;font-size:11px;
+                               font-weight:700;color:{open_trend_color};display:block;line-height:1.6;">
                     {escape(open_trend_label)}
                   </span>
                 </td>
@@ -2093,9 +2382,10 @@ def render_cfo_email_html(snapshot: dict) -> str:
 
         <!-- PROJECTS -->
         <tr>
-          <td style="{_section}">
+          <td bgcolor="#fbfaf7" background="{_LIGHT_PANEL_PIXEL_DATA_URI}" style="{_section}">
             <p style="{_eyebrow}">Voice of Customer</p>
             <p style="{_heading}">Survey Comments</p>
+            {survey_chart_html}
             <table cellpadding="0" cellspacing="0" width="100%"
                    style="border-collapse:collapse;">
               {comment_rows}
@@ -2107,7 +2397,7 @@ def render_cfo_email_html(snapshot: dict) -> str:
 
         <!-- PROJECTS -->
         <tr>
-          <td style="{_section}">
+          <td bgcolor="#fbfaf7" background="{_LIGHT_PANEL_PIXEL_DATA_URI}" style="{_section}">
             <p style="{_eyebrow}">Projects</p>
             <p style="{_heading}">In Progress Projects</p>
             {project_summary_html}
@@ -2120,10 +2410,10 @@ def render_cfo_email_html(snapshot: dict) -> str:
 
         <!-- FOOTER -->
         <tr>
-          <td style="background:#002a4a;padding:14px 28px;">
-            <p style="font-family:Helvetica Neue,Helvetica,Arial,sans-serif;font-size:9px;
-                      font-weight:600;color:rgba(255,255,255,0.35);text-transform:uppercase;
-                      letter-spacing:0.1em;margin:0;">
+          <td bgcolor="#002a4a" style="background:#002a4a;background-color:#002a4a;padding:16px 30px;">
+            <p style="font-family:Helvetica Neue,Helvetica,Arial,sans-serif;font-size:10px;
+                      font-weight:600;color:#cbd8e5;
+                      letter-spacing:0.04em;margin:0;">
               Cedarville University Information Technology &nbsp;&middot;&nbsp; Confidential
             </p>
           </td>
@@ -2139,9 +2429,14 @@ def render_cfo_email_html(snapshot: dict) -> str:
 """
 
 
-def write_cfo_email(snapshot: dict, output_path: Path) -> Path:
+def write_cfo_email(
+    snapshot: dict,
+    output_path: Path,
+    *,
+    header_burst_img_src: str | None = None,
+) -> Path:
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(render_cfo_email_html(snapshot))
+    output_path.write_text(render_cfo_email_html(snapshot, header_burst_img_src=header_burst_img_src))
     return output_path
 
 

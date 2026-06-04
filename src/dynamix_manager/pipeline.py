@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from typing import Any
 
 import pandas as pd
@@ -15,6 +16,9 @@ from dynamix_manager.config import RuntimeConfig, survey_report_id
 from dynamix_manager.cfo import summarize_cfo_snapshot
 from dynamix_manager.executive import summarize_executive_snapshot
 from dynamix_manager.reporting import (
+    header_burst_png_data_uri,
+    render_cfo_email_html,
+    render_header_burst_png,
     write_survey_health_report,
     write_ticket_health_report,
     write_ticket_quality_report,
@@ -35,6 +39,131 @@ from dynamix_manager.surveys import normalize_survey_rows
 from dynamix_manager.tdx_client import TeamDynamixClient
 
 INFOTECH_TICKETS_APP_NAME = "InfoTech Tickets"
+TICKET_SYNC_OVERLAP_DAYS = 14
+CFO_RUNS_TABLE = "cfo_email_runs"
+CFO_NORMAL_PERIOD_DAYS = 7
+CFO_VOLUME_BACKFILL_DAYS = 56
+CFO_CATCHUP_CHUNK_DAYS = 7
+TICKET_SEARCH_CAP_GUARD = 300
+
+
+def _now_utc() -> pd.Timestamp:
+    return pd.Timestamp.now("UTC")
+
+
+def _coerce_utc(value: object) -> pd.Timestamp | None:
+    ts = pd.to_datetime(value, utc=True, errors="coerce")
+    if pd.isna(ts):
+        return None
+    return pd.Timestamp(ts)
+
+
+def _last_cfo_period_end(config: RuntimeConfig) -> pd.Timestamp | None:
+    if not table_exists(config.db_path, CFO_RUNS_TABLE):
+        return None
+    runs = read_table(config.db_path, CFO_RUNS_TABLE)
+    if runs.empty or "period_end" not in runs.columns:
+        return None
+    period_ends = pd.to_datetime(runs["period_end"], utc=True, errors="coerce").dropna()
+    if period_ends.empty:
+        return None
+    return pd.Timestamp(period_ends.max())
+
+
+def _cfo_period_start(config: RuntimeConfig, as_of: pd.Timestamp) -> pd.Timestamp:
+    normal_start = as_of - pd.Timedelta(days=CFO_NORMAL_PERIOD_DAYS)
+    last_period_end = _last_cfo_period_end(config)
+    if last_period_end is not None and last_period_end < normal_start:
+        return last_period_end
+    return normal_start
+
+
+def _cfo_ticket_backfill_start(period_start: pd.Timestamp, as_of: pd.Timestamp) -> pd.Timestamp:
+    chart_start = as_of - pd.Timedelta(days=CFO_VOLUME_BACKFILL_DAYS)
+    return min(period_start, chart_start)
+
+
+def _append_cfo_email_run(
+    config: RuntimeConfig,
+    *,
+    snapshot: dict[str, object],
+    as_of: pd.Timestamp,
+    period_start: pd.Timestamp,
+    gmail_draft_id: str | None,
+) -> None:
+    run = pd.DataFrame(
+        [
+            {
+                "run_at": as_of.isoformat(),
+                "period_start": period_start.isoformat(),
+                "period_end": as_of.isoformat(),
+                "tickets_created": int(snapshot.get("tickets_created_this_week", 0) or 0),
+                "tickets_closed": int(snapshot.get("tickets_closed_this_week", 0) or 0),
+                "total_open_tickets": int(snapshot.get("total_open_tickets", 0) or 0),
+                "gmail_draft_id": gmail_draft_id,
+            }
+        ]
+    )
+    if table_exists(config.db_path, CFO_RUNS_TABLE):
+        existing = read_table(config.db_path, CFO_RUNS_TABLE)
+        run = pd.concat([existing, run], ignore_index=True)
+    replace_table(config.db_path, CFO_RUNS_TABLE, run)
+
+
+def _catchup_windows(
+    start: pd.Timestamp,
+    end: pd.Timestamp,
+    *,
+    days: int = CFO_CATCHUP_CHUNK_DAYS,
+) -> list[tuple[pd.Timestamp, pd.Timestamp]]:
+    windows: list[tuple[pd.Timestamp, pd.Timestamp]] = []
+    cursor = start
+    while cursor < end:
+        window_end = min(cursor + pd.Timedelta(days=days), end)
+        windows.append((cursor, window_end))
+        cursor = window_end
+    return windows
+
+
+def _search_ticket_window_rows(
+    client: TeamDynamixClient,
+    token: str,
+    ticket_app_id: int,
+    *,
+    start: pd.Timestamp,
+    end: pd.Timestamp,
+    date_kind: str,
+) -> list[dict[str, Any]]:
+    if date_kind == "created":
+        payload = build_ticket_search_filters(
+            created_from=start.isoformat(),
+            created_to=end.isoformat(),
+        )
+    elif date_kind == "closed":
+        payload = build_ticket_search_filters(
+            closed_from=start.isoformat(),
+            closed_to=end.isoformat(),
+        )
+    else:
+        raise ValueError(f"Unknown ticket search date kind: {date_kind}")
+
+    rows = client.search_tickets(token, payload, ticket_app_id=ticket_app_id)
+    if len(rows) < TICKET_SEARCH_CAP_GUARD or end - start <= pd.Timedelta(days=1):
+        return rows
+
+    split_rows: list[dict[str, Any]] = []
+    for day_start, day_end in _catchup_windows(start, end, days=1):
+        split_rows.extend(
+            _search_ticket_window_rows(
+                client,
+                token,
+                ticket_app_id,
+                start=day_start,
+                end=day_end,
+                date_kind=date_kind,
+            )
+        )
+    return split_rows
 
 
 def _write_survey_rows(config: RuntimeConfig, rows: list[dict]) -> pd.DataFrame:
@@ -336,8 +465,15 @@ def sync_tickets(
     config: RuntimeConfig,
     client: TeamDynamixClient,
     ticket_app_id: int,
+    catchup_start: pd.Timestamp | None = None,
+    catchup_end: pd.Timestamp | None = None,
 ) -> dict[str, int]:
-    """Bulk-sync all tickets modified since the last known date via the search API."""
+    """Bulk-sync tickets with an overlap window to avoid brittle cursor gaps.
+
+    We intentionally rewind the ModifiedDateFrom cursor by 14 days so that the
+    current CFO 7-day reporting window is always refreshed from live data even
+    if a prior run missed records near the cursor boundary.
+    """
     modified_from: str | None = None
     existing = pd.DataFrame()
     if table_exists(config.db_path, "tickets"):
@@ -345,26 +481,84 @@ def sync_tickets(
         if not existing.empty and "modified_at" in existing.columns:
             max_mod = pd.to_datetime(existing["modified_at"], utc=True, errors="coerce").dropna().max()
             if pd.notna(max_mod):
-                modified_from = max_mod.isoformat()
+                modified_from = (max_mod - pd.Timedelta(days=TICKET_SYNC_OVERLAP_DAYS)).isoformat()
 
     token = client.authenticate()
     payload = build_ticket_search_filters(modified_from=modified_from)
     rows = client.search_tickets(token, payload, ticket_app_id=ticket_app_id)
     new_frame = normalize_ticket_rows(rows)
+    catchup_created_frames: list[pd.DataFrame] = []
+    catchup_closed_frames: list[pd.DataFrame] = []
+
+    if catchup_start is not None and catchup_end is not None:
+        start = _coerce_utc(catchup_start)
+        end = _coerce_utc(catchup_end)
+        if start is not None and end is not None and start < end:
+            for window_start, window_end in _catchup_windows(start, end):
+                created_rows = _search_ticket_window_rows(
+                    client,
+                    token,
+                    ticket_app_id,
+                    start=window_start,
+                    end=window_end,
+                    date_kind="created",
+                )
+                created_frame = normalize_ticket_rows(created_rows)
+                if not created_frame.empty:
+                    catchup_created_frames.append(created_frame)
+
+                closed_rows = _search_ticket_window_rows(
+                    client,
+                    token,
+                    ticket_app_id,
+                    start=window_start,
+                    end=window_end,
+                    date_kind="closed",
+                )
+                closed_frame = normalize_ticket_rows(closed_rows)
+                if not closed_frame.empty:
+                    catchup_closed_frames.append(closed_frame)
 
     if not new_frame.empty:
         new_frame["ticket_app_id"] = ticket_app_id
+    for frame in [*catchup_created_frames, *catchup_closed_frames]:
+        frame["ticket_app_id"] = ticket_app_id
 
-    if existing.empty:
-        combined = new_frame
-    elif new_frame.empty:
+    frames = [
+        frame
+        for frame in [
+            existing,
+            new_frame,
+            *catchup_created_frames,
+            *catchup_closed_frames,
+        ]
+        if not frame.empty
+    ]
+    if frames:
+        combined = pd.concat(frames, ignore_index=True)
+        combined = combined.drop_duplicates(subset=["ticket_id"], keep="last")
+    elif len(existing.columns) > 0:
         combined = existing
     else:
-        combined = pd.concat([existing, new_frame], ignore_index=True)
-        combined = combined.drop_duplicates(subset=["ticket_id"], keep="last")
+        combined = new_frame
+
+    created_catchup_count = (
+        len(pd.concat(catchup_created_frames, ignore_index=True).drop_duplicates(subset=["ticket_id"]))
+        if catchup_created_frames
+        else 0
+    )
+    closed_catchup_count = (
+        len(pd.concat(catchup_closed_frames, ignore_index=True).drop_duplicates(subset=["ticket_id"]))
+        if catchup_closed_frames
+        else 0
+    )
 
     replace_table(config.db_path, "tickets", combined)
-    return {"synced_tickets": len(new_frame)}
+    return {
+        "synced_tickets": len(new_frame),
+        "catchup_created_tickets": int(created_catchup_count),
+        "catchup_closed_tickets": int(closed_catchup_count),
+    }
 
 
 def generate_executive_report(
@@ -438,8 +632,24 @@ def generate_executive_email(
 
 def generate_cfo_email(
     config: RuntimeConfig,
+    client: TeamDynamixClient | None = None,
+    header_burst_text: str | None = None,
 ) -> dict[str, object]:
-    """Render the CFO Update email from cached TDX data + live YouTrack projects."""
+    """Render the CFO Update email from live TDX data + live YouTrack projects."""
+    as_of = _now_utc()
+    period_start = _cfo_period_start(config, as_of)
+    ticket_backfill_start = _cfo_ticket_backfill_start(period_start, as_of)
+    if client is not None:
+        cache_survey_report(config=config, client=client, report_id=survey_report_id())
+        ticket_app = discover_ticket_app(config=config, client=client, report_id=survey_report_id())
+        sync_tickets(
+            config=config,
+            client=client,
+            ticket_app_id=int(ticket_app["AppID"]),
+            catchup_start=ticket_backfill_start,
+            catchup_end=as_of,
+        )
+
     tickets = read_table(config.db_path, "tickets") if table_exists(config.db_path, "tickets") else pd.DataFrame()
     surveys = (
         read_table(config.db_path, "survey_responses")
@@ -457,26 +667,68 @@ def generate_cfo_email(
         except Exception:
             youtrack_projects = []
 
-    snapshot = summarize_cfo_snapshot(tickets, surveys, youtrack_projects=youtrack_projects)
+    snapshot = summarize_cfo_snapshot(
+        tickets,
+        surveys,
+        youtrack_projects=youtrack_projects,
+        as_of=as_of,
+        period_start=period_start,
+    )
+    burst_tagline = str(header_burst_text or "").strip()
+    burst_png: bytes | None = None
+    burst_data_uri: str | None = None
+    if burst_tagline:
+        try:
+            burst_png = render_header_burst_png(burst_tagline)
+            burst_data_uri = "data:image/png;base64," + base64.b64encode(burst_png).decode("ascii")
+        except Exception:
+            try:
+                burst_data_uri = header_burst_png_data_uri(burst_tagline)
+            except Exception:
+                burst_data_uri = None
 
     artifact_root = _artifact_root(config)
     email_path = artifact_root / "reports" / "cfo_email.html"
-    write_cfo_email(snapshot, email_path)
+    write_cfo_email(snapshot, email_path, header_burst_img_src=burst_data_uri)
 
     draft_id = None
     if credentials_available(config.gmail_token_path):
         try:
             period_label = snapshot.get("period_label") or snapshot.get("week_range_label") or ""
             subject = f"CFO Update \u2013 IT | {period_label}"
+            draft_html = render_cfo_email_html(
+                snapshot,
+                header_burst_img_src="cid:cfo-header-burst" if burst_png else burst_data_uri,
+            )
             draft = create_draft(
                 subject=subject,
-                html_body=email_path.read_text(),
+                html_body=draft_html,
                 to=config.gmail_draft_to or "",
                 token_path_override=config.gmail_token_path,
+                inline_attachments=(
+                    [
+                        {
+                            "filename": "cfo-header-burst.png",
+                            "content_type": "image/png",
+                            "content_id": "cfo-header-burst",
+                            "data": burst_png,
+                        }
+                    ]
+                    if burst_png
+                    else None
+                ),
             )
             draft_id = draft.get("id")
         except Exception as exc:
             print(f"[gmail] Draft creation skipped: {exc}")
+
+    _append_cfo_email_run(
+        config,
+        snapshot=snapshot,
+        as_of=as_of,
+        period_start=period_start,
+        gmail_draft_id=draft_id,
+    )
 
     return {
         "email_written": int(email_path.exists()),

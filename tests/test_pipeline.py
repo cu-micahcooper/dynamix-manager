@@ -24,6 +24,7 @@ class StubClient:
         self.auth_calls = 0
         self.report_calls = []
         self.ticket_calls = []
+        self.search_calls = []
         self.app_fetch_calls = 0
         self.applications = []
         self.ticket_payloads = {}
@@ -50,6 +51,7 @@ class StubClient:
         return self.days_off_rows
 
     def search_tickets(self, token, payload, ticket_app_id=None):
+        self.search_calls.append((token, payload, ticket_app_id))
         return self.search_rows if hasattr(self, "search_rows") else []
 
     def get_ticket(self, ticket_id, token, ticket_app_id, max_attempts=5):
@@ -711,6 +713,259 @@ def test_sync_tickets_upserts_modified_tickets(tmp_path):
     assert result["synced_tickets"] == 1
     assert len(tickets) == 2
     assert set(tickets["ticket_id"]) == {1, 2}
+    assert client.search_calls[0][1]["ModifiedDateFrom"] == "2026-03-06T10:00:00+00:00"
+
+
+def test_sync_tickets_catches_up_created_and_closed_volume_windows(tmp_path):
+    class CatchupClient(StubClient):
+        def search_tickets(self, token, payload, ticket_app_id=None):
+            self.search_calls.append((token, payload, ticket_app_id))
+            if "CreatedDateFrom" in payload:
+                return [
+                    {
+                        "ID": 2,
+                        "Title": "Missed created ticket",
+                        "StatusName": "Open",
+                        "CreatedDate": "2026-04-10T10:00:00Z",
+                        "ModifiedDate": "2026-04-10T10:00:00Z",
+                        "CompletedDate": None,
+                    }
+                ]
+            if "ClosedDateFrom" in payload:
+                return [
+                    {
+                        "ID": 3,
+                        "Title": "Missed closed ticket",
+                        "StatusName": "Closed",
+                        "CreatedDate": "2026-03-15T10:00:00Z",
+                        "ModifiedDate": "2026-04-12T10:00:00Z",
+                        "CompletedDate": "2026-04-12T10:00:00Z",
+                    }
+                ]
+            return []
+
+    config = RuntimeConfig(
+        base_url="https://example.test",
+        app_id="1234",
+        username="user",
+        password="pass",
+        db_path=tmp_path / "analytics.duckdb",
+        report_output_path=tmp_path / "survey_health.html",
+        notebook_output_path=tmp_path / "survey_health.ipynb",
+    )
+    replace_table(
+        config.db_path,
+        "tickets",
+        pd.DataFrame(
+            [
+                {
+                    "ticket_id": 1,
+                    "ticket_title": "Already cached",
+                    "modified_at": "2026-04-29T10:00:00Z",
+                },
+            ]
+        ),
+    )
+    client = CatchupClient([])
+
+    result = sync_tickets(
+        config,
+        client,
+        ticket_app_id=634,
+        catchup_start=pd.Timestamp("2026-04-08 15:00:00", tz="UTC"),
+        catchup_end=pd.Timestamp("2026-04-29 15:00:00", tz="UTC"),
+    )
+
+    tickets = read_table(config.db_path, "tickets")
+    payloads = [call[1] for call in client.search_calls]
+    assert set(tickets["ticket_id"]) == {1, 2, 3}
+    assert result["synced_tickets"] == 0
+    assert result["catchup_created_tickets"] == 1
+    assert result["catchup_closed_tickets"] == 1
+    assert any("CreatedDateFrom" in payload and "CreatedDateTo" in payload for payload in payloads)
+    assert any("ClosedDateFrom" in payload and "ClosedDateTo" in payload for payload in payloads)
+
+
+def test_sync_tickets_catchup_splits_capped_windows_to_avoid_search_caps(tmp_path):
+    class CappedClient(StubClient):
+        def search_tickets(self, token, payload, ticket_app_id=None):
+            self.search_calls.append((token, payload, ticket_app_id))
+            if "CreatedDateFrom" not in payload and "ClosedDateFrom" not in payload:
+                return []
+            from_key = "CreatedDateFrom" if "CreatedDateFrom" in payload else "ClosedDateFrom"
+            to_key = "CreatedDateTo" if "CreatedDateTo" in payload else "ClosedDateTo"
+            start = pd.Timestamp(payload[from_key])
+            end = pd.Timestamp(payload[to_key])
+            if end - start > pd.Timedelta(days=1):
+                return [
+                    {
+                        "ID": idx,
+                        "Title": f"Capped {idx}",
+                        "CreatedDate": start.isoformat(),
+                        "ModifiedDate": start.isoformat(),
+                    }
+                    for idx in range(300)
+                ]
+            return [
+                {
+                    "ID": int(start.strftime("%d")),
+                    "Title": f"Daily {start:%Y-%m-%d}",
+                    "CreatedDate": start.isoformat(),
+                    "ModifiedDate": start.isoformat(),
+                }
+            ]
+
+    config = RuntimeConfig(
+        base_url="https://example.test",
+        app_id="1234",
+        username="user",
+        password="pass",
+        db_path=tmp_path / "analytics.duckdb",
+        report_output_path=tmp_path / "survey_health.html",
+        notebook_output_path=tmp_path / "survey_health.ipynb",
+    )
+    client = CappedClient([])
+    replace_table(config.db_path, "tickets", pd.DataFrame([{"ticket_id": 1}]).iloc[0:0])
+
+    sync_tickets(
+        config,
+        client,
+        ticket_app_id=634,
+        catchup_start=pd.Timestamp("2026-04-08 00:00:00", tz="UTC"),
+        catchup_end=pd.Timestamp("2026-04-11 00:00:00", tz="UTC"),
+    )
+
+    created_payloads = [
+        payload for _, payload, _ in client.search_calls if "CreatedDateFrom" in payload
+    ]
+    closed_payloads = [
+        payload for _, payload, _ in client.search_calls if "ClosedDateFrom" in payload
+    ]
+    assert [payload["CreatedDateFrom"] for payload in created_payloads] == [
+        "2026-04-08T00:00:00+00:00",
+        "2026-04-08T00:00:00+00:00",
+        "2026-04-09T00:00:00+00:00",
+        "2026-04-10T00:00:00+00:00",
+    ]
+    assert [payload["ClosedDateFrom"] for payload in closed_payloads] == [
+        "2026-04-08T00:00:00+00:00",
+        "2026-04-08T00:00:00+00:00",
+        "2026-04-09T00:00:00+00:00",
+        "2026-04-10T00:00:00+00:00",
+    ]
+
+
+def test_generate_cfo_email_automatically_expands_period_after_missed_run(tmp_path, monkeypatch):
+    config = RuntimeConfig(
+        base_url="https://example.test",
+        app_id="1234",
+        username="user",
+        password="pass",
+        db_path=tmp_path / "analytics.duckdb",
+        report_output_path=tmp_path / "survey_health.html",
+        notebook_output_path=tmp_path / "survey_health.ipynb",
+    )
+    replace_table(config.db_path, "tickets", pd.DataFrame([{"ticket_id": 1}]).iloc[0:0])
+    replace_table(config.db_path, "survey_responses", pd.DataFrame([{"response_id": 1}]).iloc[0:0])
+    last_period_end = pd.Timestamp.now("UTC") - pd.Timedelta(days=21)
+    replace_table(
+        config.db_path,
+        "cfo_email_runs",
+        pd.DataFrame(
+            [
+                {
+                    "run_at": last_period_end.isoformat(),
+                    "period_start": (last_period_end - pd.Timedelta(days=7)).isoformat(),
+                    "period_end": last_period_end.isoformat(),
+                    "tickets_created": 12,
+                    "tickets_closed": 9,
+                    "total_open_tickets": 100,
+                    "gmail_draft_id": "old-draft",
+                }
+            ]
+        ),
+    )
+
+    monkeypatch.setattr(
+        "dynamix_manager.pipeline.fetch_youtrack_inprogress_projects",
+        lambda *args, **kwargs: [],
+    )
+    monkeypatch.setattr("dynamix_manager.pipeline.credentials_available", lambda path: False)
+    monkeypatch.setattr("dynamix_manager.pipeline.render_header_burst_png", lambda tagline: b"png")
+    captured: dict[str, object] = {}
+
+    def fake_summarize_cfo_snapshot(
+        tickets,
+        surveys,
+        youtrack_projects=None,
+        as_of=None,
+        period_start=None,
+    ):
+        captured["period_start"] = period_start
+        captured["as_of"] = as_of
+        return {
+            "period_label": "catchup period",
+            "tickets_created_this_week": 2,
+            "tickets_closed_this_week": 1,
+            "total_open_tickets": 101,
+            "youtrack_projects": [],
+            "header_burst_tagline": "Board of Trustee Edition",
+        }
+
+    monkeypatch.setattr("dynamix_manager.pipeline.summarize_cfo_snapshot", fake_summarize_cfo_snapshot)
+
+    result = generate_cfo_email(config)
+
+    runs = read_table(config.db_path, "cfo_email_runs")
+    assert captured["period_start"] == last_period_end
+    assert result["tickets_created_this_week"] == 2
+    assert len(runs) == 2
+    assert set(runs["tickets_created"]) == {12, 2}
+
+
+def test_generate_cfo_email_backfills_full_chart_horizon(tmp_path, monkeypatch):
+    config = RuntimeConfig(
+        base_url="https://example.test",
+        app_id="1234",
+        username="user",
+        password="pass",
+        db_path=tmp_path / "analytics.duckdb",
+        report_output_path=tmp_path / "survey_health.html",
+        notebook_output_path=tmp_path / "survey_health.ipynb",
+    )
+    replace_table(config.db_path, "tickets", pd.DataFrame([{"ticket_id": 1}]).iloc[0:0])
+    replace_table(config.db_path, "survey_responses", pd.DataFrame([{"response_id": 1}]).iloc[0:0])
+    client = StubClient(
+        [
+            {
+                "ResponseID": 1,
+                "TicketID": 42,
+                "SurveyCompletedDate": "2026-06-03T12:00:00Z",
+            }
+        ]
+    )
+    client.applications = [
+        {"AppID": 634, "Name": "InfoTech Tickets", "AppClass": "TDTickets"},
+    ]
+    client.search_rows = []
+    as_of = pd.Timestamp("2026-06-03 19:31:06", tz="UTC")
+
+    monkeypatch.setattr("dynamix_manager.pipeline._now_utc", lambda: as_of)
+    monkeypatch.setattr(
+        "dynamix_manager.pipeline.fetch_youtrack_inprogress_projects",
+        lambda *args, **kwargs: [],
+    )
+    monkeypatch.setattr("dynamix_manager.pipeline.credentials_available", lambda path: False)
+    monkeypatch.setattr("dynamix_manager.pipeline.render_header_burst_png", lambda tagline: b"png")
+
+    generate_cfo_email(config, client=client)
+
+    created_from_values = [
+        pd.Timestamp(payload["CreatedDateFrom"])
+        for _, payload, _ in client.search_calls
+        if "CreatedDateFrom" in payload
+    ]
+    assert min(created_from_values) == as_of - pd.Timedelta(days=56)
 
 
 def test_refresh_survey_slice_runs_end_to_end_and_writes_report(tmp_path):
@@ -904,30 +1159,205 @@ def test_generate_cfo_email_uses_period_label_in_draft_subject(tmp_path, monkeyp
         lambda *args, **kwargs: [],
     )
 
-    captured: dict[str, str] = {}
+    captured: dict[str, object] = {}
 
-    def fake_create_draft(*, subject: str, html_body: str, to: str, token_path_override: str | None = None):
+    def fake_create_draft(
+        *,
+        subject: str,
+        html_body: str,
+        to: str,
+        token_path_override: str | None = None,
+        inline_attachments: list[dict[str, object]] | None = None,
+    ):
         captured["subject"] = subject
         captured["to"] = to
         captured["html_body"] = html_body
         captured["token_path_override"] = token_path_override or ""
+        captured["inline_attachments"] = inline_attachments or []
         return {"id": "draft-123"}
 
     monkeypatch.setattr("dynamix_manager.pipeline.credentials_available", lambda path: True)
     monkeypatch.setattr("dynamix_manager.pipeline.create_draft", fake_create_draft)
+    monkeypatch.setattr("dynamix_manager.pipeline.render_header_burst_png", lambda tagline: b"png")
     monkeypatch.setattr(
         "dynamix_manager.pipeline.summarize_cfo_snapshot",
-        lambda tickets, surveys, youtrack_projects=None: {
+        lambda tickets, surveys, youtrack_projects=None, as_of=None, period_start=None: {
             "period_label": "Apr 8 – Apr 15",
             "tickets_created_this_week": 0,
             "tickets_closed_this_week": 0,
             "total_open_tickets": 0,
             "youtrack_projects": [],
+            "header_burst_tagline": "IT'S THE FINAL COUNTDOWN",
         },
     )
 
-    result = generate_cfo_email(config)
+    result = generate_cfo_email(config, header_burst_text="IT'S THE FINAL COUNTDOWN")
 
     assert captured["subject"] == "CFO Update – IT | Apr 8 – Apr 15"
     assert captured["to"] == "cfo@example.test"
+    assert 'src="cid:cfo-header-burst"' in str(captured["html_body"])
+    assert captured["inline_attachments"] == [
+        {
+            "filename": "cfo-header-burst.png",
+            "content_type": "image/png",
+            "content_id": "cfo-header-burst",
+            "data": b"png",
+        }
+    ]
+    assert "data:image/png;base64,cG5n" in (tmp_path / "reports" / "cfo_email.html").read_text()
     assert result["gmail_draft_id"] == "draft-123"
+
+
+def test_generate_cfo_email_omits_header_burst_without_cli_text(tmp_path, monkeypatch):
+    config = RuntimeConfig(
+        base_url="https://example.test",
+        app_id="1234",
+        username="user",
+        password="pass",
+        db_path=tmp_path / "analytics.duckdb",
+        report_output_path=tmp_path / "survey_health.html",
+        notebook_output_path=tmp_path / "survey_health.ipynb",
+        gmail_token_path=str(tmp_path / "gmail-token.json"),
+        gmail_draft_to="cfo@example.test",
+    )
+    replace_table(config.db_path, "tickets", pd.DataFrame([{"ticket_id": 1}]).iloc[0:0])
+    replace_table(config.db_path, "survey_responses", pd.DataFrame([{"response_id": 1}]).iloc[0:0])
+
+    monkeypatch.setattr(
+        "dynamix_manager.pipeline.fetch_youtrack_inprogress_projects",
+        lambda *args, **kwargs: [],
+    )
+    monkeypatch.setattr("dynamix_manager.pipeline.credentials_available", lambda path: True)
+    monkeypatch.setattr(
+        "dynamix_manager.pipeline.render_header_burst_png",
+        lambda tagline: (_ for _ in ()).throw(AssertionError("header burst should be disabled")),
+    )
+    captured: dict[str, object] = {}
+
+    def fake_create_draft(
+        *,
+        subject: str,
+        html_body: str,
+        to: str,
+        token_path_override: str | None = None,
+        inline_attachments: list[dict[str, object]] | None = None,
+    ):
+        captured["html_body"] = html_body
+        captured["inline_attachments"] = inline_attachments or []
+        return {"id": "draft-123"}
+
+    monkeypatch.setattr("dynamix_manager.pipeline.create_draft", fake_create_draft)
+    monkeypatch.setattr(
+        "dynamix_manager.pipeline.summarize_cfo_snapshot",
+        lambda tickets, surveys, youtrack_projects=None, as_of=None, period_start=None: {
+            "period_label": "Apr 8 – Apr 15",
+            "tickets_created_this_week": 0,
+            "tickets_closed_this_week": 0,
+            "total_open_tickets": 0,
+            "youtrack_projects": [],
+            "header_burst_tagline": "IT'S THE FINAL COUNTDOWN",
+        },
+    )
+
+    generate_cfo_email(config)
+
+    assert 'src="cid:cfo-header-burst"' not in str(captured["html_body"])
+    assert captured["inline_attachments"] == []
+
+
+def test_generate_cfo_email_refreshes_live_tdx_data_when_client_provided(tmp_path, monkeypatch):
+    config = RuntimeConfig(
+        base_url="https://example.test",
+        app_id="1234",
+        username="user",
+        password="pass",
+        db_path=tmp_path / "analytics.duckdb",
+        report_output_path=tmp_path / "survey_health.html",
+        notebook_output_path=tmp_path / "survey_health.ipynb",
+    )
+    replace_table(
+        config.db_path,
+        "tickets",
+        pd.DataFrame(
+            [
+                {
+                    "ticket_id": 1,
+                    "created_at": "2026-04-01T10:00:00Z",
+                    "modified_at": "2026-04-01T10:00:00Z",
+                }
+            ]
+        ),
+    )
+    replace_table(
+        config.db_path,
+        "survey_responses",
+        pd.DataFrame([{"response_id": 1, "survey_completed_at": "2026-04-01T10:00:00Z"}]),
+    )
+
+    client = StubClient(
+        [
+            {
+                "ResponseID": 2,
+                "TicketID": 42,
+                "SurveyCompletedDate": "2026-04-22T12:00:00Z",
+                "48398": "Very Satisfied",
+                "48399": "Helpful support",
+            }
+        ]
+    )
+    client.applications = [
+        {"AppID": 634, "Name": "InfoTech Tickets", "AppClass": "TDTickets"},
+    ]
+    client.search_rows = [
+        {
+            "ID": 42,
+            "Title": "New ticket",
+            "StatusName": "Open",
+            "CreatedDate": "2026-04-22T10:00:00Z",
+            "ModifiedDate": "2026-04-22T10:30:00Z",
+            "CompletedDate": None,
+        }
+    ]
+
+    monkeypatch.setattr(
+        "dynamix_manager.pipeline.fetch_youtrack_inprogress_projects",
+        lambda *args, **kwargs: [],
+    )
+
+    captured: dict[str, object] = {}
+
+    def fake_summarize_cfo_snapshot(
+        tickets,
+        surveys,
+        youtrack_projects=None,
+        as_of=None,
+        period_start=None,
+    ):
+        captured["ticket_ids"] = set(tickets["ticket_id"].tolist()) if not tickets.empty else set()
+        captured["survey_ticket_ids"] = (
+            set(surveys["ticket_id"].dropna().astype(int).tolist())
+            if not surveys.empty and "ticket_id" in surveys.columns
+            else set()
+        )
+        return {
+            "period_label": "Apr 15 – Apr 22",
+            "tickets_created_this_week": 1,
+            "tickets_closed_this_week": 0,
+            "total_open_tickets": 1,
+            "youtrack_projects": [],
+            "header_burst_tagline": "IT'S THE FINAL COUNTDOWN",
+        }
+
+    monkeypatch.setattr("dynamix_manager.pipeline.summarize_cfo_snapshot", fake_summarize_cfo_snapshot)
+    monkeypatch.setattr("dynamix_manager.pipeline.credentials_available", lambda path: False)
+    monkeypatch.setattr("dynamix_manager.pipeline.render_header_burst_png", lambda tagline: b"png")
+
+    result = generate_cfo_email(config, client=client)
+
+    payloads = [call[1] for call in client.search_calls]
+    assert client.report_calls == [(100482, "token", True), (100482, "token", True)]
+    assert any("CreatedDateFrom" in payload and "CreatedDateTo" in payload for payload in payloads)
+    assert any("ClosedDateFrom" in payload and "ClosedDateTo" in payload for payload in payloads)
+    assert captured["ticket_ids"] == {1, 42}
+    assert captured["survey_ticket_ids"] == {42}
+    assert result["email_written"] == 1

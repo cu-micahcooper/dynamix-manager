@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from dynamix_manager.reporting import render_cfo_email_html, write_cfo_email
+from dynamix_manager.reporting import _burst_line_layout, render_cfo_email_html, write_cfo_email
 
 
 _WEEKLY = [{"week": f"W{i}", "count": i * 5} for i in range(1, 9)]
@@ -45,7 +45,27 @@ _SNAPSHOT = {
             "team_name": "Infrastructure",
             "comment_text": "Quick turnaround",
         },
+        {
+            "survey_completed_at": "2025-04-07T08:00:00+00:00",
+            "satisfaction_label": "Satisfied",
+            "commenter_name": "Alex Roe",
+            "ticket_title": "Account unlock",
+            "team_name": "Client Services",
+            "comment_text": "Third comment",
+        },
     ],
+    "survey_satisfaction_counts": {
+        "Great!": 2,
+        "Satisfied": 1,
+    },
+    "survey_satisfaction_total": 3,
+    "survey_satisfaction_counts_trailing_year": {
+        "Great!": 8,
+        "Satisfied": 3,
+        "Could have been better": 1,
+    },
+    "survey_satisfaction_total_trailing_year": 12,
+    "header_burst_tagline": "IT'S THE FINAL COUNTDOWN",
     "youtrack_projects": [
         {"id": "IPS-20", "summary": "MyCU2", "it_team": "User Services", "assignee": "Jane Doe", "project_short": "IPS", "is_new_this_week": True},
         {"id": "TOPS-1144", "summary": "Bolthouse Academic Center Construction", "it_team": "Tech Ops", "assignee": "", "project_short": "TOPS", "is_new_this_week": False},
@@ -88,9 +108,19 @@ def test_cfo_email_shows_open_tickets():
 def test_cfo_email_shows_survey_comments():
     html = render_cfo_email_html(_SNAPSHOT)
     assert "Survey Comments" in html
+    assert "Survey Snapshot" in html
+    assert "Past 7 Days" in html
+    assert "Past 12 Months" in html
+    assert "3 scored responses in this period" in html
+    assert "12 scored responses in this rolling year" in html
+    assert "Great!" in html
+    assert "2 (67%)" in html
+    assert "8 (67%)" in html
     assert "Helpful support" in html
     assert "Apr 8 · Very Satisfied · Password Reset" in html
     assert "Quick turnaround" in html
+    assert "Third comment" in html
+    assert "Alex Roe" in html
     assert "Jane Doe" in html
     assert "John Smith" in html
     assert "border-top:1px solid #e8edf3" not in html
@@ -127,13 +157,35 @@ def test_cfo_email_shows_youtrack_projects():
     assert "Tech Ops" in html                               # IT Team badge
     assert "Bolthouse Academic Center Construction" in html  # issue summary
     assert "2 in progress · 1 new this week · 1 completed this week" in html
-    assert "NEW THIS WEEK" in html
+    assert ">New</span>" in html
+    assert "NEW THIS WEEK" not in html
+    assert "[Lorem ipsum" in html
 
 
 def test_cfo_email_shows_header():
-    html = render_cfo_email_html(_SNAPSHOT)
+    html = render_cfo_email_html(_SNAPSHOT, header_burst_img_src="cid:cfo-header-burst")
     assert "CFO Update" in html
     assert "Cedarville University" in html
+    assert 'src="cid:cfo-header-burst"' in html
+    assert 'alt="Weekly tagline"' in html
+    assert "height:0;overflow:visible;margin:-72px -14px -44px 0" in html
+    assert "Leadership Notes" in html
+    assert "For Discussion" not in html
+
+
+def test_cfo_email_omits_header_burst_by_default():
+    html = render_cfo_email_html(_SNAPSHOT)
+    assert 'alt="Weekly tagline"' not in html
+    assert "height:0;overflow:visible;margin:-72px -14px -44px 0" not in html
+    assert "IT'S THE FINAL COUNTDOWN" not in html
+
+
+def test_header_burst_wraps_board_of_trustee_edition():
+    assert _burst_line_layout("Board of Trustee Edition") == [
+        "Board of",
+        "Trustee",
+        "Edition",
+    ]
 
 
 def test_cfo_email_includes_sparklines():
@@ -172,6 +224,10 @@ def test_cfo_email_no_data_graceful():
         "total_open_tickets": 0,
         "total_open_tickets_prior_week": 0,
         "total_open_tickets_ww_delta": 0,
+        "survey_satisfaction_counts": {},
+        "survey_satisfaction_total": 0,
+        "survey_satisfaction_counts_trailing_year": {},
+        "survey_satisfaction_total_trailing_year": 0,
         "youtrack_projects": [],
         "youtrack_project_movement": {
             "in_progress_count": 0,
@@ -181,4 +237,5 @@ def test_cfo_email_no_data_graceful():
     }
     html = render_cfo_email_html(empty_snapshot)
     assert "no prior data" in html
-    assert "No projects found" in html
+    assert "No projects moved this week. Either calm prevailed or the paperwork did." in html
+    assert "No survey comments landed this period. Either smooth sailing or disciplined silence." in html

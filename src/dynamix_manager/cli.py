@@ -75,9 +75,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     # generate-cfo-email
-    subparsers.add_parser(
+    cfo = subparsers.add_parser(
         "generate-cfo-email",
-        help="Generate the CFO Update email from cached TDX data + live YouTrack projects",
+        help="Generate the CFO Update email from live TDX data + live YouTrack projects",
+    )
+    cfo.add_argument(
+        "--header-burst-text",
+        default=None,
+        help="Optional tagline to render in the header burst",
     )
 
     return parser
@@ -139,7 +144,11 @@ def main() -> None:
         print(json.dumps(result, indent=2))
 
     elif args.command == "generate-cfo-email":
-        result = pipeline.generate_cfo_email(config=config)
+        result = pipeline.generate_cfo_email(
+            config=config,
+            client=client,
+            header_burst_text=args.header_burst_text,
+        )
         print(json.dumps(result, indent=2))
 
     else:
