@@ -1,0 +1,230 @@
+{
+  "period": "Jun 2 – Jun 9",
+  "generatedAt": "2026-06-09T12:46:16.918742+00:00",
+  "metrics": {
+    "created": 464,
+    "createdPrior": 348,
+    "createdYearAgo": 207,
+    "createdDelta": 33.33333333333333,
+    "closed": 522,
+    "closedPrior": 307,
+    "closedYearAgo": 232,
+    "closedDelta": 70.03257328990227,
+    "open": 583,
+    "openPrior": 655,
+    "openDelta": -72
+  },
+  "weekly": {
+    "created": [
+      {
+        "week": "Apr 14",
+        "count": 286
+      },
+      {
+        "week": "Apr 21",
+        "count": 278
+      },
+      {
+        "week": "Apr 28",
+        "count": 305
+      },
+      {
+        "week": "May 5",
+        "count": 255
+      },
+      {
+        "week": "May 12",
+        "count": 298
+      },
+      {
+        "week": "May 19",
+        "count": 236
+      },
+      {
+        "week": "May 26",
+        "count": 348
+      },
+      {
+        "week": "Jun 2",
+        "count": 464
+      }
+    ],
+    "closed": [
+      {
+        "week": "Apr 14",
+        "count": 275
+      },
+      {
+        "week": "Apr 21",
+        "count": 252
+      },
+      {
+        "week": "Apr 28",
+        "count": 270
+      },
+      {
+        "week": "May 5",
+        "count": 247
+      },
+      {
+        "week": "May 12",
+        "count": 318
+      },
+      {
+        "week": "May 19",
+        "count": 235
+      },
+      {
+        "week": "May 26",
+        "count": 307
+      },
+      {
+        "week": "Jun 2",
+        "count": 522
+      }
+    ],
+    "open": [
+      {
+        "week": "Apr 14",
+        "count": 724
+      },
+      {
+        "week": "Apr 21",
+        "count": 731
+      },
+      {
+        "week": "Apr 28",
+        "count": 738
+      },
+      {
+        "week": "May 5",
+        "count": 719
+      },
+      {
+        "week": "May 12",
+        "count": 671
+      },
+      {
+        "week": "May 19",
+        "count": 640
+      },
+      {
+        "week": "May 26",
+        "count": 655
+      },
+      {
+        "week": "Jun 2",
+        "count": 583
+      }
+    ]
+  },
+  "survey": {
+    "weekCounts": {
+      "Great!": 5,
+      "Not good at all": 1
+    },
+    "weekTotal": 6,
+    "yearCounts": {
+      "Great!": 83,
+      "Could have been better": 5,
+      "Not good at all": 1,
+      "Okay": 2
+    },
+    "yearTotal": 91,
+    "comments": [
+      {
+        "date": "2026-06-08",
+        "sentiment": "Great!",
+        "excerpt": "Hoping to get temporary monitors to set up for our temp's use with her MacBook air. For now, she is set up to use my monitors while I am out of office and working remotely.\n\nIt was easy to make a request and discuss opt…"
+      },
+      {
+        "date": "2026-06-06",
+        "sentiment": "Great!",
+        "excerpt": "I received a timely response that was clear and resolved my issue."
+      },
+      {
+        "date": "2026-06-04",
+        "sentiment": "Not good at all",
+        "excerpt": "I do not understand the response .... is this a new response method?  I truly do not understand if this is legitimate or phishing.  As a result, I deleted both emails.\n\nQuickly ...."
+      },
+      {
+        "date": "2026-06-04",
+        "sentiment": "Great!",
+        "excerpt": "Everything fixed and operational again.\n\nIt was really difficult to get anyone to answer the phone initially. That was frustrating.\r\nOnce I got to Noah Orme the service was exceptional. He was so helpful and responsive.…"
+      },
+      {
+        "date": "2026-06-04",
+        "sentiment": "Great!",
+        "excerpt": "Again, your team did a wonderful job in making sure that the information provided was clear and concise!\n\nThe clarity of communication was key and your team did a fantastic job ensuring everyone was on the same page!"
+      },
+      {
+        "date": "2026-06-02",
+        "sentiment": "Great!",
+        "excerpt": "Thank for Sophia's quick and effective response.\n\nSophia was very responsive and knowledgeable."
+      }
+    ]
+  },
+  "projects": {
+    "movement": {
+      "in_progress_count": 19,
+      "new_this_week": 0,
+      "completed_this_week": 0
+    },
+    "teamCounts": {
+      "Tech Ops": 8,
+      "Tech Pros": 8,
+      "Tech Services": 2,
+      "Security": 1
+    },
+    "samples": [
+      {
+        "id": "TOPS-1922",
+        "summary": "Strongest Layer implementation",
+        "team": "Security",
+        "isNew": false
+      },
+      {
+        "id": "TOPS-1144",
+        "summary": "Bolthouse Academic Center Construction",
+        "team": "Tech Ops",
+        "isNew": false
+      },
+      {
+        "id": "TOPS-1426",
+        "summary": "Construction - New Apartments",
+        "team": "Tech Ops",
+        "isNew": false
+      },
+      {
+        "id": "TOPS-1623",
+        "summary": "Construction - Track and Soccer Press Box",
+        "team": "Tech Ops",
+        "isNew": false
+      },
+      {
+        "id": "TOPS-1147",
+        "summary": "IP Address Management Solution",
+        "team": "Tech Ops",
+        "isNew": false
+      },
+      {
+        "id": "TOPS-1940",
+        "summary": "Replace Failing UPSs",
+        "team": "Tech Ops",
+        "isNew": false
+      },
+      {
+        "id": "TOPS-2038",
+        "summary": "Summer 2026 - Software Updates",
+        "team": "Tech Ops",
+        "isNew": false
+      },
+      {
+        "id": "TOPS-1140",
+        "summary": "Windows Server 2016 Upgrades",
+        "team": "Tech Ops",
+        "isNew": false
+      }
+    ]
+  }
+}
