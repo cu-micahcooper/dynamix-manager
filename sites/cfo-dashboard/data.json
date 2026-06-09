@@ -135,7 +135,7 @@
       {
         "date": "2026-06-08",
         "sentiment": "Great!",
-        "excerpt": "Hoping to get temporary monitors to set up for our temp's use with her MacBook air. For now, she is set up to use my monitors while I am out of office and working remotely. It was easy to make a request and discuss opti\u2026"
+        "excerpt": "Hoping to get temporary monitors to set up for our temp's use with her MacBook air. For now, she is set up to use my monitors while I am out of office and working remotely. It was easy to make a request and discuss opti..."
       },
       {
         "date": "2026-06-06",
@@ -150,7 +150,7 @@
       {
         "date": "2026-06-04",
         "sentiment": "Great!",
-        "excerpt": "Everything fixed and operational again. It was really difficult to get anyone to answer the phone initially. That was frustrating. Once I got to Noah Orme the service was exceptional. He was so helpful and responsive. I\u2026"
+        "excerpt": "Everything fixed and operational again. It was really difficult to get anyone to answer the phone initially. That was frustrating. Once I got to Noah Orme the service was exceptional. He was so helpful and responsive. I..."
       },
       {
         "date": "2026-06-04",
@@ -166,13 +166,12 @@
   },
   "projects": {
     "movement": {
-      "in_progress_count": 19,
+      "in_progress_count": 11,
       "new_this_week": 0,
       "completed_this_week": 0
     },
     "teamCounts": {
       "Tech Ops": 8,
-      "Tech Pros": 8,
       "Tech Services": 2,
       "Security": 1
     },
@@ -224,6 +223,159 @@
         "summary": "Windows Server 2016 Upgrades",
         "team": "Tech Ops",
         "isNew": false
+      }
+    ]
+  },
+  "ahaRoadmap": {
+    "workspace_count": 4,
+    "goal_count": 7,
+    "initiative_count": 20,
+    "workspaces": [
+      {
+        "id": "7613890420754163651",
+        "name": "ERP Project",
+        "goals": [
+          {
+            "id": "7613890420754163651",
+            "name": "ERP Selection",
+            "initiatives": [
+              {
+                "id": "7613891702767656404",
+                "name": "Capability Documents"
+              },
+              {
+                "id": "7613891794667609795",
+                "name": "Initial Vendor Demos"
+              },
+              {
+                "id": "7613891880754305895",
+                "name": "Software and SI RFP"
+              },
+              {
+                "id": "7613892008291812621",
+                "name": "Software & SI Selection"
+              }
+            ]
+          },
+          {
+            "id": "7613890692216951191",
+            "name": "ERP Readiness",
+            "initiatives": [
+              {
+                "id": "7613892308705527089",
+                "name": "GUARD-Data Governance"
+              },
+              {
+                "id": "7623488918702248319",
+                "name": "Workflow Documents?"
+              }
+            ]
+          },
+          {
+            "id": "7614173027791422484",
+            "name": "ERP Implementation",
+            "initiatives": [
+              {
+                "id": "7631321746468275391",
+                "name": "Pre-Implementation"
+              },
+              {
+                "id": "7631319913851294131",
+                "name": "Finance & HR Implementation"
+              },
+              {
+                "id": "7631319992830056606",
+                "name": "Student Implementation"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "7623493390827593334",
+        "name": "FL Campus",
+        "goals": [
+          {
+            "id": "7623493390827593334",
+            "name": "FL - Opening Day Prep",
+            "initiatives": [
+              {
+                "id": "7623493888700459245",
+                "name": "Technology Prep Work"
+              },
+              {
+                "id": "7631205038051126724",
+                "name": "Colleague Prep Work"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "7631206363002818944",
+        "name": "TechPros Projects",
+        "goals": [
+          {
+            "id": "7631206363002818944",
+            "name": "ChatGPT",
+            "initiatives": [
+              {
+                "id": "7631216264731327186",
+                "name": "ChatGPT App Deployment"
+              },
+              {
+                "id": "7638969081026608786",
+                "name": "ChatGPT Credit Charge Back"
+              },
+              {
+                "id": "7638967449128480509",
+                "name": "ChatGPT Skill Development"
+              },
+              {
+                "id": "7631216128910107331",
+                "name": "Year End Summary"
+              },
+              {
+                "id": "7631216186982635485",
+                "name": "Year 2 Adoption"
+              }
+            ]
+          },
+          {
+            "id": "7631207175449816981",
+            "name": "Misc Projects",
+            "initiatives": [
+              {
+                "id": "7632345052794418195",
+                "name": "Hire Business Analyst"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "7643832499598271569",
+        "name": "Slate",
+        "goals": [
+          {
+            "id": "7643832499598271569",
+            "name": "Slate Projects",
+            "initiatives": [
+              {
+                "id": "7631207371933793407",
+                "name": "myCU 2.0"
+              },
+              {
+                "id": "7631207471828810894",
+                "name": "Enrollment Management Reports"
+              },
+              {
+                "id": "7647165842457877586",
+                "name": "Misc. Work"
+              }
+            ]
+          }
+        ]
       }
     ]
   }

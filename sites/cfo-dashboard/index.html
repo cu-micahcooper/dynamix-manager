@@ -417,6 +417,46 @@
         font-weight: 900;
       }
 
+      .roadmap-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+        gap: var(--space-4);
+      }
+
+      .roadmap-workspace {
+        display: grid;
+        gap: var(--space-4);
+        padding-top: var(--space-3);
+        border-top: 2px solid var(--line);
+      }
+
+      .roadmap-workspace h3,
+      .roadmap-goal strong {
+        margin: 0;
+        font-family: "Chivo", ui-sans-serif, sans-serif;
+        letter-spacing: 0;
+      }
+
+      .roadmap-workspace h3 {
+        font-size: 1.05rem;
+      }
+
+      .roadmap-goal {
+        display: grid;
+        gap: var(--space-2);
+      }
+
+      .initiative-list {
+        margin: 0;
+        padding-left: 1.1rem;
+        color: var(--muted);
+        font-weight: 700;
+      }
+
+      .initiative-list li {
+        margin-bottom: var(--space-1);
+      }
+
       footer {
         padding: var(--space-8) clamp(1.5rem, 4vw, 3rem) var(--space-10, 2.5rem);
         color: var(--muted);
@@ -537,20 +577,31 @@
 
           <section class="panel projects fade-in" style="animation-delay: 320ms">
             <div>
-              <div class="label">Project movement</div>
+              <div class="label">YouTrack</div>
               <h2 id="projectHeadline">Project board loading.</h2>
               <p class="note" id="projectNote">Gathering active project movement.</p>
               <div class="team-stack" id="teamStack"></div>
             </div>
             <div>
-              <div class="label">Sample active work</div>
+              <div class="label">Major IT Projects</div>
               <div class="project-list" id="projectList"></div>
             </div>
+          </section>
+
+          <section class="panel fade-in" style="animation-delay: 380ms">
+            <div class="panel-head">
+              <div>
+                <div class="label">Aha</div>
+                <h2 id="ahaHeadline">Roadmap loading.</h2>
+                <p class="note" id="ahaNote">Gathering Strategic Technology Projects roadmap data.</p>
+              </div>
+            </div>
+            <div class="roadmap-grid" id="ahaRoadmap"></div>
           </section>
         </main>
 
         <footer>
-          Built from the same CFO email snapshot logic, refreshed from TeamDynamix and YouTrack before publication.
+          Built from the same CFO email snapshot logic, refreshed from TeamDynamix, YouTrack, and Aha before publication.
         </footer>
       </div>
     </div>
@@ -667,13 +718,13 @@
         const doneCount = Number(movement.completed_this_week || 0);
         text(
           "projectHeadline",
-          `${inProgress} active projects. ${newCount} new. ${doneCount} completed.`
+          `${inProgress} major active projects. ${newCount} new. ${doneCount} completed.`
         );
         text(
           "projectNote",
           newCount || doneCount
-            ? "The board moved. Someone may have touched the tracker with intent."
-            : "No new or completed project movement this week. The board is alive, just not theatrical."
+            ? "Tech Pros work is intentionally excluded here so this stays focused on major IT initiatives."
+            : "Tech Pros work is intentionally excluded here so this stays focused on major IT initiatives."
         );
 
         const teams = Object.entries(data.projects.teamCounts || {}).sort((a, b) => b[1] - a[1]);
@@ -702,6 +753,31 @@
           .join("");
       }
 
+      function renderAhaRoadmap(data) {
+        const roadmap = data.ahaRoadmap || {};
+        const workspaces = roadmap.workspaces || [];
+        text(
+          "ahaHeadline",
+          `${Number(roadmap.workspace_count || 0)} workspaces. ${Number(roadmap.goal_count || 0)} goals. ${Number(roadmap.initiative_count || 0)} initiatives.`
+        );
+        text("ahaNote", "Strategic Technology Projects - Roadmap, grouped as Aha exposes it: workspace, goal, initiative.");
+        document.getElementById("ahaRoadmap").innerHTML = workspaces
+          .map((workspace) => `
+            <div class="roadmap-workspace">
+              <h3>${workspace.name}</h3>
+              ${(workspace.goals || []).map((goal) => `
+                <div class="roadmap-goal">
+                  <strong>${goal.name}</strong>
+                  <ul class="initiative-list">
+                    ${(goal.initiatives || []).map((initiative) => `<li>${initiative.name}</li>`).join("")}
+                  </ul>
+                </div>
+              `).join("")}
+            </div>
+          `)
+          .join("");
+      }
+
       async function boot() {
         const response = await fetch("./data.json");
         const data = await response.json();
@@ -717,6 +793,7 @@
         renderSurvey(data);
         renderVoice(data);
         renderProjects(data);
+        renderAhaRoadmap(data);
       }
 
       boot().catch((error) => {

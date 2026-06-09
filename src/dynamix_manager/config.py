@@ -4,6 +4,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from dynamix_manager.aha import DEFAULT_AHA_BASE_URL, STRATEGIC_TECH_ROADMAP_REPORT_ID
+
 
 def required_env_vars() -> tuple[str, ...]:
     """Return the TeamDynamix-specific environment variables required to run."""
@@ -44,6 +46,9 @@ class RuntimeConfig:
     youtrack_base: str | None = None
     youtrack_token: str | None = None
     youtrack_board_id: str | None = None
+    aha_base: str | None = None
+    aha_key: str | None = None
+    aha_report_id: str | None = None
 
 
 def load_runtime_config() -> RuntimeConfig:
@@ -69,4 +74,7 @@ def load_runtime_config() -> RuntimeConfig:
         youtrack_base=os.environ.get("YOUTRACK_BASE"),
         youtrack_token=os.environ.get("YOUTRACK_TOKEN"),
         youtrack_board_id=os.environ.get("YOUTRACK_BOARD_ID"),
+        aha_base=os.environ.get("AHA_BASE") or DEFAULT_AHA_BASE_URL,
+        aha_key=os.environ.get("AHA_KEY"),
+        aha_report_id=os.environ.get("AHA_REPORT_ID") or STRATEGIC_TECH_ROADMAP_REPORT_ID,
     )
