@@ -84,6 +84,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional tagline to render in the header burst",
     )
+    cfo.add_argument(
+        "--datatype-sparklines",
+        action="store_true",
+        help="Render CFO trend sparklines with the Datatype Google font for testing",
+    )
 
     return parser
 
@@ -148,6 +153,7 @@ def main() -> None:
             config=config,
             client=client,
             header_burst_text=args.header_burst_text,
+            datatype_sparklines=args.datatype_sparklines,
         )
         print(json.dumps(result, indent=2))
 

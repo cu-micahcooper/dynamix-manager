@@ -6,11 +6,17 @@ from typing import Any
 import pandas as pd
 import requests
 
+from dynamix_manager.aha import (
+    enrich_aha_roadmap_details,
+    fetch_aha_roadmap_pivot,
+    parse_aha_roadmap_pivot,
+)
 from dynamix_manager.models import build_ticket_linked_survey_model
 from dynamix_manager.notebooks import (
     write_survey_health_notebook,
     write_ticket_quality_notebook,
 )
+from dynamix_manager.noteplan import build_cfo_discussion_items
 from dynamix_manager.planned_days_off import PLANNED_DAYS_OFF
 from dynamix_manager.config import RuntimeConfig, survey_report_id
 from dynamix_manager.cfo import summarize_cfo_snapshot
@@ -225,6 +231,30 @@ def _open_tickets_only(tickets: pd.DataFrame) -> pd.DataFrame:
         resolved = pd.to_datetime(frame["resolved_at"], utc=True, errors="coerce")
         frame = frame.loc[resolved.isna()]
     return frame
+
+
+def _fetch_aha_roadmap(config: RuntimeConfig) -> dict[str, object]:
+    if not (config.aha_base and config.aha_key and config.aha_report_id):
+        return {}
+    try:
+        payload = fetch_aha_roadmap_pivot(
+            config.aha_base,
+            config.aha_key,
+            report_id=config.aha_report_id,
+        )
+        roadmap = parse_aha_roadmap_pivot(payload)
+        return enrich_aha_roadmap_details(roadmap, config.aha_base, config.aha_key)
+    except Exception:
+        return {}
+
+
+def _fetch_cfo_discussion_items(config: RuntimeConfig, as_of: pd.Timestamp) -> list[dict[str, str]]:
+    if not config.cfo_notes_dir:
+        return []
+    try:
+        return build_cfo_discussion_items(config.cfo_notes_dir, as_of=as_of)
+    except Exception:
+        return []
 
 
 def _discover_ticket_app_from_rows(
@@ -634,6 +664,7 @@ def generate_cfo_email(
     config: RuntimeConfig,
     client: TeamDynamixClient | None = None,
     header_burst_text: str | None = None,
+    datatype_sparklines: bool = False,
 ) -> dict[str, object]:
     """Render the CFO Update email from live TDX data + live YouTrack projects."""
     as_of = _now_utc()
@@ -666,6 +697,8 @@ def generate_cfo_email(
             )
         except Exception:
             youtrack_projects = []
+    aha_roadmap = _fetch_aha_roadmap(config)
+    discussion_items = _fetch_cfo_discussion_items(config, as_of)
 
     snapshot = summarize_cfo_snapshot(
         tickets,
@@ -674,6 +707,8 @@ def generate_cfo_email(
         as_of=as_of,
         period_start=period_start,
     )
+    snapshot["aha_roadmap"] = aha_roadmap
+    snapshot["discussion_items"] = discussion_items
     burst_tagline = str(header_burst_text or "").strip()
     burst_png: bytes | None = None
     burst_data_uri: str | None = None
@@ -689,7 +724,12 @@ def generate_cfo_email(
 
     artifact_root = _artifact_root(config)
     email_path = artifact_root / "reports" / "cfo_email.html"
-    write_cfo_email(snapshot, email_path, header_burst_img_src=burst_data_uri)
+    write_cfo_email(
+        snapshot,
+        email_path,
+        header_burst_img_src=burst_data_uri,
+        datatype_sparklines=datatype_sparklines,
+    )
 
     draft_id = None
     if credentials_available(config.gmail_token_path):
@@ -699,6 +739,7 @@ def generate_cfo_email(
             draft_html = render_cfo_email_html(
                 snapshot,
                 header_burst_img_src="cid:cfo-header-burst" if burst_png else burst_data_uri,
+                datatype_sparklines=datatype_sparklines,
             )
             draft = create_draft(
                 subject=subject,
@@ -741,6 +782,9 @@ def generate_cfo_email(
             if isinstance(youtrack_projects, dict)
             else youtrack_projects
         ),
+        "aha_initiative_count": int(aha_roadmap.get("initiative_count", 0) or 0),
+        "discussion_item_count": len(discussion_items),
+        "datatype_sparklines": bool(datatype_sparklines),
         "gmail_draft_id": draft_id,
     }
 

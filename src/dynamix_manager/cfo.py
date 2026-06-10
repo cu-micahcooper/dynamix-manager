@@ -11,10 +11,85 @@ _YOUTRACK_DONE_STAGES = {
     "cancelled",
     "canceled",
 }
+_SURVEY_SATISFACTION_ORDER = [
+    "Great!",
+    "Very Satisfied",
+    "Satisfied",
+    "Could have been better",
+    "Unsatisfied",
+    "Very Unsatisfied",
+]
+_HEADER_BURST_TAGLINES = [
+    "THE HOME STRETCH HITS HARD",
+    "IT'S THE FINAL COUNTDOWN",
+    "Board of Trustee Edition",
+    "THE CURTAIN CALL IS COMING",
+    "ONE LAST ENCORE",
+    "THE LAST TRACK IS SPINNING",
+]
+
+
+def _ordered_satisfaction_counts(
+    surveys: pd.DataFrame,
+    *,
+    start: pd.Timestamp,
+    end: pd.Timestamp,
+) -> dict[str, int]:
+    if surveys.empty or "satisfaction_label" not in surveys.columns or "survey_completed_at" not in surveys.columns:
+        return {}
+
+    survey_completed = _parse_dates(surveys["survey_completed_at"])
+    satisfaction_mask = (
+        survey_completed.notna()
+        & (survey_completed >= start)
+        & (survey_completed <= end)
+        & surveys["satisfaction_label"].notna()
+    )
+    raw_counts = surveys.loc[satisfaction_mask, "satisfaction_label"].value_counts().to_dict()
+    ordered_counts: dict[str, int] = {}
+    for label in _SURVEY_SATISFACTION_ORDER:
+        count = int(raw_counts.pop(label, 0))
+        if count:
+            ordered_counts[label] = count
+    for label in sorted(raw_counts):
+        ordered_counts[str(label)] = int(raw_counts[label])
+    return ordered_counts
 
 
 def _fmt(ts: pd.Timestamp) -> str:
     return ts.strftime("%b %-d")
+
+
+def _fmt_full_date(ts: pd.Timestamp) -> str:
+    return ts.strftime("%b %-d, %Y")
+
+
+def _survey_effective_start_label(
+    surveys: pd.DataFrame,
+    *,
+    start: pd.Timestamp,
+    end: pd.Timestamp,
+) -> str | None:
+    if surveys.empty or "satisfaction_label" not in surveys.columns or "survey_completed_at" not in surveys.columns:
+        return None
+    completed = _parse_dates(surveys["survey_completed_at"])
+    mask = (
+        completed.notna()
+        & (completed >= start)
+        & (completed <= end)
+        & surveys["satisfaction_label"].notna()
+    )
+    if not mask.any():
+        return None
+    earliest = pd.Timestamp(completed.loc[mask].min())
+    if earliest <= start:
+        return None
+    return _fmt_full_date(earliest)
+
+
+def _header_burst_tagline(as_of: pd.Timestamp) -> str:
+    iso_week = int(as_of.isocalendar().week)
+    return _HEADER_BURST_TAGLINES[(iso_week + 2) % len(_HEADER_BURST_TAGLINES)]
 
 
 def _delta_pct(current: int, prior: int) -> float | None:
@@ -123,7 +198,7 @@ def _recent_survey_comments(
     *,
     period_start: pd.Timestamp,
     as_of: pd.Timestamp,
-    limit: int = 5,
+    limit: int | None = None,
 ) -> list[dict[str, str]]:
     if surveys.empty or "survey_completed_at" not in surveys.columns or "comment_text" not in surveys.columns:
         return []
@@ -166,7 +241,10 @@ def _recent_survey_comments(
         if col in comments.columns
     ]
     rows: list[dict[str, str]] = []
-    for row in comments.loc[:, columns].head(limit).to_dict(orient="records"):
+    selected = comments.loc[:, columns]
+    if limit is not None:
+        selected = selected.head(limit)
+    for row in selected.to_dict(orient="records"):
         normalized: dict[str, str] = {}
         for key, value in row.items():
             if key == "survey_completed_at":
@@ -184,6 +262,7 @@ def summarize_cfo_snapshot(
     surveys: pd.DataFrame,
     youtrack_projects: list[dict] | dict[str, object] | None = None,
     as_of: pd.Timestamp | None = None,
+    period_start: pd.Timestamp | None = None,
 ) -> dict[str, object]:
     """Aggregate data for the CFO Update email.
 
@@ -199,19 +278,39 @@ def summarize_cfo_snapshot(
     if as_of.tzinfo is None:
         as_of = as_of.tz_localize("UTC")
 
-    period_start = as_of - pd.Timedelta(days=7)
+    if period_start is None:
+        period_start = as_of - pd.Timedelta(days=7)
+    else:
+        period_start = pd.Timestamp(period_start)
+        if period_start.tzinfo is None:
+            period_start = period_start.tz_localize("UTC")
+        else:
+            period_start = period_start.tz_convert("UTC")
+        if period_start >= as_of:
+            period_start = as_of - pd.Timedelta(days=7)
+
+    period_delta = as_of - period_start
     prior_end = period_start
-    prior_start = prior_end - pd.Timedelta(days=7)
+    prior_start = prior_end - period_delta
     year_end = as_of - pd.Timedelta(weeks=52)
-    year_start = year_end - pd.Timedelta(days=7)
+    year_start = year_end - period_delta
+    trailing_year_start = as_of - pd.Timedelta(days=365)
+    period_days = max(1, round(period_delta.total_seconds() / 86400))
+    volume_period_label = "last 7 days" if period_days == 7 else f"last {period_days} days"
+    prior_volume_period_label = (
+        "prior 7 days" if period_days == 7 else f"prior {period_days} days"
+    )
 
     result: dict[str, object] = {
         "period_label": f"{_fmt(period_start)} – {_fmt(as_of)}",
         "week_range_label": f"{_fmt(period_start)} – {_fmt(as_of)}",
         "prior_week_range_label": f"{_fmt(prior_start)} – {_fmt(prior_end)}",
         "year_ago_range_label": f"{_fmt(year_start)} – {_fmt(year_end)}",
+        "volume_period_label": volume_period_label,
+        "prior_volume_period_label": prior_volume_period_label,
         "report_generated_at": as_of.isoformat(),
         "as_of_label": _fmt(as_of),
+        "header_burst_tagline": _header_burst_tagline(as_of),
     }
 
     # ── Ticket volume ──────────────────────────────────────────────────────────
@@ -307,6 +406,23 @@ def summarize_cfo_snapshot(
     result["survey_effort_total"] = effort_total
     result["survey_easy_rate"] = easy_rate
     result["survey_period_label"] = f"{_fmt(period_start)} – {_fmt(as_of)}"
+    ordered_counts = _ordered_satisfaction_counts(surveys, start=period_start, end=as_of)
+    trailing_year_counts = _ordered_satisfaction_counts(
+        surveys,
+        start=trailing_year_start,
+        end=as_of,
+    )
+
+    result["survey_satisfaction_counts"] = ordered_counts
+    result["survey_satisfaction_total"] = int(sum(ordered_counts.values()))
+    result["survey_trailing_year_label"] = f"{_fmt(trailing_year_start)} – {_fmt(as_of)}"
+    result["survey_trailing_year_effective_start_label"] = _survey_effective_start_label(
+        surveys,
+        start=trailing_year_start,
+        end=as_of,
+    )
+    result["survey_satisfaction_counts_trailing_year"] = trailing_year_counts
+    result["survey_satisfaction_total_trailing_year"] = int(sum(trailing_year_counts.values()))
     result["survey_comments"] = _recent_survey_comments(
         surveys,
         tickets,

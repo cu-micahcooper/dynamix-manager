@@ -25,6 +25,10 @@ _SNAPSHOT = {
     "total_open_tickets": 117,
     "total_open_tickets_prior_week": 105,
     "total_open_tickets_ww_delta": 12,
+    "discussion_items": [
+        {"source": "Next agenda", "text": "Kyle Medical Center"},
+        {"source": "Open action", "text": "Follow up on GUARD"},
+    ],
     "created_weekly": _WEEKLY,
     "closed_weekly": _WEEKLY,
     "open_weekly": _WEEKLY,
@@ -65,6 +69,7 @@ _SNAPSHOT = {
         "Could have been better": 1,
     },
     "survey_satisfaction_total_trailing_year": 12,
+    "survey_trailing_year_effective_start_label": "Jan 15, 2025",
     "header_burst_tagline": "IT'S THE FINAL COUNTDOWN",
     "youtrack_projects": [
         {"id": "IPS-20", "summary": "MyCU2", "it_team": "User Services", "assignee": "Jane Doe", "project_short": "IPS", "is_new_this_week": True},
@@ -74,6 +79,42 @@ _SNAPSHOT = {
         "in_progress_count": 2,
         "new_this_week": 1,
         "completed_this_week": 1,
+    },
+    "aha_roadmap": {
+        "workspace_count": 1,
+        "goal_count": 1,
+        "initiative_count": 2,
+        "workspaces": [
+            {
+                "id": "workspace-1",
+                "name": "Strategic Technology Projects",
+                "goals": [
+                    {
+                        "id": "goal-1",
+                        "name": "Roadmap",
+                        "initiatives": [
+                            {
+                                "id": "initiative-1",
+                                "name": "ERP Selection",
+                                "reference_num": "ERP-S-1",
+                                "end_date": "2026-09-30",
+                                "progress": 72,
+                                "status": "On track",
+                                "status_color": "#4f8f5a",
+                            },
+                            {
+                                "id": "initiative-2",
+                                "name": "Document Management",
+                                "reference_num": "ERP-S-2",
+                                "end_date": "2026-11-15",
+                                "progress": 18,
+                                "status": "Planning",
+                            },
+                        ],
+                    }
+                ],
+            }
+        ],
     },
 }
 
@@ -105,6 +146,36 @@ def test_cfo_email_shows_open_tickets():
     assert "+12 vs prior week" in html
 
 
+def test_cfo_email_uses_noteplan_discussion_items():
+    html = render_cfo_email_html(_SNAPSHOT)
+    assert "Kyle Medical Center" in html
+    assert "Follow up on GUARD" in html
+    assert "Next agenda" in html
+    assert "Open action" in html
+    assert "[Replace with your first discussion point for this week.]" not in html
+
+
+def test_cfo_email_keeps_discussion_placeholders_without_noteplan_items():
+    snapshot = dict(_SNAPSHOT)
+    snapshot["discussion_items"] = []
+
+    html = render_cfo_email_html(snapshot)
+
+    assert "[Replace with your first discussion point for this week.]" in html
+
+
+def test_cfo_email_shows_aha_roadmap_between_open_tickets_and_survey_comments():
+    html = render_cfo_email_html(_SNAPSHOT)
+    assert html.index("Open Tickets") < html.index("Aha Roadmap") < html.index("Survey Comments")
+    assert "Strategic Technology Projects" in html
+    assert "ERP Selection" in html
+    assert "ERP-S-1" in html
+    assert "Sep 30, 2026" in html
+    assert "72%" in html
+    assert "width:72%" in html
+    assert "On track" in html
+
+
 def test_cfo_email_shows_survey_comments():
     html = render_cfo_email_html(_SNAPSHOT)
     assert "Survey Comments" in html
@@ -113,6 +184,7 @@ def test_cfo_email_shows_survey_comments():
     assert "Past 12 Months" in html
     assert "3 scored responses in this period" in html
     assert "12 scored responses in this rolling year" in html
+    assert "Data since Jan 15, 2025" in html
     assert "Great!" in html
     assert "2 (67%)" in html
     assert "8 (67%)" in html
@@ -152,6 +224,8 @@ def test_cfo_email_shows_delta_badge():
 
 def test_cfo_email_shows_youtrack_projects():
     html = render_cfo_email_html(_SNAPSHOT)
+    assert "Operational Projects" in html
+    assert "In Progress Projects" not in html
     assert "User Services" in html                          # IT Team badge
     assert "MyCU2" in html                                  # issue summary
     assert "Tech Ops" in html                               # IT Team badge
@@ -193,6 +267,18 @@ def test_cfo_email_includes_sparklines():
     assert "8-Wk Trend" in html
     # Sparkline bars rendered as nested tables
     assert "border-radius:1px 1px 0 0" in html
+
+
+def test_cfo_email_can_render_datatype_font_sparklines():
+    html = render_cfo_email_html(_SNAPSHOT, datatype_sparklines=True)
+
+    assert "https://fonts.googleapis.com/css2?family=Datatype&amp;display=swap" in html
+    assert "Datatype:wdth,wght" not in html
+    assert "font-family:'Datatype',Datatype,Helvetica Neue,Helvetica,Arial,sans-serif" in html
+    assert "font-feature-settings:'liga' 1, 'calt' 1" in html
+    assert "{b:" in html
+    assert "{l:" not in html
+    assert "border-radius:1px 1px 0 0" not in html
 
 
 def test_write_cfo_email_creates_file(tmp_path: Path):

@@ -1265,6 +1265,204 @@ def test_generate_cfo_email_omits_header_burst_without_cli_text(tmp_path, monkey
     assert captured["inline_attachments"] == []
 
 
+def test_generate_cfo_email_passes_datatype_sparklines_to_file_and_draft(tmp_path, monkeypatch):
+    config = RuntimeConfig(
+        base_url="https://example.test",
+        app_id="1234",
+        username="user",
+        password="pass",
+        db_path=tmp_path / "analytics.duckdb",
+        report_output_path=tmp_path / "survey_health.html",
+        notebook_output_path=tmp_path / "survey_health.ipynb",
+        gmail_token_path=str(tmp_path / "gmail-token.json"),
+        gmail_draft_to="cfo@example.test",
+    )
+    replace_table(config.db_path, "tickets", pd.DataFrame([{"ticket_id": 1}]).iloc[0:0])
+    replace_table(config.db_path, "survey_responses", pd.DataFrame([{"response_id": 1}]).iloc[0:0])
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr("dynamix_manager.pipeline.credentials_available", lambda path: True)
+    monkeypatch.setattr("dynamix_manager.pipeline.fetch_youtrack_inprogress_projects", lambda *args, **kwargs: [])
+    monkeypatch.setattr("dynamix_manager.pipeline.build_cfo_discussion_items", lambda *args, **kwargs: [])
+    monkeypatch.setattr(
+        "dynamix_manager.pipeline.summarize_cfo_snapshot",
+        lambda tickets, surveys, youtrack_projects=None, as_of=None, period_start=None: {
+            "period_label": "Apr 8 – Apr 15",
+            "tickets_created_this_week": 0,
+            "tickets_closed_this_week": 0,
+            "total_open_tickets": 0,
+            "youtrack_projects": [],
+        },
+    )
+
+    def fake_write_cfo_email(snapshot, output_path, header_burst_img_src=None, datatype_sparklines=False):
+        captured["file_datatype_sparklines"] = datatype_sparklines
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text("email")
+
+    def fake_render_cfo_email_html(snapshot, header_burst_img_src=None, datatype_sparklines=False):
+        captured["draft_datatype_sparklines"] = datatype_sparklines
+        return "html"
+
+    monkeypatch.setattr("dynamix_manager.pipeline.write_cfo_email", fake_write_cfo_email)
+    monkeypatch.setattr("dynamix_manager.pipeline.render_cfo_email_html", fake_render_cfo_email_html)
+    monkeypatch.setattr(
+        "dynamix_manager.pipeline.create_draft",
+        lambda **kwargs: {"id": "draft-123"},
+    )
+
+    result = generate_cfo_email(config, datatype_sparklines=True)
+
+    assert captured["file_datatype_sparklines"] is True
+    assert captured["draft_datatype_sparklines"] is True
+    assert result["datatype_sparklines"] is True
+
+
+def test_generate_cfo_email_includes_enriched_aha_roadmap(tmp_path, monkeypatch):
+    config = RuntimeConfig(
+        base_url="https://example.test",
+        app_id="1234",
+        username="user",
+        password="pass",
+        db_path=tmp_path / "analytics.duckdb",
+        report_output_path=tmp_path / "survey_health.html",
+        notebook_output_path=tmp_path / "survey_health.ipynb",
+        aha_base="https://example.aha.io",
+        aha_key="test-key",
+        aha_report_id="report-123",
+    )
+    replace_table(config.db_path, "tickets", pd.DataFrame([{"ticket_id": 1}]).iloc[0:0])
+    replace_table(config.db_path, "survey_responses", pd.DataFrame([{"response_id": 1}]).iloc[0:0])
+
+    raw_roadmap = {"payload": "pivot"}
+    parsed_roadmap = {
+        "workspace_count": 1,
+        "goal_count": 1,
+        "initiative_count": 1,
+        "workspaces": [
+            {
+                "id": "workspace-1",
+                "name": "Strategic Technology Projects",
+                "goals": [
+                    {
+                        "id": "goal-1",
+                        "name": "Roadmap",
+                        "initiatives": [
+                            {"id": "initiative-1", "name": "ERP Selection", "reference_num": "ERP-S-1"}
+                        ],
+                    }
+                ],
+            }
+        ],
+    }
+    enriched_roadmap = {
+        **parsed_roadmap,
+        "workspaces": [
+            {
+                "id": "workspace-1",
+                "name": "Strategic Technology Projects",
+                "goals": [
+                    {
+                        "id": "goal-1",
+                        "name": "Roadmap",
+                        "initiatives": [
+                            {
+                                "id": "initiative-1",
+                                "name": "ERP Selection",
+                                "reference_num": "ERP-S-1",
+                                "end_date": "2026-09-30",
+                                "progress": 72,
+                            }
+                        ],
+                    }
+                ],
+            }
+        ],
+    }
+    captured: dict[str, object] = {}
+
+    def fake_fetch_aha_roadmap_pivot(base_url, api_key, *, report_id):
+        assert base_url == "https://example.aha.io"
+        assert api_key == "test-key"
+        assert report_id == "report-123"
+        return raw_roadmap
+
+    monkeypatch.setattr("dynamix_manager.pipeline.credentials_available", lambda path: False)
+    monkeypatch.setattr("dynamix_manager.pipeline.fetch_youtrack_inprogress_projects", lambda *args, **kwargs: [])
+    monkeypatch.setattr("dynamix_manager.pipeline.fetch_aha_roadmap_pivot", fake_fetch_aha_roadmap_pivot, raising=False)
+    monkeypatch.setattr("dynamix_manager.pipeline.parse_aha_roadmap_pivot", lambda payload: parsed_roadmap, raising=False)
+    monkeypatch.setattr(
+        "dynamix_manager.pipeline.enrich_aha_roadmap_details",
+        lambda roadmap, base_url, api_key: enriched_roadmap,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "dynamix_manager.pipeline.summarize_cfo_snapshot",
+        lambda tickets, surveys, youtrack_projects=None, as_of=None, period_start=None: {
+            "period_label": "Apr 8 – Apr 15",
+            "tickets_created_this_week": 0,
+            "tickets_closed_this_week": 0,
+            "total_open_tickets": 0,
+            "youtrack_projects": [],
+        },
+    )
+    monkeypatch.setattr(
+        "dynamix_manager.pipeline.write_cfo_email",
+        lambda snapshot, output_path, header_burst_img_src=None, datatype_sparklines=False: captured.setdefault("snapshot", snapshot),
+    )
+
+    result = generate_cfo_email(config)
+
+    assert captured["snapshot"]["aha_roadmap"] == enriched_roadmap
+    assert result["aha_initiative_count"] == 1
+
+
+def test_generate_cfo_email_includes_noteplan_discussion_items(tmp_path, monkeypatch):
+    notes_dir = tmp_path / "notes"
+    notes_dir.mkdir()
+    config = RuntimeConfig(
+        base_url="https://example.test",
+        app_id="1234",
+        username="user",
+        password="pass",
+        db_path=tmp_path / "analytics.duckdb",
+        report_output_path=tmp_path / "survey_health.html",
+        notebook_output_path=tmp_path / "survey_health.ipynb",
+        cfo_notes_dir=str(notes_dir),
+    )
+    replace_table(config.db_path, "tickets", pd.DataFrame([{"ticket_id": 1}]).iloc[0:0])
+    replace_table(config.db_path, "survey_responses", pd.DataFrame([{"response_id": 1}]).iloc[0:0])
+    captured: dict[str, object] = {}
+    discussion_items = [{"source": "Next agenda", "text": "Kyle Medical Center"}]
+
+    monkeypatch.setattr("dynamix_manager.pipeline.credentials_available", lambda path: False)
+    monkeypatch.setattr("dynamix_manager.pipeline.fetch_youtrack_inprogress_projects", lambda *args, **kwargs: [])
+    monkeypatch.setattr(
+        "dynamix_manager.pipeline.build_cfo_discussion_items",
+        lambda notes_path, as_of: discussion_items,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "dynamix_manager.pipeline.summarize_cfo_snapshot",
+        lambda tickets, surveys, youtrack_projects=None, as_of=None, period_start=None: {
+            "period_label": "Apr 8 – Apr 15",
+            "tickets_created_this_week": 0,
+            "tickets_closed_this_week": 0,
+            "total_open_tickets": 0,
+            "youtrack_projects": [],
+        },
+    )
+    monkeypatch.setattr(
+        "dynamix_manager.pipeline.write_cfo_email",
+        lambda snapshot, output_path, header_burst_img_src=None, datatype_sparklines=False: captured.setdefault("snapshot", snapshot),
+    )
+
+    result = generate_cfo_email(config)
+
+    assert captured["snapshot"]["discussion_items"] == discussion_items
+    assert result["discussion_item_count"] == 1
+
+
 def test_generate_cfo_email_refreshes_live_tdx_data_when_client_provided(tmp_path, monkeypatch):
     config = RuntimeConfig(
         base_url="https://example.test",

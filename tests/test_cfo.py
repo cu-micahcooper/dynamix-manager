@@ -63,6 +63,58 @@ def test_tickets_closed_this_week():
     assert snap["tickets_closed_prior_week"] == 1
 
 
+def test_volume_period_can_expand_to_catch_up_missed_runs():
+    as_of = pd.Timestamp("2025-04-29 15:00:00", tz="UTC")
+    period_start = pd.Timestamp("2025-04-08 15:00:00", tz="UTC")
+    tickets = _make_tickets(
+        created_dates=[
+            "2025-04-10T10:00:00Z",  # catchup window
+            "2025-04-23T10:00:00Z",  # catchup window
+            "2025-03-30T10:00:00Z",  # prior same-length window
+        ],
+        resolved_dates=[
+            "2025-04-12T10:00:00Z",  # catchup window
+            None,
+            "2025-04-01T10:00:00Z",  # prior same-length window
+        ],
+        status_classes=[3, 1, 3],
+    )
+    surveys = pd.DataFrame(
+        [
+            {
+                "survey_completed_at": "2025-04-12T10:00:00Z",
+                "customer_effort_label": "Very Easy",
+                "satisfaction_label": "Great!",
+                "comment_text": "Included by catchup",
+            },
+            {
+                "survey_completed_at": "2025-04-07T10:00:00Z",
+                "customer_effort_label": "Difficult",
+                "satisfaction_label": "Unsatisfied",
+                "comment_text": "Too old",
+            },
+        ]
+    )
+
+    snap = summarize_cfo_snapshot(
+        tickets,
+        surveys,
+        as_of=as_of,
+        period_start=period_start,
+    )
+
+    assert snap["period_label"] == "Apr 8 – Apr 29"
+    assert snap["prior_week_range_label"] == "Mar 18 – Apr 8"
+    assert snap["tickets_created_this_week"] == 2
+    assert snap["tickets_created_prior_week"] == 1
+    assert snap["tickets_closed_this_week"] == 1
+    assert snap["tickets_closed_prior_week"] == 1
+    assert snap["survey_effort_total"] == 1
+    assert [comment["comment_text"] for comment in snap["survey_comments"]] == [
+        "Included by catchup"
+    ]
+
+
 def test_total_open_tickets_excludes_resolved_and_completed():
     tickets = _make_tickets(
         created_dates=["2025-04-01T09:00:00Z"] * 4,
@@ -195,6 +247,124 @@ def test_survey_comments_use_same_7_day_window_as_ticket_metrics():
             "comment_text": "Quick turnaround",
         },
     ]
+
+
+def test_survey_comments_are_not_capped_and_satisfaction_counts_are_ordered():
+    tickets = pd.DataFrame(
+        [{"ticket_id": i, "ticket_title": f"Ticket {i}"} for i in range(1, 8)]
+    )
+    surveys = pd.DataFrame(
+        [
+            {
+                "ticket_id": 1,
+                "survey_completed_at": "2025-04-09T14:00:00Z",
+                "satisfaction_label": "Satisfied",
+                "commenter_name": "One",
+                "comment_text": "Comment 1",
+            },
+            {
+                "ticket_id": 2,
+                "survey_completed_at": "2025-04-09T13:00:00Z",
+                "satisfaction_label": "Great!",
+                "commenter_name": "Two",
+                "comment_text": "Comment 2",
+            },
+            {
+                "ticket_id": 3,
+                "survey_completed_at": "2025-04-09T12:00:00Z",
+                "satisfaction_label": "Great!",
+                "commenter_name": "Three",
+                "comment_text": "Comment 3",
+            },
+            {
+                "ticket_id": 4,
+                "survey_completed_at": "2025-04-09T11:00:00Z",
+                "satisfaction_label": "Could have been better",
+                "commenter_name": "Four",
+                "comment_text": "Comment 4",
+            },
+            {
+                "ticket_id": 5,
+                "survey_completed_at": "2025-04-09T10:00:00Z",
+                "satisfaction_label": "Satisfied",
+                "commenter_name": "Five",
+                "comment_text": "Comment 5",
+            },
+            {
+                "ticket_id": 6,
+                "survey_completed_at": "2025-04-09T09:00:00Z",
+                "satisfaction_label": "Very Unsatisfied",
+                "commenter_name": "Six",
+                "comment_text": "Comment 6",
+            },
+        ]
+    )
+
+    snap = summarize_cfo_snapshot(tickets, surveys, as_of=_AS_OF)
+
+    assert len(snap["survey_comments"]) == 6
+    assert [item["comment_text"] for item in snap["survey_comments"]] == [
+        "Comment 1",
+        "Comment 2",
+        "Comment 3",
+        "Comment 4",
+        "Comment 5",
+        "Comment 6",
+    ]
+    assert snap["survey_satisfaction_counts"] == {
+        "Great!": 2,
+        "Satisfied": 2,
+        "Could have been better": 1,
+        "Very Unsatisfied": 1,
+    }
+    assert snap["survey_satisfaction_total"] == 6
+
+
+def test_survey_trailing_year_counts_include_older_responses():
+    surveys = pd.DataFrame(
+        [
+            {
+                "survey_completed_at": "2025-04-08T10:00:00Z",
+                "satisfaction_label": "Great!",
+                "comment_text": "Current window",
+            },
+            {
+                "survey_completed_at": "2025-01-15T10:00:00Z",
+                "satisfaction_label": "Satisfied",
+                "comment_text": "Within trailing year",
+            },
+            {
+                "survey_completed_at": "2024-03-01T10:00:00Z",
+                "satisfaction_label": "Could have been better",
+                "comment_text": "Too old",
+            },
+        ]
+    )
+
+    snap = summarize_cfo_snapshot(pd.DataFrame(), surveys, as_of=_AS_OF)
+
+    assert snap["survey_satisfaction_counts"] == {"Great!": 1}
+    assert snap["survey_satisfaction_counts_trailing_year"] == {
+        "Great!": 1,
+        "Satisfied": 1,
+    }
+    assert snap["survey_satisfaction_total_trailing_year"] == 2
+    assert snap["survey_trailing_year_effective_start_label"] == "Jan 15, 2025"
+
+
+def test_header_burst_tagline_rotates_from_week():
+    snap = summarize_cfo_snapshot(pd.DataFrame(), pd.DataFrame(), as_of=_AS_OF)
+    assert isinstance(snap["header_burst_tagline"], str)
+    assert snap["header_burst_tagline"]
+
+
+def test_header_burst_tagline_board_of_trustee_edition_for_current_board_week():
+    snap = summarize_cfo_snapshot(
+        pd.DataFrame(),
+        pd.DataFrame(),
+        as_of=pd.Timestamp("2026-04-29 15:00:00", tz="UTC"),
+    )
+    assert snap["header_burst_tagline"] == "Board of Trustee Edition"
 
 
 def test_youtrack_projects_passed_through():

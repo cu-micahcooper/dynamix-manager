@@ -1863,6 +1863,45 @@ def _cfo_sparkline(
     )
 
 
+def _cfo_datatype_sparkline(
+    weekly: list[dict],
+    *,
+    current_color: str = "#003963",
+    period_days: int = 7,
+) -> str:
+    if not weekly:
+        return ""
+    counts = [int(w.get("count", 0) or 0) for w in weekly]
+    hi = max(counts) or 1
+    values = [str(max(0, min(100, int(round(count / hi * 100))))) for count in counts]
+    expression = "{b:" + ",".join(values) + "}"
+    first = escape(str(weekly[0].get("week", "")))
+    last = escape(str(weekly[-1].get("week", "")))
+    current_count = escape(str(counts[-1]))
+    return (
+        '<table cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;">'
+        '<tr>'
+        '<td style="font-family:\'Datatype\',Datatype,Helvetica Neue,Helvetica,Arial,sans-serif;'
+        f'font-size:24px;line-height:1;color:{current_color};font-weight:400;'
+        "font-variation-settings:'wdth' 15, 'wght' 400;letter-spacing:0;white-space:nowrap;"
+        "font-feature-settings:'liga' 1, 'calt' 1;font-variant-ligatures:common-ligatures contextual;"
+        'mso-font-alt:Arial;">'
+        + escape(expression)
+        + '</td>'
+        '<td style="padding-left:7px;font-family:Helvetica Neue,Helvetica,Arial,sans-serif;'
+        f'font-size:8px;font-weight:700;color:{current_color};vertical-align:middle;'
+        'white-space:nowrap;">'
+        + current_count
+        + '</td>'
+        '</tr>'
+        '<tr><td colspan="2" style="font-family:Helvetica Neue,Helvetica,Arial,sans-serif;'
+        'font-size:9px;color:#7b8da2;padding-top:4px;white-space:nowrap;letter-spacing:0.02em;">'
+        f'{first} &#8594; {last} &nbsp;&middot;&nbsp; {period_days}d periods'
+        '</td></tr>'
+        '</table>'
+    )
+
+
 def _cfo_delta_badge(pct: float | None, prior_label: str) -> str:
     """Render a compact delta badge: e.g. '+12% vs prior week'."""
     if pct is None:
@@ -1940,7 +1979,12 @@ def _cfo_volume_row(
     )
 
 
-def render_cfo_email_html(snapshot: dict, *, header_burst_img_src: str | None = None) -> str:
+def render_cfo_email_html(
+    snapshot: dict,
+    *,
+    header_burst_img_src: str | None = None,
+    datatype_sparklines: bool = False,
+) -> str:
     """Render the CFO Update as a self-contained HTML email (no JS, inline styles)."""
     period_label = escape(str(snapshot.get("period_label") or snapshot.get("week_range_label", "")))
     generated_at = escape(str(snapshot.get("report_generated_at", ""))[:10])
@@ -1954,6 +1998,8 @@ def render_cfo_email_html(snapshot: dict, *, header_burst_img_src: str | None = 
     total_open_delta = snapshot.get("total_open_tickets_ww_delta", 0)
     projects: list[dict] = snapshot.get("youtrack_projects", [])
     project_movement: dict[str, int] = snapshot.get("youtrack_project_movement", {})
+    aha_roadmap: dict[str, object] = snapshot.get("aha_roadmap", {}) or {}
+    discussion_items: list[dict[str, str] | str] = snapshot.get("discussion_items", []) or []
     survey_comments: list[dict] = snapshot.get("survey_comments", [])
     survey_satisfaction_counts: dict[str, int] = snapshot.get("survey_satisfaction_counts", {})
     survey_satisfaction_total = int(snapshot.get("survey_satisfaction_total", 0) or 0)
@@ -1962,12 +2008,51 @@ def render_cfo_email_html(snapshot: dict, *, header_burst_img_src: str | None = 
         {},
     )
     survey_trailing_year_total = int(snapshot.get("survey_satisfaction_total_trailing_year", 0) or 0)
+    survey_trailing_year_effective_start = str(
+        snapshot.get("survey_trailing_year_effective_start_label") or ""
+    ).strip()
 
     def _truncate_metadata(text: str, max_length: int = 58) -> str:
         clean = text.strip()
         if len(clean) <= max_length:
             return clean
         return clean[: max_length - 3].rstrip() + "..."
+
+    def _discussion_rows(items: list[dict[str, str] | str]) -> str:
+        if not items:
+            return (
+                '<li style="margin-bottom:6px;">[Replace with your first discussion point for this week.]</li>'
+                '<li style="margin-bottom:6px;">[Replace with your second discussion point or key highlight.]</li>'
+                '<li style="margin-bottom:6px;">[Replace with any risk, blocker, or upcoming milestone.]</li>'
+                '<li>[Replace with a request for input or decision needed.]</li>'
+            )
+        rows = ""
+        for item in items:
+            if isinstance(item, dict):
+                source = str(item.get("source") or "").strip()
+                text = str(item.get("text") or "").strip()
+            else:
+                source = ""
+                text = str(item).strip()
+            if not text:
+                continue
+            source_html = (
+                '<span style="font-family:Helvetica Neue,Helvetica,Arial,sans-serif;'
+                'font-size:10px;font-weight:700;color:#003963;background:#f4d487;'
+                'border:1px solid #e1bd64;border-radius:999px;padding:2px 6px;'
+                'margin-right:7px;white-space:nowrap;">'
+                + escape(source)
+                + '</span>'
+                if source
+                else ""
+            )
+            rows += (
+                '<li style="margin-bottom:7px;">'
+                + source_html
+                + escape(text)
+                + '</li>'
+            )
+        return rows or _discussion_rows([])
 
     def _signed_count(value: int) -> str:
         return f"+{value}" if value > 0 else str(value)
@@ -1980,9 +2065,10 @@ def render_cfo_email_html(snapshot: dict, *, header_burst_img_src: str | None = 
         return neutral
 
     # ── Sparklines ────────────────────────────────────────────────────────────
-    created_spark = _cfo_sparkline(snapshot.get("created_weekly", []))
-    closed_spark = _cfo_sparkline(snapshot.get("closed_weekly", []))
-    open_spark = _cfo_sparkline(snapshot.get("open_weekly", []))
+    sparkline_renderer = _cfo_datatype_sparkline if datatype_sparklines else _cfo_sparkline
+    created_spark = sparkline_renderer(snapshot.get("created_weekly", []))
+    closed_spark = sparkline_renderer(snapshot.get("closed_weekly", []))
+    open_spark = sparkline_renderer(snapshot.get("open_weekly", []))
     has_spark = bool(created_spark)
 
     # ── Ticket volume rows ─────────────────────────────────────────────────────
@@ -2077,6 +2163,147 @@ def render_cfo_email_html(snapshot: dict, *, header_burst_img_src: str | None = 
         + "</p>"
     )
 
+    def _aha_date_label(value: object) -> str:
+        if not value:
+            return "TBD"
+        ts = pd.to_datetime(value, errors="coerce")
+        if pd.isna(ts):
+            return "TBD"
+        return pd.Timestamp(ts).strftime("%b %-d, %Y")
+
+    def _aha_progress_pct(value: object) -> int | None:
+        if value is None or value == "":
+            return None
+        pct = pd.to_numeric(value, errors="coerce")
+        if pd.isna(pct):
+            return None
+        return max(0, min(100, int(round(float(pct)))))
+
+    def _aha_status_color(value: object) -> str:
+        color = str(value or "").strip()
+        if len(color) in {4, 7} and color.startswith("#") and all(
+            c in "0123456789abcdefABCDEF" for c in color[1:]
+        ):
+            return color
+        return "#6a7d90"
+
+    def _aha_initiative_row(initiative: dict[str, object]) -> str:
+        name = escape(str(initiative.get("name") or "Untitled initiative"))
+        reference = escape(str(initiative.get("reference_num") or "").strip())
+        url = str(initiative.get("url") or "").strip()
+        status = escape(str(initiative.get("status") or "Roadmap").strip())
+        status_color = _aha_status_color(initiative.get("status_color"))
+        end_date = escape(_aha_date_label(initiative.get("end_date")))
+        pct = _aha_progress_pct(initiative.get("progress"))
+        pct_label = "TBD" if pct is None else f"{pct}%"
+        pct_width = 0 if pct is None else pct
+        name_html = (
+            f'<a href="{escape(url)}" style="color:#003963;text-decoration:none;">{name}</a>'
+            if url.startswith("http")
+            else name
+        )
+        reference_html = (
+            '<span style="display:inline-block;margin-left:7px;font-family:Helvetica Neue,Helvetica,Arial,sans-serif;'
+            'font-size:9px;font-weight:700;color:#52667b;background:#eef2f6;border:1px solid #d7e0e9;'
+            'border-radius:999px;padding:2px 6px;letter-spacing:0.03em;white-space:nowrap;">'
+            + reference
+            + '</span>'
+            if reference
+            else ""
+        )
+        return (
+            '<tr>'
+            '<td style="padding:11px 12px 11px 0;vertical-align:top;border-top:1px solid #e3e9f0;">'
+            '<p style="font-family:Helvetica Neue,Helvetica,Arial,sans-serif;font-size:12px;font-weight:700;'
+            'color:#243447;margin:0 0 5px;line-height:1.35;">'
+            + name_html
+            + reference_html
+            + '</p>'
+            '<p style="font-family:Helvetica Neue,Helvetica,Arial,sans-serif;font-size:10px;color:#65788d;'
+            'margin:0;line-height:1.45;">'
+            '<span style="display:inline-block;width:7px;height:7px;background:'
+            + status_color
+            + ';border-radius:999px;margin-right:5px;">&#8203;</span>'
+            + status
+            + '</p>'
+            '</td>'
+            '<td style="padding:11px 12px;vertical-align:top;border-top:1px solid #e3e9f0;white-space:nowrap;">'
+            '<p style="font-family:Helvetica Neue,Helvetica,Arial,sans-serif;font-size:9px;font-weight:700;'
+            'color:#73859a;text-transform:uppercase;letter-spacing:0.06em;margin:0 0 4px;">Expected End</p>'
+            '<p style="font-family:Georgia,\'Times New Roman\',serif;font-size:13px;font-weight:bold;'
+            'color:#003963;margin:0;">'
+            + end_date
+            + '</p>'
+            '</td>'
+            '<td style="padding:11px 0 11px 12px;vertical-align:top;border-top:1px solid #e3e9f0;width:150px;">'
+            '<table cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">'
+            '<tr>'
+            '<td style="padding:0 8px 5px 0;font-family:Helvetica Neue,Helvetica,Arial,sans-serif;'
+            'font-size:9px;font-weight:700;color:#73859a;text-transform:uppercase;letter-spacing:0.06em;">Progress</td>'
+            '<td style="padding:0 0 5px;text-align:right;font-family:Georgia,\'Times New Roman\',serif;'
+            'font-size:13px;font-weight:bold;color:#003963;white-space:nowrap;">'
+            + escape(pct_label)
+            + '</td>'
+            '</tr>'
+            '<tr><td colspan="2" bgcolor="#d9e2ec" '
+            'style="background:#d9e2ec;height:9px;font-size:1px;line-height:1px;">'
+            '<table cellpadding="0" cellspacing="0" border="0" width="'
+            + str(pct_width)
+            + '%" style="border-collapse:collapse;width:'
+            + str(pct_width)
+            + '%;"><tr><td bgcolor="#FBB93A" '
+            'style="background:#FBB93A;height:9px;font-size:1px;line-height:1px;">&#8203;</td></tr></table>'
+            '</td></tr>'
+            '</table>'
+            '</td>'
+            '</tr>'
+        )
+
+    def _aha_roadmap_section(roadmap: dict[str, object]) -> str:
+        workspaces = roadmap.get("workspaces") or []
+        if not workspaces:
+            return (
+                '<p style="font-family:Helvetica Neue,Helvetica,Arial,sans-serif;font-size:11px;color:#7d8ea2;'
+                'line-height:1.6;margin:0;">No Aha roadmap data available.</p>'
+            )
+        sections = ""
+        for workspace in workspaces:
+            workspace_name = escape(str(workspace.get("name") or "Roadmap"))
+            goal_blocks = ""
+            for goal in workspace.get("goals") or []:
+                goal_name = escape(str(goal.get("name") or "Roadmap"))
+                initiative_rows = "".join(
+                    _aha_initiative_row(initiative)
+                    for initiative in goal.get("initiatives") or []
+                )
+                if not initiative_rows:
+                    initiative_rows = (
+                        '<tr><td colspan="3" style="padding:10px 0;font-family:Helvetica Neue,Helvetica,Arial,sans-serif;'
+                        'font-size:11px;color:#7d8ea2;border-top:1px solid #e3e9f0;">No initiatives listed.</td></tr>'
+                    )
+                goal_blocks += (
+                    '<div style="margin:0 0 16px;">'
+                    '<p style="font-family:Helvetica Neue,Helvetica,Arial,sans-serif;font-size:11px;font-weight:700;'
+                    'color:#52667b;text-transform:uppercase;letter-spacing:0.05em;margin:0 0 6px;">'
+                    + goal_name
+                    + '</p>'
+                    '<table cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">'
+                    + initiative_rows
+                    + '</table></div>'
+                )
+            sections += (
+                '<div style="background:#f3efe7;border:1px solid #d5dee8;border-radius:6px;padding:17px 18px;margin:0 0 14px;">'
+                '<p style="font-family:Georgia,\'Times New Roman\',serif;font-size:15px;font-weight:bold;'
+                'color:#003963;margin:0 0 12px;line-height:1.25;">'
+                + workspace_name
+                + '</p>'
+                + goal_blocks
+                + '</div>'
+            )
+        return sections
+
+    aha_roadmap_html = _aha_roadmap_section(aha_roadmap)
+
     open_trend_color = _trend_color(
         int(total_open_delta),
         positive="#b54708",
@@ -2152,7 +2379,14 @@ def render_cfo_email_html(snapshot: dict, *, header_burst_img_src: str | None = 
         )
         + _survey_distribution_card(
             "Past 12 Months",
-            f"{survey_trailing_year_total} scored responses in this rolling year",
+            (
+                f"{survey_trailing_year_total} scored responses in this rolling year"
+                + (
+                    f" · Data since {survey_trailing_year_effective_start}"
+                    if survey_trailing_year_effective_start
+                    else ""
+                )
+            ),
             survey_trailing_year_counts,
             survey_trailing_year_total,
         )
@@ -2254,6 +2488,14 @@ def render_cfo_email_html(snapshot: dict, *, header_burst_img_src: str | None = 
             '</td>'
             '</tr>'
         )
+    datatype_font_links = ""
+    if datatype_sparklines:
+        datatype_font_links = (
+            '<link rel="preconnect" href="https://fonts.googleapis.com" />'
+            '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />'
+            '<link rel="stylesheet" '
+            'href="https://fonts.googleapis.com/css2?family=Datatype&amp;display=swap" />'
+        )
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -2263,6 +2505,7 @@ def render_cfo_email_html(snapshot: dict, *, header_burst_img_src: str | None = 
   <meta http-equiv="X-UA-Compatible" content="IE=edge" />
   <meta name="color-scheme" content="light" />
   <meta name="supported-color-schemes" content="light" />
+  {datatype_font_links}
   <title>CFO Update &mdash; IT</title>
 </head>
 <body bgcolor="#dbe2ea" style="margin:0;padding:0;background:#dbe2ea;background-color:#dbe2ea;font-family:Georgia,'Times New Roman',serif;">
@@ -2317,10 +2560,7 @@ def render_cfo_email_html(snapshot: dict, *, header_burst_img_src: str | None = 
             <p style="{_heading}">Discussion</p>
             <ul style="font-family:Helvetica Neue,Helvetica,Arial,sans-serif;font-size:12px;
                        color:#2c3a4a;line-height:1.7;margin:0;padding-left:18px;">
-              <li style="margin-bottom:6px;">[Replace with your first discussion point for this week.]</li>
-              <li style="margin-bottom:6px;">[Replace with your second discussion point or key highlight.]</li>
-              <li style="margin-bottom:6px;">[Replace with any risk, blocker, or upcoming milestone.]</li>
-              <li>[Replace with a request for input or decision needed.]</li>
+              {_discussion_rows(discussion_items)}
             </ul>
           </td>
         </tr>
@@ -2380,7 +2620,18 @@ def render_cfo_email_html(snapshot: dict, *, header_burst_img_src: str | None = 
 
         {_divider}
 
-        <!-- PROJECTS -->
+        <!-- AHA ROADMAP -->
+        <tr>
+          <td bgcolor="#fbfaf7" background="{_LIGHT_PANEL_PIXEL_DATA_URI}" style="{_section}">
+            <p style="{_eyebrow}">Strategic Technology</p>
+            <p style="{_heading}">Aha Roadmap</p>
+            {aha_roadmap_html}
+          </td>
+        </tr>
+
+        {_divider}
+
+        <!-- SURVEY COMMENTS -->
         <tr>
           <td bgcolor="#fbfaf7" background="{_LIGHT_PANEL_PIXEL_DATA_URI}" style="{_section}">
             <p style="{_eyebrow}">Voice of Customer</p>
@@ -2398,8 +2649,7 @@ def render_cfo_email_html(snapshot: dict, *, header_burst_img_src: str | None = 
         <!-- PROJECTS -->
         <tr>
           <td bgcolor="#fbfaf7" background="{_LIGHT_PANEL_PIXEL_DATA_URI}" style="{_section}">
-            <p style="{_eyebrow}">Projects</p>
-            <p style="{_heading}">In Progress Projects</p>
+            <p style="{_eyebrow}">Operational Projects</p>
             {project_summary_html}
             <table cellpadding="0" cellspacing="0" width="100%"
                    style="border-collapse:collapse;">
@@ -2434,9 +2684,16 @@ def write_cfo_email(
     output_path: Path,
     *,
     header_burst_img_src: str | None = None,
+    datatype_sparklines: bool = False,
 ) -> Path:
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(render_cfo_email_html(snapshot, header_burst_img_src=header_burst_img_src))
+    output_path.write_text(
+        render_cfo_email_html(
+            snapshot,
+            header_burst_img_src=header_burst_img_src,
+            datatype_sparklines=datatype_sparklines,
+        )
+    )
     return output_path
 
 

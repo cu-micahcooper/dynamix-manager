@@ -22,3 +22,13 @@ def test_build_parser_supports_generate_cfo_email_header_burst_text_option():
     ])
     assert parsed.command == "generate-cfo-email"
     assert parsed.header_burst_text == "Board of Trustee Edition"
+
+
+def test_build_parser_supports_generate_cfo_email_datatype_sparklines_option():
+    parser = build_parser()
+    parsed = parser.parse_args([
+        "generate-cfo-email",
+        "--datatype-sparklines",
+    ])
+    assert parsed.command == "generate-cfo-email"
+    assert parsed.datatype_sparklines is True
