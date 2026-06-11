@@ -51,6 +51,27 @@ CFO_NORMAL_PERIOD_DAYS = 7
 CFO_VOLUME_BACKFILL_DAYS = 56
 CFO_CATCHUP_CHUNK_DAYS = 7
 TICKET_SEARCH_CAP_GUARD = 300
+CFO_OPEN_TICKET_CLASSIFICATIONS = {"Incident", "Service Request"}
+CFO_COMPUTER_REFRESH_TYPES = {"Campus Upgrades"}
+CFO_SCHEDULED_CHANGE_TYPES = {"Change", "Change Management", "IT Internal"}
+CFO_OPEN_TICKET_BUCKETS = (
+    {
+        "key": "incident_service_requests",
+        "label": "Incident/Service Requests",
+        "description": "Incident + Service Request",
+    },
+    {
+        "key": "computer_refresh",
+        "label": "Computer Refresh",
+        "description": "Campus Upgrades",
+    },
+    {
+        "key": "scheduled_changes",
+        "label": "Scheduled Changes",
+        "description": "Change, Change Management, IT Internal",
+    },
+)
+CFO_OPEN_TICKET_SEARCH_MAX_RESULTS = 10000
 
 
 def _now_utc() -> pd.Timestamp:
@@ -255,6 +276,81 @@ def _fetch_cfo_discussion_items(config: RuntimeConfig, as_of: pd.Timestamp) -> l
         return build_cfo_discussion_items(config.cfo_notes_dir, as_of=as_of)
     except Exception:
         return []
+
+
+def _fetch_live_open_ticket_summary(
+    client: TeamDynamixClient,
+    token: str,
+    ticket_app_id: int,
+) -> dict[str, object]:
+    statuses = client.fetch_ticket_statuses(token, ticket_app_id)
+    open_status_ids = [
+        int(status["ID"])
+        for status in statuses
+        if int(status.get("StatusClass", 0) or 0) not in {3, 4}
+    ]
+    if not open_status_ids:
+        return {}
+    rows = client.search_tickets(
+        token,
+        {
+            "StatusIDs": open_status_ids,
+            "MaxResults": CFO_OPEN_TICKET_SEARCH_MAX_RESULTS,
+        },
+        ticket_app_id=ticket_app_id,
+    )
+    incident_service_request_count = 0
+    computer_refresh_count = 0
+    scheduled_changes_count = 0
+    for row in rows:
+        classification = str(row.get("ClassificationName") or "").strip()
+        ticket_type = str(row.get("TypeName") or "").strip()
+        if classification in CFO_OPEN_TICKET_CLASSIFICATIONS:
+            incident_service_request_count += 1
+        if ticket_type in CFO_COMPUTER_REFRESH_TYPES:
+            computer_refresh_count += 1
+        if ticket_type in CFO_SCHEDULED_CHANGE_TYPES:
+            scheduled_changes_count += 1
+    bucket_counts = {
+        "incident_service_requests": incident_service_request_count,
+        "computer_refresh": computer_refresh_count,
+        "scheduled_changes": scheduled_changes_count,
+    }
+    buckets = [
+        {
+            "key": str(bucket["key"]),
+            "label": str(bucket["label"]),
+            "count": bucket_counts[str(bucket["key"])],
+            "description": str(bucket["description"]),
+        }
+        for bucket in CFO_OPEN_TICKET_BUCKETS
+    ]
+    return {
+        "all_open_count": len(rows),
+        "scoped_open_count": incident_service_request_count,
+        "scope_label": "Incident/Service Requests",
+        "buckets": buckets,
+    }
+
+
+def _apply_live_open_ticket_summary(
+    snapshot: dict[str, object],
+    live_open_summary: dict[str, object],
+) -> None:
+    if not live_open_summary:
+        return
+    snapshot["total_open_tickets"] = int(live_open_summary.get("scoped_open_count", 0) or 0)
+    snapshot["total_open_tickets_scope_label"] = str(
+        live_open_summary.get("scope_label") or "Incident/Service Requests"
+    )
+    snapshot["total_open_tickets_live_all_open"] = int(
+        live_open_summary.get("all_open_count", 0) or 0
+    )
+    buckets = live_open_summary.get("buckets")
+    if isinstance(buckets, list):
+        snapshot["open_ticket_summary_buckets"] = buckets
+    snapshot.pop("total_open_tickets_prior_week", None)
+    snapshot["total_open_tickets_ww_delta"] = 0
 
 
 def _discover_ticket_app_from_rows(
@@ -670,6 +766,7 @@ def generate_cfo_email(
     as_of = _now_utc()
     period_start = _cfo_period_start(config, as_of)
     ticket_backfill_start = _cfo_ticket_backfill_start(period_start, as_of)
+    live_open_ticket_summary: dict[str, object] = {}
     if client is not None:
         cache_survey_report(config=config, client=client, report_id=survey_report_id())
         ticket_app = discover_ticket_app(config=config, client=client, report_id=survey_report_id())
@@ -680,6 +777,15 @@ def generate_cfo_email(
             catchup_start=ticket_backfill_start,
             catchup_end=as_of,
         )
+        try:
+            token = client.authenticate()
+            live_open_ticket_summary = _fetch_live_open_ticket_summary(
+                client,
+                token,
+                int(ticket_app["AppID"]),
+            )
+        except Exception:
+            live_open_ticket_summary = {}
 
     tickets = read_table(config.db_path, "tickets") if table_exists(config.db_path, "tickets") else pd.DataFrame()
     surveys = (
@@ -709,6 +815,7 @@ def generate_cfo_email(
     )
     snapshot["aha_roadmap"] = aha_roadmap
     snapshot["discussion_items"] = discussion_items
+    _apply_live_open_ticket_summary(snapshot, live_open_ticket_summary)
     burst_tagline = str(header_burst_text or "").strip()
     burst_png: bytes | None = None
     burst_data_uri: str | None = None
@@ -777,6 +884,7 @@ def generate_cfo_email(
         "tickets_created_this_week": snapshot["tickets_created_this_week"],
         "tickets_closed_this_week": snapshot["tickets_closed_this_week"],
         "total_open_tickets": snapshot["total_open_tickets"],
+        "total_open_tickets_live_all_open": snapshot.get("total_open_tickets_live_all_open"),
         "youtrack_project_count": len(
             youtrack_projects.get("projects", youtrack_projects)
             if isinstance(youtrack_projects, dict)

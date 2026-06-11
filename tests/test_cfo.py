@@ -126,6 +126,21 @@ def test_total_open_tickets_excludes_resolved_and_completed():
     assert snap["total_open_tickets"] == 2
 
 
+def test_total_open_tickets_handles_mixed_iso_timestamp_precision():
+    tickets = _make_tickets(
+        created_dates=[
+            "2025-04-01T09:00:00Z",
+            "2025-04-01T09:00:00.123Z",
+        ],
+        resolved_dates=[None, None],
+        status_classes=[1, 2],
+    )
+
+    snap = summarize_cfo_snapshot(tickets, pd.DataFrame(), as_of=_AS_OF)
+
+    assert snap["total_open_tickets"] == 2
+
+
 def test_total_open_tickets_week_over_week_delta_uses_open_series():
     tickets = _make_tickets(
         created_dates=[

@@ -156,6 +156,47 @@ def test_get_ticket_can_fail_fast_after_one_rate_limited_attempt(monkeypatch):
     assert sleeps == []
 
 
+def test_search_tickets_retries_rate_limited_responses(monkeypatch):
+    class FakeResponse:
+        def __init__(self, status_code, payload, headers=None):
+            self.status_code = status_code
+            self._payload = payload
+            self.headers = headers or {}
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise requests.HTTPError(response=self)
+
+        def json(self):
+            return self._payload
+
+    class FakeSession:
+        def __init__(self):
+            self.calls = 0
+
+        def post(self, url, json, headers, timeout):
+            self.calls += 1
+            if self.calls == 1:
+                return FakeResponse(429, {"Message": "Too many requests"}, {"Retry-After": "0"})
+            return FakeResponse(200, [{"ID": 42, "Title": "Recovered"}])
+
+    sleeps = []
+    monkeypatch.setattr(tdx_client.time, "sleep", sleeps.append)
+    client = TeamDynamixClient(
+        base_url="https://example.teamdynamix.com/TDWebApi",
+        app_id="1234",
+        username="user",
+        password="pass",
+        session=FakeSession(),
+    )
+
+    rows = client.search_tickets("token", {"StatusIDs": []}, ticket_app_id=634)
+
+    assert rows == [{"ID": 42, "Title": "Recovered"}]
+    assert client.session.calls == 2
+    assert sleeps == [30.0]
+
+
 def test_fetch_days_off_returns_json_rows():
     class FakeResponse:
         status_code = 200

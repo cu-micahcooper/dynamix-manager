@@ -11,6 +11,7 @@ import requests
 GUID_PATTERN = re.compile(
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
 )
+TICKET_SEARCH_MIN_RETRY_DELAY_SECONDS = 30.0
 
 
 def build_auth_headers(token: str, app_id: str) -> dict[str, str]:
@@ -125,20 +126,46 @@ class TeamDynamixClient:
         response.raise_for_status()
         return response.json()
 
-    def search_tickets(
+    def fetch_ticket_statuses(
         self,
         token: str,
-        payload: dict[str, Any],
-        ticket_app_id: int | None = None,
+        ticket_app_id: int,
     ) -> list[dict[str, Any]]:
-        response = self.session.post(
-            self.ticket_search_endpoint(ticket_app_id),
-            json=payload,
+        response = self.session.get(
+            f"{self.base_url}/api/{ticket_app_id}/tickets/statuses",
             headers=build_auth_headers(token, self.app_id),
             timeout=60,
         )
         response.raise_for_status()
         return response.json()
+
+    def search_tickets(
+        self,
+        token: str,
+        payload: dict[str, Any],
+        ticket_app_id: int | None = None,
+        max_attempts: int = 5,
+    ) -> list[dict[str, Any]]:
+        if max_attempts < 1:
+            raise ValueError("max_attempts must be at least 1")
+        last_response = None
+        for attempt in range(max_attempts):
+            response = self.session.post(
+                self.ticket_search_endpoint(ticket_app_id),
+                json=payload,
+                headers=build_auth_headers(token, self.app_id),
+                timeout=60,
+            )
+            last_response = response
+            if response.status_code != 429:
+                response.raise_for_status()
+                return response.json()
+            if attempt + 1 < max_attempts:
+                time.sleep(max(_retry_delay_seconds(attempt, response), TICKET_SEARCH_MIN_RETRY_DELAY_SECONDS))
+
+        if last_response is not None:
+            last_response.raise_for_status()
+        raise RuntimeError("Ticket search failed without a response")
 
     def get_ticket_feed(
         self,

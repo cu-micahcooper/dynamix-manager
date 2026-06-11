@@ -189,7 +189,7 @@ def _open_weekly_series(
 
 
 def _parse_dates(col: pd.Series) -> pd.Series:
-    return pd.to_datetime(col, utc=True, errors="coerce")
+    return pd.to_datetime(col, utc=True, errors="coerce", format="mixed")
 
 
 def _recent_survey_comments(

@@ -14,6 +14,7 @@ from dynamix_manager.pipeline import (
     materialize_ticket_linked_surveys,
     refresh_survey_slice,
     sync_tickets,
+    _fetch_live_open_ticket_summary,
 )
 from dynamix_manager.storage import read_table, replace_table
 
@@ -31,6 +32,7 @@ class StubClient:
         self.days_off_rows = []
         self.ticket_feed_payloads = {}
         self.feed_item_payloads = {}
+        self.ticket_status_rows = []
 
     def authenticate(self):
         self.auth_calls += 1
@@ -53,6 +55,9 @@ class StubClient:
     def search_tickets(self, token, payload, ticket_app_id=None):
         self.search_calls.append((token, payload, ticket_app_id))
         return self.search_rows if hasattr(self, "search_rows") else []
+
+    def fetch_ticket_statuses(self, token, ticket_app_id):
+        return self.ticket_status_rows
 
     def get_ticket(self, ticket_id, token, ticket_app_id, max_attempts=5):
         self.ticket_calls.append((ticket_id, token, ticket_app_id))
@@ -107,7 +112,7 @@ def test_cache_days_off_persists_normalized_rows(tmp_path):
         report_output_path=tmp_path / "survey_health.html",
         notebook_output_path=tmp_path / "survey_health.ipynb",
     )
-    client = StubClient([])
+    client = StubClient([{"ResponseID": 1, "TicketID": 42}])
     client.days_off_rows = [
         {"ID": 6191, "Name": "Christmas", "Date": "2017-12-25T05:00:00Z"},
     ]
@@ -131,7 +136,7 @@ def test_cache_days_off_includes_planned_future_holidays_and_deduplicates(tmp_pa
         report_output_path=tmp_path / "survey_health.html",
         notebook_output_path=tmp_path / "survey_health.ipynb",
     )
-    client = StubClient([])
+    client = StubClient([{"ResponseID": 1, "TicketID": None}])
     client.days_off_rows = [
         {"ID": 9001, "Name": "Good Friday", "Date": "2026-04-03T04:00:00Z"},
     ]
@@ -1461,6 +1466,166 @@ def test_generate_cfo_email_includes_noteplan_discussion_items(tmp_path, monkeyp
 
     assert captured["snapshot"]["discussion_items"] == discussion_items
     assert result["discussion_item_count"] == 1
+
+
+def test_fetch_live_open_ticket_summary_counts_cfo_buckets():
+    client = StubClient([])
+    client.ticket_status_rows = [
+        {"ID": 1, "Name": "New", "StatusClass": 1},
+        {"ID": 2, "Name": "Open", "StatusClass": 2},
+        {"ID": 3, "Name": "Closed", "StatusClass": 3},
+        {"ID": 4, "Name": "Cancelled", "StatusClass": 4},
+        {"ID": 5, "Name": "On Hold", "StatusClass": 5},
+    ]
+    client.search_rows = [
+        {"ID": 101, "ClassificationName": "Incident", "TypeName": "Incident", "StatusName": "New"},
+        {
+            "ID": 102,
+            "ClassificationName": "Service Request",
+            "TypeName": "Service Request",
+            "StatusName": "Open",
+        },
+        {"ID": 103, "ClassificationName": "Change", "TypeName": "Campus Upgrades", "StatusName": "New"},
+        {"ID": 104, "ClassificationName": "Change", "TypeName": "Change", "StatusName": "New"},
+        {
+            "ID": 105,
+            "ClassificationName": "Change",
+            "TypeName": "Change Management",
+            "StatusName": "Open",
+        },
+        {"ID": 106, "ClassificationName": "Change", "TypeName": "IT Internal", "StatusName": "On Hold"},
+        {"ID": 107, "ClassificationName": "Problem", "TypeName": "IT Staff only - Problem", "StatusName": "On Hold"},
+    ]
+
+    summary = _fetch_live_open_ticket_summary(client, "token", ticket_app_id=634)
+
+    assert summary["all_open_count"] == 7
+    assert summary["scoped_open_count"] == 2
+    assert summary["scope_label"] == "Incident/Service Requests"
+    assert summary["buckets"] == [
+        {
+            "key": "incident_service_requests",
+            "label": "Incident/Service Requests",
+            "count": 2,
+            "description": "Incident + Service Request",
+        },
+        {
+            "key": "computer_refresh",
+            "label": "Computer Refresh",
+            "count": 1,
+            "description": "Campus Upgrades",
+        },
+        {
+            "key": "scheduled_changes",
+            "label": "Scheduled Changes",
+            "count": 3,
+            "description": "Change, Change Management, IT Internal",
+        },
+    ]
+    assert client.search_calls == [
+        (
+            "token",
+            {"StatusIDs": [1, 2, 5], "MaxResults": 10000},
+            634,
+        )
+    ]
+
+
+def test_generate_cfo_email_overrides_open_count_with_live_incident_service_request_count(tmp_path, monkeypatch):
+    config = RuntimeConfig(
+        base_url="https://example.test",
+        app_id="1234",
+        username="user",
+        password="pass",
+        db_path=tmp_path / "analytics.duckdb",
+        report_output_path=tmp_path / "survey_health.html",
+        notebook_output_path=tmp_path / "survey_health.ipynb",
+    )
+    replace_table(config.db_path, "tickets", pd.DataFrame([{"ticket_id": 1}]).iloc[0:0])
+    replace_table(config.db_path, "survey_responses", pd.DataFrame([{"response_id": 1}]).iloc[0:0])
+    client = StubClient([{"ResponseID": 1, "TicketID": 42}])
+    client.applications = [
+        {"AppID": 634, "Name": "InfoTech Tickets", "AppClass": "TDTickets"},
+    ]
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr("dynamix_manager.pipeline.credentials_available", lambda path: False)
+    monkeypatch.setattr("dynamix_manager.pipeline.fetch_youtrack_inprogress_projects", lambda *args, **kwargs: [])
+    monkeypatch.setattr("dynamix_manager.pipeline.build_cfo_discussion_items", lambda *args, **kwargs: [])
+    monkeypatch.setattr(
+        "dynamix_manager.pipeline._fetch_live_open_ticket_summary",
+        lambda client, token, ticket_app_id: {
+            "all_open_count": 805,
+            "scoped_open_count": 340,
+            "scope_label": "Incident/Service Requests",
+            "buckets": [
+                {
+                    "key": "incident_service_requests",
+                    "label": "Incident/Service Requests",
+                    "count": 340,
+                    "description": "Incident + Service Request",
+                },
+                {
+                    "key": "computer_refresh",
+                    "label": "Computer Refresh",
+                    "count": 411,
+                    "description": "Campus Upgrades",
+                },
+                {
+                    "key": "scheduled_changes",
+                    "label": "Scheduled Changes",
+                    "count": 31,
+                    "description": "Change, Change Management, IT Internal",
+                },
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        "dynamix_manager.pipeline.summarize_cfo_snapshot",
+        lambda tickets, surveys, youtrack_projects=None, as_of=None, period_start=None: {
+            "period_label": "Apr 8 – Apr 15",
+            "tickets_created_this_week": 0,
+            "tickets_closed_this_week": 0,
+            "total_open_tickets": 580,
+            "total_open_tickets_prior_week": 610,
+            "total_open_tickets_ww_delta": -30,
+            "open_weekly": [{"week": "Apr 8", "count": 580}],
+            "youtrack_projects": [],
+        },
+    )
+    monkeypatch.setattr(
+        "dynamix_manager.pipeline.write_cfo_email",
+        lambda snapshot, output_path, header_burst_img_src=None, datatype_sparklines=False: captured.setdefault("snapshot", snapshot),
+    )
+
+    result = generate_cfo_email(config, client=client)
+
+    assert captured["snapshot"]["total_open_tickets"] == 340
+    assert captured["snapshot"]["total_open_tickets_scope_label"] == "Incident/Service Requests"
+    assert captured["snapshot"]["total_open_tickets_live_all_open"] == 805
+    assert captured["snapshot"]["open_ticket_summary_buckets"] == [
+        {
+            "key": "incident_service_requests",
+            "label": "Incident/Service Requests",
+            "count": 340,
+            "description": "Incident + Service Request",
+        },
+        {
+            "key": "computer_refresh",
+            "label": "Computer Refresh",
+            "count": 411,
+            "description": "Campus Upgrades",
+        },
+        {
+            "key": "scheduled_changes",
+            "label": "Scheduled Changes",
+            "count": 31,
+            "description": "Change, Change Management, IT Internal",
+        },
+    ]
+    assert "total_open_tickets_prior_week" not in captured["snapshot"]
+    assert captured["snapshot"]["open_weekly"] == [{"week": "Apr 8", "count": 580}]
+    assert result["total_open_tickets"] == 340
 
 
 def test_generate_cfo_email_refreshes_live_tdx_data_when_client_provided(tmp_path, monkeypatch):

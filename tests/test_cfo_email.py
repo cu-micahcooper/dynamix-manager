@@ -146,6 +146,66 @@ def test_cfo_email_shows_open_tickets():
     assert "+12 vs prior week" in html
 
 
+def test_cfo_email_shows_live_open_ticket_bucket_breakout():
+    snapshot = dict(_SNAPSHOT)
+    snapshot.pop("total_open_tickets_prior_week", None)
+    snapshot["created_weekly"] = []
+    snapshot["closed_weekly"] = []
+    snapshot["open_weekly"] = [
+        {"week": "W1", "count": 530},
+        {"week": "W2", "count": 540},
+        {"week": "W3", "count": 550},
+        {"week": "W4", "count": 560},
+        {"week": "W5", "count": 570},
+        {"week": "W6", "count": 565},
+        {"week": "W7", "count": 575},
+        {"week": "W8", "count": 580},
+    ]
+    snapshot["total_open_tickets_scope_label"] = "Incident/Service Requests"
+    snapshot["total_open_tickets_live_all_open"] = 805
+    snapshot["open_ticket_summary_buckets"] = [
+        {
+            "key": "incident_service_requests",
+            "label": "Incident/Service Requests",
+            "count": 340,
+            "description": "Incident + Service Request",
+        },
+        {
+            "key": "computer_refresh",
+            "label": "Computer Refresh",
+            "count": 411,
+            "description": "Campus Upgrades",
+        },
+        {
+            "key": "scheduled_changes",
+            "label": "Scheduled Changes",
+            "count": 31,
+            "description": "Change, Change Management, IT Internal",
+        },
+    ]
+
+    html = render_cfo_email_html(snapshot)
+
+    assert "Open Queue Ledger" in html
+    assert "Primary Queue" in html
+    assert "Current Counts" in html
+    assert "Live TeamDynamix count by CFO category" in html
+    assert "805 total open tickets across InfoTech" in html
+    assert "Incident/Service Requests" in html
+    assert "Computer Refresh" in html
+    assert "Scheduled Changes" in html
+    assert "Incident + Service Request" in html
+    assert "Campus Upgrades" in html
+    assert "Change, Change Management, IT Internal" in html
+    assert ">340<" in html
+    assert ">411<" in html
+    assert ">31<" in html
+    assert "Queue trend" in html
+    assert "trend rides with the primary queue" in html
+    assert "W1 &#8594; W8" in html
+    assert ">580</td>" not in html
+
+
 def test_cfo_email_uses_noteplan_discussion_items():
     html = render_cfo_email_html(_SNAPSHOT)
     assert "Kyle Medical Center" in html
@@ -220,6 +280,24 @@ def test_cfo_email_escapes_survey_comments():
 def test_cfo_email_shows_delta_badge():
     html = render_cfo_email_html(_SNAPSHOT)
     assert "+20.0%" in html
+
+
+def test_cfo_email_colors_closed_delta_increase_green_and_decrease_red():
+    increase_html = render_cfo_email_html(_SNAPSHOT)
+    assert 'color:#b54708;">&#9650; +20.0%</span>' in increase_html
+    assert 'color:#027a48;">&#9650; +7.1%</span>' in increase_html
+
+    snapshot = dict(_SNAPSHOT)
+    snapshot["tickets_closed_this_week"] = 25
+    snapshot["tickets_closed_prior_week"] = 30
+    snapshot["tickets_closed_year_ago"] = 28
+    snapshot["tickets_closed_ww_delta_pct"] = -16.7
+    snapshot["tickets_closed_yy_delta_pct"] = -10.7
+
+    decrease_html = render_cfo_email_html(snapshot)
+
+    assert 'color:#b54708;">&#9660; -16.7%</span>' in decrease_html
+    assert 'color:#b54708;">&#9660; -10.7%</span>' in decrease_html
 
 
 def test_cfo_email_shows_youtrack_projects():

@@ -1788,6 +1788,7 @@ def _cfo_sparkline(
     prior_color: str = "#b8cede",
     min_h: int = 2,
     period_days: int = 7,
+    show_current_label: bool = True,
 ) -> str:
     """Render a vertical bar sparkline as nested email-safe HTML tables.
 
@@ -1815,7 +1816,7 @@ def _cfo_sparkline(
         spacer_h = max_h - bar_h
 
         # Show the current period's value as a small label above its bar
-        if is_current:
+        if is_current and show_current_label:
             label_td = (
                 f'<td height="{_LABEL_H}" '
                 f'style="height:{_LABEL_H}px;font-family:Helvetica Neue,Helvetica,Arial,sans-serif;'
@@ -1868,6 +1869,7 @@ def _cfo_datatype_sparkline(
     *,
     current_color: str = "#003963",
     period_days: int = 7,
+    show_current_label: bool = True,
 ) -> str:
     if not weekly:
         return ""
@@ -1878,6 +1880,15 @@ def _cfo_datatype_sparkline(
     first = escape(str(weekly[0].get("week", "")))
     last = escape(str(weekly[-1].get("week", "")))
     current_count = escape(str(counts[-1]))
+    current_count_html = (
+        '<td style="padding-left:7px;font-family:Helvetica Neue,Helvetica,Arial,sans-serif;'
+        f'font-size:8px;font-weight:700;color:{current_color};vertical-align:middle;'
+        'white-space:nowrap;">'
+        + current_count
+        + '</td>'
+        if show_current_label
+        else ""
+    )
     return (
         '<table cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;">'
         '<tr>'
@@ -1888,12 +1899,8 @@ def _cfo_datatype_sparkline(
         'mso-font-alt:Arial;">'
         + escape(expression)
         + '</td>'
-        '<td style="padding-left:7px;font-family:Helvetica Neue,Helvetica,Arial,sans-serif;'
-        f'font-size:8px;font-weight:700;color:{current_color};vertical-align:middle;'
-        'white-space:nowrap;">'
-        + current_count
-        + '</td>'
-        '</tr>'
+        + current_count_html
+        + '</tr>'
         '<tr><td colspan="2" style="font-family:Helvetica Neue,Helvetica,Arial,sans-serif;'
         'font-size:9px;color:#7b8da2;padding-top:4px;white-space:nowrap;letter-spacing:0.02em;">'
         f'{first} &#8594; {last} &nbsp;&middot;&nbsp; {period_days}d periods'
@@ -1902,7 +1909,12 @@ def _cfo_datatype_sparkline(
     )
 
 
-def _cfo_delta_badge(pct: float | None, prior_label: str) -> str:
+def _cfo_delta_badge(
+    pct: float | None,
+    prior_label: str,
+    *,
+    positive_is_good: bool = False,
+) -> str:
     """Render a compact delta badge: e.g. '+12% vs prior week'."""
     if pct is None:
         return (
@@ -1910,7 +1922,12 @@ def _cfo_delta_badge(pct: float | None, prior_label: str) -> str:
             'font-size:10px;color:#8597aa;">no prior data</span>'
         )
     arrow = "&#9650;" if pct >= 0 else "&#9660;"
-    color = "#b54708" if pct > 0 else ("#027a48" if pct < 0 else "#5f7186")
+    if pct > 0:
+        color = "#027a48" if positive_is_good else "#b54708"
+    elif pct < 0:
+        color = "#b54708" if positive_is_good else "#027a48"
+    else:
+        color = "#5f7186"
     sign = "+" if pct >= 0 else ""
     return (
         f'<span style="font-family:Helvetica Neue,Helvetica,Arial,sans-serif;'
@@ -1933,6 +1950,7 @@ def _cfo_volume_row(
     year_ago_label: str,
     prior_delta_label: str,
     sparkline_html: str = "",
+    delta_positive_is_good: bool = False,
 ) -> str:
     """One row in the ticket volume comparison table."""
     _cell = (
@@ -1967,12 +1985,12 @@ def _cfo_volume_row(
         f'<td {_cell}>'
         f'  <span {_num} style="color:#6a90ad;">{escape(str(pw))}</span>'
         f'  <span {_sub}>{escape(prior_week_label)}</span>'
-        f'  <br/>{_cfo_delta_badge(ww_pct, prior_delta_label)}'
+        f'  <br/>{_cfo_delta_badge(ww_pct, prior_delta_label, positive_is_good=delta_positive_is_good)}'
         f'</td>'
         f'<td {_cell}>'
         f'  <span {_num} style="color:#6a90ad;">{escape(str(ya))}</span>'
         f'  <span {_sub}>{escape(year_ago_label)}</span>'
-        f'  <br/>{_cfo_delta_badge(yy_pct, "year ago")}'
+        f'  <br/>{_cfo_delta_badge(yy_pct, "year ago", positive_is_good=delta_positive_is_good)}'
         f'</td>'
         f'{spark_td}'
         f'</tr>'
@@ -1996,6 +2014,8 @@ def render_cfo_email_html(
 
     total_open = snapshot.get("total_open_tickets", 0)
     total_open_delta = snapshot.get("total_open_tickets_ww_delta", 0)
+    total_open_scope_label = str(snapshot.get("total_open_tickets_scope_label") or "total").strip()
+    open_ticket_buckets: list[dict[str, object]] = snapshot.get("open_ticket_summary_buckets", []) or []
     projects: list[dict] = snapshot.get("youtrack_projects", [])
     project_movement: dict[str, int] = snapshot.get("youtrack_project_movement", {})
     aha_roadmap: dict[str, object] = snapshot.get("aha_roadmap", {}) or {}
@@ -2069,6 +2089,7 @@ def render_cfo_email_html(
     created_spark = sparkline_renderer(snapshot.get("created_weekly", []))
     closed_spark = sparkline_renderer(snapshot.get("closed_weekly", []))
     open_spark = sparkline_renderer(snapshot.get("open_weekly", []))
+    open_bucket_spark = sparkline_renderer(snapshot.get("open_weekly", []), show_current_label=False)
     has_spark = bool(created_spark)
 
     # ── Ticket volume rows ─────────────────────────────────────────────────────
@@ -2097,6 +2118,7 @@ def render_cfo_email_html(
         year_ago_range,
         prior_volume_period_label,
         sparkline_html=closed_spark,
+        delta_positive_is_good=True,
     )
 
     # ── In Progress issues (from board sprint) ─────────────────────────────────
@@ -2313,8 +2335,138 @@ def render_cfo_email_html(
     open_trend_label = (
         f"{_signed_count(int(total_open_delta))} vs prior week"
         if "total_open_tickets_prior_week" in snapshot
-        else "baseline pending prior week data"
+        else "live TeamDynamix count; scoped trend pending"
     )
+    open_scope_copy = (
+        f"{total_open_scope_label} open as of {snapshot.get('as_of_label', '')}"
+        if total_open_scope_label != "total"
+        else f"total open as of {snapshot.get('as_of_label', '')}"
+    )
+    live_all_open = snapshot.get("total_open_tickets_live_all_open")
+
+    def _open_ticket_secondary_row(bucket: dict[str, object]) -> str:
+        label = escape(str(bucket.get("label") or "Open Tickets"))
+        description = escape(str(bucket.get("description") or "").strip())
+        count = escape(str(int(bucket.get("count") or 0)))
+        return (
+            '<tr>'
+            '<td style="padding:11px 0;border-top:1px solid #dde5ee;vertical-align:middle;">'
+            '<p style="font-family:Helvetica Neue,Helvetica,Arial,sans-serif;font-size:11px;font-weight:700;'
+            'color:#243447;line-height:1.25;margin:0 0 3px;">'
+            + label
+            + '</p>'
+            '<p style="font-family:Helvetica Neue,Helvetica,Arial,sans-serif;font-size:10px;color:#73859a;'
+            'line-height:1.35;margin:0;">'
+            + description
+            + '</p>'
+            '</td>'
+            '<td style="padding:11px 0 11px 12px;border-top:1px solid #dde5ee;text-align:right;'
+            'vertical-align:middle;white-space:nowrap;">'
+            '<span style="font-family:Georgia,\'Times New Roman\',serif;font-size:24px;font-weight:bold;'
+            'color:#003963;line-height:1;">'
+            + count
+            + '</span>'
+            '</td>'
+            '</tr>'
+        )
+
+    if open_ticket_buckets:
+        bucket_by_key = {str(bucket.get("key") or ""): bucket for bucket in open_ticket_buckets}
+        primary_bucket = bucket_by_key.get("incident_service_requests") or open_ticket_buckets[0]
+        primary_label = escape(str(primary_bucket.get("label") or "Incident/Service Requests"))
+        primary_description = escape(str(primary_bucket.get("description") or "Incident + Service Request"))
+        primary_count = escape(str(int(primary_bucket.get("count") or 0)))
+        secondary_rows = "".join(
+            _open_ticket_secondary_row(bucket)
+            for bucket in [
+                bucket_by_key.get("computer_refresh"),
+                bucket_by_key.get("scheduled_changes"),
+            ]
+            if bucket is not None
+        )
+        live_all_open_copy = (
+            f"{int(live_all_open)} total open tickets across InfoTech"
+            if live_all_open is not None
+            else "Open tickets across InfoTech"
+        )
+        open_trend_html = (
+            '<table cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;margin-top:14px;">'
+            '<tr>'
+            '<td style="padding-top:12px;border-top:1px solid #d4dfeb;">'
+            '<p style="font-family:Helvetica Neue,Helvetica,Arial,sans-serif;font-size:9px;font-weight:700;'
+            'color:#73859a;text-transform:uppercase;letter-spacing:0.06em;margin:0 0 6px;">Queue trend</p>'
+            + open_bucket_spark
+            + '</td>'
+            '</tr>'
+            '</table>'
+            if open_bucket_spark
+            else ""
+        )
+        open_tickets_html = (
+            '<p style="font-family:Helvetica Neue,Helvetica,Arial,sans-serif;font-size:12px;'
+            'color:#586b81;line-height:1.6;margin:0 0 16px;">'
+            '<span style="font-family:Georgia,\'Times New Roman\',serif;font-size:15px;font-weight:bold;'
+            'color:#003963;">Open Queue Ledger</span>'
+            '<span style="color:#8a98a8;"> &middot; Live TeamDynamix count by CFO category</span>'
+            '<span style="color:#8a98a8;"> &middot; '
+            + escape(live_all_open_copy)
+            + '</span></p>'
+            '<table cellpadding="0" cellspacing="0" width="100%" border="0" style="border-collapse:collapse;">'
+            '<tr>'
+            '<td width="58%" bgcolor="#f3efe7" style="background:#f3efe7;border:1px solid #d2dde8;'
+            'border-top:3px solid #FBB93A;padding:17px 18px;vertical-align:top;">'
+            '<p style="font-family:Helvetica Neue,Helvetica,Arial,sans-serif;font-size:9px;font-weight:700;'
+            'color:#6a7d90;text-transform:uppercase;letter-spacing:0.08em;margin:0 0 8px;">Primary Queue</p>'
+            '<p style="font-family:Georgia,\'Times New Roman\',serif;font-size:54px;font-weight:bold;'
+            'color:#003963;line-height:0.95;margin:0 0 8px;">'
+            + primary_count
+            + '</p>'
+            '<p style="font-family:Helvetica Neue,Helvetica,Arial,sans-serif;font-size:13px;font-weight:700;'
+            'color:#243447;line-height:1.3;margin:0 0 4px;">'
+            + primary_label
+            + '</p>'
+            '<p style="font-family:Helvetica Neue,Helvetica,Arial,sans-serif;font-size:10px;color:#6f8094;'
+            'line-height:1.45;margin:0;">'
+            + primary_description
+            + '; trend rides with the primary queue</p>'
+            + open_trend_html
+            + '</td>'
+            '<td width="14" style="font-size:1px;line-height:1px;">&#8203;</td>'
+            '<td width="42%" bgcolor="#fbfaf7" style="background:#fbfaf7;border:1px solid #d2dde8;'
+            'padding:15px 16px;vertical-align:top;">'
+            '<p style="font-family:Helvetica Neue,Helvetica,Arial,sans-serif;font-size:9px;font-weight:700;'
+            'color:#6a7d90;text-transform:uppercase;letter-spacing:0.08em;margin:0 0 4px;">Current Counts</p>'
+            '<table cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">'
+            + secondary_rows
+            + '</table>'
+            '</td>'
+            + '</tr></table>'
+        )
+    else:
+        open_tickets_html = (
+            '<table cellpadding="0" cellspacing="0" border="0">'
+            '<tr>'
+            '<td style="padding-right:20px;vertical-align:middle;">'
+            '<span style="font-family:Georgia,\'Times New Roman\',serif;font-size:48px;'
+            'font-weight:bold;color:#003963;line-height:1;">'
+            + escape(str(total_open))
+            + '</span>'
+            '</td>'
+            '<td style="vertical-align:middle;padding-right:20px;">'
+            '<span style="font-family:Helvetica Neue,Helvetica,Arial,sans-serif;font-size:12px;'
+            'color:#586b81;display:block;line-height:1.6;">'
+            + escape(open_scope_copy)
+            + '</span>'
+            '<span style="font-family:Helvetica Neue,Helvetica,Arial,sans-serif;font-size:11px;'
+            "font-weight:700;color:"
+            + open_trend_color
+            + ';display:block;line-height:1.6;">'
+            + escape(open_trend_label)
+            + '</span>'
+            '</td>'
+            + ('<td style="vertical-align:bottom;">' + open_spark + '</td>' if open_spark else '')
+            + '</tr></table>'
+        )
 
     def _survey_distribution_card(title: str, subtitle: str, counts: dict[str, int], total: int) -> str:
         rows = ""
@@ -2594,27 +2746,7 @@ def render_cfo_email_html(
           <td bgcolor="#fbfaf7" background="{_LIGHT_PANEL_PIXEL_DATA_URI}" style="{_section}">
             <p style="{_eyebrow}">Queue Depth</p>
             <p style="{_heading}">Open Tickets</p>
-            <table cellpadding="0" cellspacing="0" border="0">
-              <tr>
-                <td style="padding-right:20px;vertical-align:middle;">
-                  <span style="font-family:Georgia,'Times New Roman',serif;font-size:48px;
-                               font-weight:bold;color:#003963;line-height:1;">
-                    {escape(str(total_open))}
-                  </span>
-                </td>
-                <td style="vertical-align:middle;padding-right:20px;">
-                  <span style="font-family:Helvetica Neue,Helvetica,Arial,sans-serif;font-size:12px;
-                               color:#586b81;display:block;line-height:1.6;">
-                    total open as of {escape(snapshot.get("as_of_label", ""))}
-                  </span>
-                  <span style="font-family:Helvetica Neue,Helvetica,Arial,sans-serif;font-size:11px;
-                               font-weight:700;color:{open_trend_color};display:block;line-height:1.6;">
-                    {escape(open_trend_label)}
-                  </span>
-                </td>
-                {'<td style="vertical-align:bottom;">' + open_spark + '</td>' if open_spark else ''}
-              </tr>
-            </table>
+            {open_tickets_html}
           </td>
         </tr>
 
