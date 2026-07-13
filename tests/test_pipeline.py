@@ -860,7 +860,7 @@ def test_sync_tickets_catchup_splits_capped_windows_to_avoid_search_caps(tmp_pat
     ]
 
 
-def test_generate_cfo_email_automatically_expands_period_after_missed_run(tmp_path, monkeypatch):
+def test_generate_cfo_email_keeps_report_period_to_seven_days_after_missed_run(tmp_path, monkeypatch):
     config = RuntimeConfig(
         base_url="https://example.test",
         app_id="1234",
@@ -922,7 +922,7 @@ def test_generate_cfo_email_automatically_expands_period_after_missed_run(tmp_pa
     result = generate_cfo_email(config)
 
     runs = read_table(config.db_path, "cfo_email_runs")
-    assert captured["period_start"] == last_period_end
+    assert captured["period_start"] == captured["as_of"] - pd.Timedelta(days=7)
     assert result["tickets_created_this_week"] == 2
     assert len(runs) == 2
     assert set(runs["tickets_created"]) == {12, 2}
@@ -971,6 +971,87 @@ def test_generate_cfo_email_backfills_full_chart_horizon(tmp_path, monkeypatch):
         if "CreatedDateFrom" in payload
     ]
     assert min(created_from_values) == as_of - pd.Timedelta(days=56)
+
+
+def test_generate_cfo_email_backfills_from_last_run_without_expanding_report_period(tmp_path, monkeypatch):
+    config = RuntimeConfig(
+        base_url="https://example.test",
+        app_id="1234",
+        username="user",
+        password="pass",
+        db_path=tmp_path / "analytics.duckdb",
+        report_output_path=tmp_path / "survey_health.html",
+        notebook_output_path=tmp_path / "survey_health.ipynb",
+    )
+    replace_table(config.db_path, "tickets", pd.DataFrame([{"ticket_id": 1}]).iloc[0:0])
+    replace_table(config.db_path, "survey_responses", pd.DataFrame([{"response_id": 1}]).iloc[0:0])
+    as_of = pd.Timestamp("2026-07-02 12:05:49", tz="UTC")
+    last_period_end = as_of - pd.Timedelta(days=70)
+    replace_table(
+        config.db_path,
+        "cfo_email_runs",
+        pd.DataFrame(
+            [
+                {
+                    "run_at": last_period_end.isoformat(),
+                    "period_start": (last_period_end - pd.Timedelta(days=7)).isoformat(),
+                    "period_end": last_period_end.isoformat(),
+                    "tickets_created": 12,
+                    "tickets_closed": 9,
+                    "total_open_tickets": 100,
+                    "gmail_draft_id": "old-draft",
+                }
+            ]
+        ),
+    )
+    client = StubClient(
+        [
+            {
+                "ResponseID": 1,
+                "TicketID": 42,
+                "SurveyCompletedDate": "2026-07-01T12:00:00Z",
+            }
+        ]
+    )
+    client.applications = [
+        {"AppID": 634, "Name": "InfoTech Tickets", "AppClass": "TDTickets"},
+    ]
+    client.search_rows = []
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr("dynamix_manager.pipeline._now_utc", lambda: as_of)
+    monkeypatch.setattr("dynamix_manager.pipeline.credentials_available", lambda path: False)
+    monkeypatch.setattr("dynamix_manager.pipeline.fetch_youtrack_inprogress_projects", lambda *args, **kwargs: [])
+    monkeypatch.setattr("dynamix_manager.pipeline.build_cfo_discussion_items", lambda *args, **kwargs: [])
+
+    def fake_summarize_cfo_snapshot(
+        tickets,
+        surveys,
+        youtrack_projects=None,
+        as_of=None,
+        period_start=None,
+    ):
+        captured["period_start"] = period_start
+        captured["as_of"] = as_of
+        return {
+            "period_label": "Jul 2",
+            "tickets_created_this_week": 7,
+            "tickets_closed_this_week": 5,
+            "total_open_tickets": 101,
+            "youtrack_projects": [],
+        }
+
+    monkeypatch.setattr("dynamix_manager.pipeline.summarize_cfo_snapshot", fake_summarize_cfo_snapshot)
+
+    generate_cfo_email(config, client=client)
+
+    created_from_values = [
+        pd.Timestamp(payload["CreatedDateFrom"])
+        for _, payload, _ in client.search_calls
+        if "CreatedDateFrom" in payload
+    ]
+    assert captured["period_start"] == as_of - pd.Timedelta(days=7)
+    assert min(created_from_values) == last_period_end
 
 
 def test_refresh_survey_slice_runs_end_to_end_and_writes_report(tmp_path):
@@ -1495,6 +1576,25 @@ def test_fetch_live_open_ticket_summary_counts_cfo_buckets():
         },
         {"ID": 106, "ClassificationName": "Change", "TypeName": "IT Internal", "StatusName": "On Hold"},
         {"ID": 107, "ClassificationName": "Problem", "TypeName": "IT Staff only - Problem", "StatusName": "On Hold"},
+        {
+            "ID": 108,
+            "ClassificationName": "Service Request",
+            "TypeName": "Service Request",
+            "StatusName": "Cancelled",
+        },
+        {
+            "ID": 109,
+            "ClassificationName": "Change",
+            "TypeName": "Campus Upgrades",
+            "StatusName": "Canceled",
+        },
+        {
+            "ID": 110,
+            "ClassificationName": "Incident",
+            "TypeName": "Incident",
+            "StatusName": "Open",
+            "StatusClass": 4,
+        },
     ]
 
     summary = _fetch_live_open_ticket_summary(client, "token", ticket_app_id=634)

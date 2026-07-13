@@ -40,7 +40,12 @@ from dynamix_manager.ticket_quality import (
     normalize_ticket_quality_feed_rows,
     normalize_ticket_quality_ticket_rows,
 )
-from dynamix_manager.tickets import build_ticket_search_filters, normalize_ticket_rows
+from dynamix_manager.tickets import (
+    build_ticket_search_filters,
+    exclude_cancelled_tickets,
+    normalize_ticket_rows,
+    ticket_row_is_cancelled,
+)
 from dynamix_manager.surveys import normalize_survey_rows
 from dynamix_manager.tdx_client import TeamDynamixClient
 
@@ -98,16 +103,20 @@ def _last_cfo_period_end(config: RuntimeConfig) -> pd.Timestamp | None:
 
 
 def _cfo_period_start(config: RuntimeConfig, as_of: pd.Timestamp) -> pd.Timestamp:
-    normal_start = as_of - pd.Timedelta(days=CFO_NORMAL_PERIOD_DAYS)
-    last_period_end = _last_cfo_period_end(config)
-    if last_period_end is not None and last_period_end < normal_start:
-        return last_period_end
-    return normal_start
+    return as_of - pd.Timedelta(days=CFO_NORMAL_PERIOD_DAYS)
 
 
-def _cfo_ticket_backfill_start(period_start: pd.Timestamp, as_of: pd.Timestamp) -> pd.Timestamp:
+def _cfo_ticket_backfill_start(
+    config: RuntimeConfig,
+    period_start: pd.Timestamp,
+    as_of: pd.Timestamp,
+) -> pd.Timestamp:
     chart_start = as_of - pd.Timedelta(days=CFO_VOLUME_BACKFILL_DAYS)
-    return min(period_start, chart_start)
+    last_period_end = _last_cfo_period_end(config)
+    starts = [period_start, chart_start]
+    if last_period_end is not None and last_period_end < period_start:
+        starts.append(last_period_end)
+    return min(starts)
 
 
 def _append_cfo_email_run(
@@ -239,7 +248,7 @@ def _artifact_root(config: RuntimeConfig):
 
 
 def _open_tickets_only(tickets: pd.DataFrame) -> pd.DataFrame:
-    frame = tickets.copy()
+    frame = exclude_cancelled_tickets(tickets)
     if "status_class" in frame.columns:
         sc = pd.to_numeric(frame["status_class"], errors="coerce")
         known_closed = sc.isin({3, 4})
@@ -299,6 +308,7 @@ def _fetch_live_open_ticket_summary(
         },
         ticket_app_id=ticket_app_id,
     )
+    rows = [row for row in rows if not ticket_row_is_cancelled(row)]
     incident_service_request_count = 0
     computer_refresh_count = 0
     scheduled_changes_count = 0
@@ -765,7 +775,7 @@ def generate_cfo_email(
     """Render the CFO Update email from live TDX data + live YouTrack projects."""
     as_of = _now_utc()
     period_start = _cfo_period_start(config, as_of)
-    ticket_backfill_start = _cfo_ticket_backfill_start(period_start, as_of)
+    ticket_backfill_start = _cfo_ticket_backfill_start(config, period_start, as_of)
     live_open_ticket_summary: dict[str, object] = {}
     if client is not None:
         cache_survey_report(config=config, client=client, report_id=survey_report_id())

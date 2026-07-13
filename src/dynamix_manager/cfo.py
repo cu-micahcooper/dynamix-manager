@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import pandas as pd
 
+from dynamix_manager.tickets import exclude_cancelled_tickets
+
+_CFO_DISPLAY_TIMEZONE = "America/New_York"
 _YOUTRACK_DONE_STAGES = {
     "done",
     "closed",
@@ -57,11 +60,18 @@ def _ordered_satisfaction_counts(
 
 
 def _fmt(ts: pd.Timestamp) -> str:
-    return ts.strftime("%b %-d")
+    return _display_ts(ts).strftime("%b %-d")
 
 
 def _fmt_full_date(ts: pd.Timestamp) -> str:
-    return ts.strftime("%b %-d, %Y")
+    return _display_ts(ts).strftime("%b %-d, %Y")
+
+
+def _display_ts(ts: object) -> pd.Timestamp:
+    value = pd.Timestamp(ts)
+    if value.tzinfo is None:
+        value = value.tz_localize("UTC")
+    return value.tz_convert(_CFO_DISPLAY_TIMEZONE)
 
 
 def _survey_effective_start_label(
@@ -308,22 +318,23 @@ def summarize_cfo_snapshot(
         "year_ago_range_label": f"{_fmt(year_start)} – {_fmt(year_end)}",
         "volume_period_label": volume_period_label,
         "prior_volume_period_label": prior_volume_period_label,
-        "report_generated_at": as_of.isoformat(),
+        "report_generated_at": _display_ts(as_of).isoformat(),
         "as_of_label": _fmt(as_of),
         "header_burst_tagline": _header_burst_tagline(as_of),
     }
+    ticket_metrics = exclude_cancelled_tickets(tickets)
 
     # ── Ticket volume ──────────────────────────────────────────────────────────
-    if not tickets.empty and "created_at" in tickets.columns:
-        created = _parse_dates(tickets["created_at"])
+    if not ticket_metrics.empty and "created_at" in ticket_metrics.columns:
+        created = _parse_dates(ticket_metrics["created_at"])
         tw_created = int(((created >= period_start) & (created <= as_of)).sum())
         pw_created = int(((created >= prior_start) & (created <= prior_end)).sum())
         ya_created = int(((created >= year_start) & (created <= year_end)).sum())
     else:
         tw_created = pw_created = ya_created = 0
 
-    if not tickets.empty and "resolved_at" in tickets.columns:
-        resolved = _parse_dates(tickets["resolved_at"])
+    if not ticket_metrics.empty and "resolved_at" in ticket_metrics.columns:
+        resolved = _parse_dates(ticket_metrics["resolved_at"])
         tw_closed = int((resolved.notna() & (resolved >= period_start) & (resolved <= as_of)).sum())
         pw_closed = int((resolved.notna() & (resolved >= prior_start) & (resolved <= prior_end)).sum())
         ya_closed = int((resolved.notna() & (resolved >= year_start) & (resolved <= year_end)).sum())
@@ -350,8 +361,8 @@ def summarize_cfo_snapshot(
     windows = _build_7day_windows(as_of, n=8)
     period_labels = [_fmt(s) for s, _ in windows]
 
-    if not tickets.empty and "created_at" in tickets.columns:
-        created_series = _parse_dates(tickets["created_at"])
+    if not ticket_metrics.empty and "created_at" in ticket_metrics.columns:
+        created_series = _parse_dates(ticket_metrics["created_at"])
         result["created_weekly"] = [
             {"week": lbl, "count": c}
             for lbl, c in zip(period_labels, _weekly_series(created_series, windows))
@@ -359,8 +370,8 @@ def summarize_cfo_snapshot(
     else:
         result["created_weekly"] = [{"week": lbl, "count": 0} for lbl in period_labels]
 
-    if not tickets.empty and "resolved_at" in tickets.columns:
-        resolved_series = _parse_dates(tickets["resolved_at"])
+    if not ticket_metrics.empty and "resolved_at" in ticket_metrics.columns:
+        resolved_series = _parse_dates(ticket_metrics["resolved_at"])
         result["closed_weekly"] = [
             {"week": lbl, "count": c}
             for lbl, c in zip(period_labels, _weekly_series(resolved_series, windows))
@@ -368,8 +379,8 @@ def summarize_cfo_snapshot(
     else:
         result["closed_weekly"] = [{"week": lbl, "count": 0} for lbl in period_labels]
 
-    if not tickets.empty:
-        open_counts = _open_weekly_series(tickets, windows)
+    if not ticket_metrics.empty:
+        open_counts = _open_weekly_series(ticket_metrics, windows)
         result["open_weekly"] = [
             {"week": lbl, "count": c}
             for lbl, c in zip(period_labels, open_counts)

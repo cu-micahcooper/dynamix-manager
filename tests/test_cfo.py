@@ -10,7 +10,7 @@ _PRIOR_START = pd.Timestamp("2025-03-31 00:00:00", tz="UTC")
 _YEAR_START = pd.Timestamp("2024-04-08 00:00:00", tz="UTC")  # 52 weeks prior
 
 
-def _make_tickets(created_dates, resolved_dates=None, status_classes=None):
+def _make_tickets(created_dates, resolved_dates=None, status_classes=None, status_names=None):
     n = len(created_dates)
     df = pd.DataFrame(
         {
@@ -18,6 +18,7 @@ def _make_tickets(created_dates, resolved_dates=None, status_classes=None):
             "created_at": created_dates,
             "resolved_at": resolved_dates if resolved_dates is not None else [None] * n,
             "status_class": status_classes if status_classes is not None else [1] * n,
+            "status_name": status_names if status_names is not None else ["Open"] * n,
         }
     )
     return df
@@ -61,6 +62,50 @@ def test_tickets_closed_this_week():
     snap = summarize_cfo_snapshot(tickets, pd.DataFrame(), as_of=_AS_OF)
     assert snap["tickets_closed_this_week"] == 1
     assert snap["tickets_closed_prior_week"] == 1
+
+
+def test_cfo_snapshot_displays_late_utc_run_in_eastern_time():
+    as_of = pd.Timestamp("2026-07-09T01:21:51.238413Z")
+    snap = summarize_cfo_snapshot(
+        pd.DataFrame(),
+        pd.DataFrame(),
+        as_of=as_of,
+        period_start=as_of - pd.Timedelta(days=7),
+    )
+
+    assert snap["period_label"] == "Jul 1 – Jul 8"
+    assert snap["prior_week_range_label"] == "Jun 24 – Jul 1"
+    assert snap["survey_period_label"] == "Jul 1 – Jul 8"
+    assert snap["as_of_label"] == "Jul 8"
+    assert str(snap["report_generated_at"]).startswith("2026-07-08T21:21:51.238413")
+
+
+def test_cfo_ticket_metrics_exclude_cancelled_tickets():
+    tickets = _make_tickets(
+        created_dates=[
+            "2025-04-08T10:00:00Z",  # current, included
+            "2025-04-08T11:00:00Z",  # current, excluded by status name
+            "2025-04-01T10:00:00Z",  # prior, included
+            "2025-04-01T11:00:00Z",  # prior, excluded by status class
+            "2025-04-08T12:00:00Z",  # current, excluded by alternate spelling
+        ],
+        resolved_dates=[
+            None,
+            None,
+            "2025-04-08T14:00:00Z",
+            "2025-04-08T15:00:00Z",
+            None,
+        ],
+        status_classes=[1, 1, 3, 4, 1],
+        status_names=["Open", "Cancelled", "Closed", "Closed", "Canceled"],
+    )
+
+    snap = summarize_cfo_snapshot(tickets, pd.DataFrame(), as_of=_AS_OF)
+
+    assert snap["tickets_created_this_week"] == 1
+    assert snap["tickets_created_prior_week"] == 1
+    assert snap["tickets_closed_this_week"] == 1
+    assert snap["total_open_tickets"] == 1
 
 
 def test_volume_period_can_expand_to_catch_up_missed_runs():

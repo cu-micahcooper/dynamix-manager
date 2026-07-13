@@ -140,6 +140,16 @@ def test_cfo_email_shows_ticket_counts():
     assert ">30<" in html
 
 
+def test_cfo_email_formats_generated_date_in_eastern_time():
+    snapshot = _SNAPSHOT.copy()
+    snapshot["report_generated_at"] = "2026-07-09T01:21:51.238413+00:00"
+
+    html = render_cfo_email_html(snapshot)
+
+    assert "Generated 2026-07-08" in html
+    assert "Generated 2026-07-09" not in html
+
+
 def test_cfo_email_shows_open_tickets():
     html = render_cfo_email_html(_SNAPSHOT)
     assert "117" in html
@@ -186,11 +196,11 @@ def test_cfo_email_shows_live_open_ticket_bucket_breakout():
 
     html = render_cfo_email_html(snapshot)
 
-    assert "Open Queue Ledger" in html
     assert "Primary Queue" in html
     assert "Current Counts" in html
-    assert "Live TeamDynamix count by CFO category" in html
-    assert "805 total open tickets across InfoTech" in html
+    assert "Open Queue Ledger" not in html
+    assert "Live TeamDynamix count by CFO category" not in html
+    assert "805 total open tickets across InfoTech" not in html
     assert "Incident/Service Requests" in html
     assert "Computer Refresh" in html
     assert "Scheduled Changes" in html
@@ -226,7 +236,8 @@ def test_cfo_email_keeps_discussion_placeholders_without_noteplan_items():
 
 def test_cfo_email_shows_aha_roadmap_between_open_tickets_and_survey_comments():
     html = render_cfo_email_html(_SNAPSHOT)
-    assert html.index("Open Tickets") < html.index("Aha Roadmap") < html.index("Survey Comments")
+    assert html.index("Open Tickets") < html.index("Strategic Technology Projects") < html.index("Survey Snapshot")
+    assert "Aha Roadmap" not in html
     assert "Strategic Technology Projects" in html
     assert "ERP Selection" in html
     assert "ERP-S-1" in html
@@ -238,7 +249,7 @@ def test_cfo_email_shows_aha_roadmap_between_open_tickets_and_survey_comments():
 
 def test_cfo_email_shows_survey_comments():
     html = render_cfo_email_html(_SNAPSHOT)
-    assert "Survey Comments" in html
+    assert "Survey Comments" not in html
     assert "Survey Snapshot" in html
     assert "Past 7 Days" in html
     assert "Past 12 Months" in html
@@ -312,6 +323,40 @@ def test_cfo_email_shows_youtrack_projects():
     assert ">New</span>" in html
     assert "NEW THIS WEEK" not in html
     assert "[Lorem ipsum" in html
+
+
+def test_cfo_email_suppresses_techpros_aha_workspace_heading():
+    snapshot = dict(_SNAPSHOT)
+    snapshot["aha_roadmap"] = {
+        "workspaces": [
+            {
+                "id": "workspace-techpros",
+                "name": "TechPros Projects",
+                "goals": [
+                    {
+                        "id": "goal-chatgpt",
+                        "name": "ChatGPT",
+                        "initiatives": [
+                            {
+                                "id": "initiative-chatgpt",
+                                "name": "ChatGPT Credit Charge Back",
+                                "reference_num": "TPP-S-15",
+                                "end_date": "2026-05-29",
+                                "progress": 46,
+                                "status": "On track",
+                            },
+                        ],
+                    }
+                ],
+            }
+        ],
+    }
+
+    html = render_cfo_email_html(snapshot)
+
+    assert "TechPros Projects" not in html
+    assert "ChatGPT" in html
+    assert "ChatGPT Credit Charge Back" in html
 
 
 def test_cfo_email_shows_header():

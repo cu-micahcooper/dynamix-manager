@@ -32,6 +32,7 @@ _LIGHT_PANEL_PIXEL_DATA_URI = (
     "data:image/png;base64,"
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAIGNIUk0AAHomAACAhAAA+gAAAIDoAAB1MAAA6mAAADqYAAAXcJy6UTwAAAAGYktHRAD/AP8A/6C9p5MAAAAHdElNRQfqBBcMDx2uwdLQAAAAJXRFWHRkYXRlOmNyZWF0ZQAyMDI2LTA0LTIzVDEyOjE1OjI5KzAwOjAwZ7gXsgAAACV0RVh0ZGF0ZTptb2RpZnkAMjAyNi0wNC0yM1QxMjoxNToyOSswMDowMBblrw4AAAAodEVYdGRhdGU6dGltZXN0YW1wADIwMjYtMDQtMjNUMTI6MTU6MjkrMDA6MDBB8I7RAAAADUlEQVQI12P4/ev7fwAJzAPsuF9sUwAAAABJRU5ErkJggg=="
 )
+_CFO_DISPLAY_TIMEZONE = "America/New_York"
 
 
 def _burst_line_layout(text: str) -> list[str]:
@@ -69,6 +70,13 @@ def _burst_line_layout(text: str) -> list[str]:
 
     midpoint = max(1, len(words) // 2)
     return [" ".join(words[:midpoint]), " ".join(words[midpoint:])]
+
+
+def _cfo_generated_date(value: object) -> str:
+    ts = pd.to_datetime(value, utc=True, errors="coerce")
+    if pd.isna(ts):
+        return str(value or "")[:10]
+    return pd.Timestamp(ts).tz_convert(_CFO_DISPLAY_TIMEZONE).strftime("%Y-%m-%d")
 
 
 def _build_header_burst_svg(tagline: str) -> str:
@@ -2005,7 +2013,7 @@ def render_cfo_email_html(
 ) -> str:
     """Render the CFO Update as a self-contained HTML email (no JS, inline styles)."""
     period_label = escape(str(snapshot.get("period_label") or snapshot.get("week_range_label", "")))
-    generated_at = escape(str(snapshot.get("report_generated_at", ""))[:10])
+    generated_at = escape(_cfo_generated_date(snapshot.get("report_generated_at", "")))
     week_range = period_label
     prior_week_range = snapshot.get("prior_week_range_label", "prior week")
     year_ago_range = snapshot.get("year_ago_range_label", "year ago")
@@ -2290,7 +2298,16 @@ def render_cfo_email_html(
             )
         sections = ""
         for workspace in workspaces:
-            workspace_name = escape(str(workspace.get("name") or "Roadmap"))
+            raw_workspace_name = str(workspace.get("name") or "Roadmap").strip()
+            workspace_name = escape(raw_workspace_name)
+            workspace_heading = (
+                '<p style="font-family:Georgia,\'Times New Roman\',serif;font-size:15px;font-weight:bold;'
+                'color:#003963;margin:0 0 12px;line-height:1.25;">'
+                + workspace_name
+                + '</p>'
+                if raw_workspace_name != "TechPros Projects"
+                else ""
+            )
             goal_blocks = ""
             for goal in workspace.get("goals") or []:
                 goal_name = escape(str(goal.get("name") or "Roadmap"))
@@ -2315,10 +2332,7 @@ def render_cfo_email_html(
                 )
             sections += (
                 '<div style="background:#f3efe7;border:1px solid #d5dee8;border-radius:6px;padding:17px 18px;margin:0 0 14px;">'
-                '<p style="font-family:Georgia,\'Times New Roman\',serif;font-size:15px;font-weight:bold;'
-                'color:#003963;margin:0 0 12px;line-height:1.25;">'
-                + workspace_name
-                + '</p>'
+                + workspace_heading
                 + goal_blocks
                 + '</div>'
             )
@@ -2342,8 +2356,6 @@ def render_cfo_email_html(
         if total_open_scope_label != "total"
         else f"total open as of {snapshot.get('as_of_label', '')}"
     )
-    live_all_open = snapshot.get("total_open_tickets_live_all_open")
-
     def _open_ticket_secondary_row(bucket: dict[str, object]) -> str:
         label = escape(str(bucket.get("label") or "Open Tickets"))
         description = escape(str(bucket.get("description") or "").strip())
@@ -2384,11 +2396,6 @@ def render_cfo_email_html(
             ]
             if bucket is not None
         )
-        live_all_open_copy = (
-            f"{int(live_all_open)} total open tickets across InfoTech"
-            if live_all_open is not None
-            else "Open tickets across InfoTech"
-        )
         open_trend_html = (
             '<table cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;margin-top:14px;">'
             '<tr>'
@@ -2403,14 +2410,6 @@ def render_cfo_email_html(
             else ""
         )
         open_tickets_html = (
-            '<p style="font-family:Helvetica Neue,Helvetica,Arial,sans-serif;font-size:12px;'
-            'color:#586b81;line-height:1.6;margin:0 0 16px;">'
-            '<span style="font-family:Georgia,\'Times New Roman\',serif;font-size:15px;font-weight:bold;'
-            'color:#003963;">Open Queue Ledger</span>'
-            '<span style="color:#8a98a8;"> &middot; Live TeamDynamix count by CFO category</span>'
-            '<span style="color:#8a98a8;"> &middot; '
-            + escape(live_all_open_copy)
-            + '</span></p>'
             '<table cellpadding="0" cellspacing="0" width="100%" border="0" style="border-collapse:collapse;">'
             '<tr>'
             '<td width="58%" bgcolor="#f3efe7" style="background:#f3efe7;border:1px solid #d2dde8;'
@@ -2756,7 +2755,6 @@ def render_cfo_email_html(
         <tr>
           <td bgcolor="#fbfaf7" background="{_LIGHT_PANEL_PIXEL_DATA_URI}" style="{_section}">
             <p style="{_eyebrow}">Strategic Technology</p>
-            <p style="{_heading}">Aha Roadmap</p>
             {aha_roadmap_html}
           </td>
         </tr>
@@ -2767,7 +2765,6 @@ def render_cfo_email_html(
         <tr>
           <td bgcolor="#fbfaf7" background="{_LIGHT_PANEL_PIXEL_DATA_URI}" style="{_section}">
             <p style="{_eyebrow}">Voice of Customer</p>
-            <p style="{_heading}">Survey Comments</p>
             {survey_chart_html}
             <table cellpadding="0" cellspacing="0" width="100%"
                    style="border-collapse:collapse;">
