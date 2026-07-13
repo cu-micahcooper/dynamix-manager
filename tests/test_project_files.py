@@ -25,6 +25,14 @@ def test_readme_mentions_bootstrap_and_env():
     assert "TEAMDYNAMIX_" not in readme
 
 
+def test_cfo_email_wrapper_runs_from_source_checkout():
+    script = Path("create_cfo_email.sh")
+    assert script.exists()
+    text = script.read_text()
+    assert 'export PYTHONPATH="$SCRIPT_DIR/src${PYTHONPATH:+:$PYTHONPATH}"' in text
+    assert "-m dynamix_manager.cli generate-cfo-email" in text
+
+
 def test_stale_phase_zero_plan_is_not_present():
     assert not Path("docs/superpowers/plans/2026-03-17-local-environment.md").exists()
     assert not Path("docs/superpowers/plans/2026-03-17-phase-0-local-env.md").exists()
