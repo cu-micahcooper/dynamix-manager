@@ -11,7 +11,7 @@ import duckdb
 import pandas as pd
 import requests as req_lib
 
-from dynamix_manager.config import load_runtime_config, survey_report_id
+from dynamix_manager.config import load_runtime_config
 from dynamix_manager.pipeline import materialize_ticket_linked_surveys
 from dynamix_manager.reporting import write_survey_health_report
 from dynamix_manager.storage import read_table, replace_table

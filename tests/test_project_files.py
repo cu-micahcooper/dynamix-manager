@@ -30,6 +30,9 @@ def test_cfo_email_wrapper_runs_from_source_checkout():
     assert script.exists()
     text = script.read_text()
     assert 'export PYTHONPATH="$SCRIPT_DIR/src${PYTHONPATH:+:$PYTHONPATH}"' in text
+    assert 'PYTHON_BIN=""' in text
+    assert 'for candidate in ".venv/bin/python" ".venv/bin/python3"' in text
+    assert '"$PYTHON_BIN" -m dynamix_manager.cli generate-cfo-email' in text
     assert "-m dynamix_manager.cli generate-cfo-email" in text
 
 

@@ -42,7 +42,6 @@ def main() -> None:
         password=config.password,
     )
     token = client.authenticate()
-    token_calls = 0
 
     ids = missing_ticket_ids(config.db_path)
     total = len(ids)
@@ -58,7 +57,6 @@ def main() -> None:
         # Refresh token every 50 calls to avoid expiry
         if i > 0 and i % 50 == 0:
             token = client.authenticate()
-            token_calls = 0
 
         for attempt in range(4):
             try:

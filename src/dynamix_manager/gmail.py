@@ -10,6 +10,8 @@ app (or set GMAIL_TOKEN_PATH in .env to point to a different token file).
 from __future__ import annotations
 
 import base64
+from email import encoders
+from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from pathlib import Path
@@ -47,6 +49,7 @@ def create_draft(
     *,
     to: str = "",
     token_path_override: str | None = None,
+    inline_attachments: list[dict[str, object]] | None = None,
 ) -> dict:
     """Create a Gmail draft with an HTML body. Returns the draft resource dict."""
     from googleapiclient.discovery import build
@@ -55,11 +58,25 @@ def create_draft(
     creds = _get_credentials(path)
     service = build("gmail", "v1", credentials=creds)
 
-    msg = MIMEMultipart("alternative")
+    msg = MIMEMultipart("related" if inline_attachments else "alternative")
     msg["Subject"] = subject
     if to:
         msg["To"] = to
     msg.attach(MIMEText(html_body, "html"))
+
+    for attachment in inline_attachments or []:
+        content_type = str(attachment.get("content_type") or "application/octet-stream")
+        main_type, _, sub_type = content_type.partition("/")
+        part = MIMEBase(main_type or "application", sub_type or "octet-stream")
+        data = attachment.get("data") or b""
+        part.set_payload(bytes(data))
+        encoders.encode_base64(part)
+        content_id = str(attachment.get("content_id") or "")
+        if content_id:
+            part.add_header("Content-ID", f"<{content_id}>")
+        filename = str(attachment.get("filename") or "attachment")
+        part.add_header("Content-Disposition", "inline", filename=filename)
+        msg.attach(part)
 
     raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
     return (
