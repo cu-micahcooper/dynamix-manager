@@ -247,10 +247,20 @@ and `error_description` as required by the official authentication guide.
 
 **Files:** Update `docs/hosted-connector.md` and this plan's checkboxes; no production ticket fixture files.
 
-- [ ] Run `.venv/bin/python3.14 -m pytest -q`, `node --test tests/frontend/*.test.cjs`, focused Ruff on changed Python files, and `git diff --check`. Resolve failures; record exact counts and gaps.
-- [ ] Request independent code/security review with @superpowers:requesting-code-review, prioritizing authorization, token/grant binding, capability leakage, unknown outcome retention and payload immutability. Resolve actionable findings and rerun tests.
-- [ ] Document verified API limitations, human review flow, OAuth step-up, flags/rollback, no blind retries, retention/capacity, read-only reconciliation and explicit live-test gates.
-- [ ] Stage source with `.venv/bin/python3.14 scripts/stage_hosted_connector.py`, inspect allowlist output, deploy to the existing Railway service write-disabled. Verify health, unauthenticated MCP denial, read-only compatibility and no secret logging. Do not rotate vault keys or upload the dirty working tree.
+Rollout evidence (2026-09-19): 535 Python and 14 frontend tests passed, focused
+Ruff/diff checks passed, and independent final security review approved rollout.
+Write-disabled deployment `3b9d6560-83b9-40ba-b36b-2ded63b1e03e` passed public
+health/auth/Origin checks and actual ChatGPT read-only connection status. Then
+write-enabled deployment `ff11c74f-3987-4313-bfca-fd651e275950` reached SUCCESS
+and health 200. ChatGPT refreshed all 14 tools. Source upload was exactly 25
+allowlisted files; existing vault/key preserved. No production ticket mutation.
+Separate write consent, exact approved live Save/read-back and pending-preview
+rollback remain gates, so the last three checklist items are not yet complete.
+
+- [x] Run `.venv/bin/python3.14 -m pytest -q`, `node --test tests/frontend/*.test.cjs`, focused Ruff on changed Python files, and `git diff --check`. Resolve failures; record exact counts and gaps.
+- [x] Request independent code/security review with @superpowers:requesting-code-review, prioritizing authorization, token/grant binding, capability leakage, unknown outcome retention and payload immutability. Resolve actionable findings and rerun tests.
+- [x] Document verified API limitations, human review flow, OAuth step-up, flags/rollback, no blind retries, retention/capacity, read-only reconciliation and explicit live-test gates.
+- [x] Stage source with `.venv/bin/python3.14 scripts/stage_hosted_connector.py`, inspect allowlist output, deploy to the existing Railway service write-disabled. Verify health, unauthenticated MCP denial, read-only compatibility and no secret logging. Do not rotate vault keys or upload the dirty working tree.
 - [ ] Enable the write pilot only after local tests/review and verified production read health. Refresh ChatGPT tool definitions; have the user explicitly approve new write consent. Verify old read grants cannot prepare writes. No actual ticket write is authorized by consent alone.
 - [ ] Prepare one user-selected action and review its actual preview. Request exact approval of ticket/content/visibility/recipients; let the user perform Save. Then inspect read-back and record outcome without private content. Repeat approved tests for remaining operation classes or explicitly mark them live-unverified.
 - [ ] Verify disabling writes blocks already-issued review links while reads work; re-enable only within the approved pilot rollout. Hand off with test evidence, deployment ID, supported operations, and any unverified live gates. No claim of full live coverage without those checks.
