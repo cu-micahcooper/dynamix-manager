@@ -1,5 +1,6 @@
 import json
 from types import SimpleNamespace
+from urllib.parse import urlencode
 
 import pytest
 import requests
@@ -195,3 +196,145 @@ def test_prepared_change_cannot_dispatch_to_different_tenant_with_same_app_id():
     assert other.apply_once(restored).outcome == "rejected"
     assert calls == []
     assert restored.base_url == "https://tenant.example/TDWebApi"
+
+
+class MetadataResponse:
+    def __init__(self, payload, status_code=200):
+        self.payload = payload
+        self.status_code = status_code
+
+    def json(self):
+        if isinstance(self.payload, Exception):
+            raise self.payload
+        return self.payload
+
+
+def metadata_adapter(routes):
+    from dynamix_manager.ticket_writes.adapter import WriteAdapter
+    calls = []
+
+    def request(method, url, **kwargs):
+        calls.append((method, url, kwargs))
+        value = routes[(method, url.removeprefix("https://tenant.example/TDWebApi"))]
+        return value if isinstance(value, MetadataResponse) else MetadataResponse(value)
+
+    return WriteAdapter("https://tenant.example/TDWebApi", 42, "secret", request=request), calls
+
+
+def test_discovers_active_statuses_and_priorities_with_minimal_output():
+    routes = {
+        ("GET", "/api/42/tickets/statuses"): [
+            {"ID": 5, "Name": "Done", "IsActive": True, "StatusClass": 3,
+             "RequireGoesOffHold": False, "SensitiveExtra": "omit"},
+            {"ID": 8, "Name": "Unsupported hold", "IsActive": True,
+             "StatusClass": 5, "RequireGoesOffHold": True},
+            {"ID": 6, "Name": "Old", "IsActive": False, "StatusClass": 4,
+             "RequireGoesOffHold": False},
+        ],
+        ("GET", "/api/42/tickets/priorities"): [
+            {"ID": 7, "Name": "High", "IsActive": True, "SensitiveExtra": "omit"},
+        ],
+    }
+    adapter, calls = metadata_adapter(routes)
+    assert adapter.discover_metadata("statuses", limit=10) == {
+        "kind": "statuses",
+        "results": [{"ID": 5, "Name": "Done", "StatusClass": 3,
+                     "RequireGoesOffHold": False}],
+        "returned": 1,
+        "complete": False,
+    }
+    assert adapter.discover_metadata("priorities", limit=10)["results"] == [
+        {"ID": 7, "Name": "High"}
+    ]
+    assert all(call[2]["timeout"] == (5, 30) and call[2]["allow_redirects"] is False
+               for call in calls)
+
+
+def test_people_lookup_is_encoded_bounded_and_validates_org_application_membership():
+    valid = "11111111-1111-4111-8111-111111111111"
+    wrong_app = "22222222-2222-4222-8222-222222222222"
+    inactive = "33333333-3333-4333-8333-333333333333"
+    query = urlencode({"searchText": "A&B Person", "maxResults": 3})
+    routes = {
+        ("GET", "/api/people/lookup?" + query): [
+            {"UID": valid, "FullName": "Untrusted lookup name"},
+            {"UID": wrong_app},
+            {"UID": inactive},
+            {"UID": "44444444-4444-4444-8444-444444444444"},
+        ],
+        ("GET", f"/api/people/{valid}"): {
+            "UID": valid, "FullName": "Verified Person", "IsActive": True,
+            "PrimaryEmail": "private@example.invalid",
+            "Applications": ["TDPeople"],
+            "OrgApplications": [{"ID": 42, "IsActive": True}],
+        },
+        ("GET", f"/api/people/{wrong_app}"): {
+            "UID": wrong_app, "FullName": "Wrong app", "IsActive": True,
+            "OrgApplications": [{"ID": 99, "IsActive": True}],
+        },
+        ("GET", f"/api/people/{inactive}"): {
+            "UID": inactive, "FullName": "Inactive", "IsActive": False,
+            "OrgApplications": [{"ID": 42, "IsActive": True}],
+        },
+    }
+    adapter, calls = metadata_adapter(routes)
+    result = adapter.discover_metadata("people", search="A&B Person", limit=3)
+    assert result == {
+        "kind": "people",
+        "results": [{"ID": valid, "Name": "Verified Person", "AppID": 42}],
+        "returned": 1,
+        "complete": False,
+    }
+    assert calls[0][0:2] == ("GET", "https://tenant.example/TDWebApi/api/people/lookup?" + query)
+    assert len(calls) == 4
+    assert "private@example.invalid" not in json.dumps(result)
+
+
+def test_group_lookup_uses_exact_readonly_post_contract_and_bounded_validation():
+    routes = {
+        ("POST", "/api/groups/search"): [
+            {"ID": 4, "Name": "Untrusted"}, {"ID": 5}, {"ID": 6},
+        ],
+        ("GET", "/api/groups/4"): {"ID": 4, "Name": "Verified Team", "IsActive": True},
+        ("GET", "/api/groups/4/applications"): [{"AppID": 42, "GroupID": 4}],
+        ("GET", "/api/groups/5"): {"ID": 5, "Name": "Wrong app", "IsActive": True},
+        ("GET", "/api/groups/5/applications"): [{"AppID": 99, "GroupID": 5}],
+    }
+    adapter, calls = metadata_adapter(routes)
+    result = adapter.discover_metadata("groups", search="Desk", limit=2)
+    assert result == {
+        "kind": "groups",
+        "results": [{"ID": 4, "Name": "Verified Team", "AppID": 42}],
+        "returned": 1,
+        "complete": False,
+    }
+    assert calls[0][0:2] == ("POST", "https://tenant.example/TDWebApi/api/groups/search")
+    assert calls[0][2]["json"] == {"NameLike": "Desk", "IsActive": True, "HasAppID": 42}
+    assert "MaxResults" not in calls[0][2]["json"]
+    assert len(calls) == 5
+
+
+@pytest.mark.parametrize(
+    ("kind", "search", "limit"),
+    [("people", None, 10), ("people", "x", 10), ("groups", "x" * 101, 10),
+     ("people", "  ", 10), ("groups", " x ", 10),
+     ("statuses", "unexpected", 10), ("priorities", None, 0), ("unknown", None, 10)],
+)
+def test_metadata_lookup_rejects_unbounded_or_inapplicable_inputs(kind, search, limit):
+    adapter, calls = metadata_adapter({})
+    with pytest.raises(ValueError):
+        adapter.discover_metadata(kind, search=search, limit=limit)
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    "response",
+    [MetadataResponse({}), MetadataResponse([], status_code=500),
+     MetadataResponse(ValueError("private upstream body"))],
+)
+def test_metadata_lookup_malformed_or_failed_response_is_safely_redacted(response):
+    adapter, calls = metadata_adapter({("GET", "/api/42/tickets/statuses"): response})
+    with pytest.raises(ValueError, match="unavailable") as error:
+        adapter.discover_metadata("statuses")
+    assert "private" not in str(error.value)
+    assert len(calls) == 1

@@ -73,12 +73,12 @@ when exact recipients cannot be verified; converted-ticket status/assignment and
 date-required statuses are explicitly rejected. Live read-only checks confirmed
 priority metadata and the personal user's `OrgApplications` shape; no live writes.
 
-- [ ] Write parametrized failing tests for the five action models with `extra='forbid'`, positive ticket IDs, bounded strings/collections, explicit nullable-versus-omitted values, allowed editable fields, and rejection of deletion/bulk/admin/other-app requests.
-- [ ] Run `.venv/bin/python3.14 -m pytest tests/test_ticket_write_models.py -q`; confirm failure is missing implementation, not fixture/import infrastructure.
-- [ ] Implement discriminated action models: `comment`, `status`, `assign`, `edit`, `create`. Comment defaults private/no recipients. Creation accepts only typed attributes validated against metadata; edits allow title, description, priority only. Define immutable normalized payload and display-preview structures.
-- [ ] Write adapter tests asserting exact URL/method/body from Task 1 contracts; enforce tenant/application binding, no redirects, a bounded timeout, and exactly one upstream call on timeouts/429/5xx. Test permission errors and metadata lookup validation.
-- [ ] Implement adapter methods `metadata`, `snapshot`, `validate`, and `apply_once`. Return typed outcomes `applied`, `rejected`, or `unknown`; classify uncertain transport/server responses as unknown unless the contract proves rejection. Never route mutations through any retry wrapper.
-- [ ] Run `.venv/bin/python3.14 -m pytest tests/test_ticket_write_models.py tests/test_ticket_write_adapter.py -q`; require all green; review and commit owned package/test files.
+- [x] Write parametrized failing tests for the four approved action models with `extra='forbid'`, positive ticket IDs, bounded strings/collections, explicit nullable-versus-omitted values, allowed editable fields, and rejection of creation/deletion/bulk/admin/other-app requests.
+- [x] Run `.venv/bin/python3.14 -m pytest tests/test_ticket_write_models.py -q`; confirm failure is missing implementation, not fixture/import infrastructure.
+- [x] Implement discriminated action models: `comment`, `status`, `assign`, `edit`. Comment defaults private/no recipients. Creation stays disabled under the approved staged scope; edits allow title, description, priority only. Define immutable normalized payload and display-preview structures.
+- [x] Write adapter tests asserting exact URL/method/body from Task 1 contracts; enforce tenant/application binding, no redirects, a bounded timeout, and exactly one upstream call on timeouts/429/5xx. Test permission errors and metadata lookup validation.
+- [x] Implement adapter methods `metadata`, `snapshot`, `validate`, and `apply_once`. Return typed outcomes `applied`, `rejected`, or `unknown`; classify uncertain transport/server responses as unknown unless the contract proves rejection. Never route mutations through any retry wrapper.
+- [x] Run `.venv/bin/python3.14 -m pytest tests/test_ticket_write_models.py tests/test_ticket_write_adapter.py -q`; require all green; review and commit owned package/test files.
 
 ### Task 3: Durable encrypted operation lifecycle
 
@@ -93,13 +93,13 @@ the separate 1,000-marker cap is defense in depth and may not be reached before
 the total-record limit. Known outcomes release locks/markers, never capacity
 reservations needed to record results. No live writes or deployment occurred.
 
-- [ ] Write failing lifecycle tests with injected clock: prepare, expire, bind browser, atomically claim, finish, duplicate Save, parallel claim, crash/reopen, capacity overflow and encryption-at-rest inspection.
-- [ ] Run `.venv/bin/python3.14 -m pytest tests/test_ticket_write_store.py -q` and observe red.
-- [ ] Implement separate encrypted tables for operations, unresolved markers and audit. Use random 256-bit capabilities stored hashed, expiry=300 seconds, encrypted immutable payload, owner/client/resource/grant binding, and payload digest. Bound previews at 128, unresolved markers at 1,000, audit at 10,000/30 days; capacity fails closed.
-- [ ] Implement states `pending → sending → applied|rejected|unknown`, plus `expired|conflict` before dispatch. Atomically claim with a compare-and-set in `BEGIN IMMEDIATE`, commit before network I/O, and never hold the DB transaction during HTTP. Returning an existing outcome must not dispatch again.
-- [ ] Allocate durable unresolved marker before dispatch keyed by actor/application/target/normalized-payload digest. Treat crash-left `sending` as unknown. Preview cleanup must not remove markers. Block equivalent preparation until authoritative reconciliation; never infer rejection from absent bounded feed data.
-- [ ] Add tests for markers surviving expiry/cleanup/restart, concurrent equivalent preparations, resolution requiring evidence, and capacity denial without marker eviction. Also prepare two equivalent previews before either dispatches, then Save simultaneously using separate store connections/processes: an atomic unique marker constraint must permit only one dispatch. Keep reconciliation an internal/read-only operator path, not a force-retry or write tool.
-- [ ] Run store tests green; review and commit only these files.
+- [x] Write failing lifecycle tests with injected clock: prepare, expire, bind browser, atomically claim, finish, duplicate Save, parallel claim, crash/reopen, capacity overflow and encryption-at-rest inspection.
+- [x] Run `.venv/bin/python3.14 -m pytest tests/test_ticket_write_store.py -q` and observe red.
+- [x] Implement separate encrypted tables for operations, unresolved markers and audit. Use random 256-bit capabilities stored hashed, expiry=300 seconds, encrypted immutable payload, owner/client/resource/grant binding, and payload digest. Bound previews at 128, unresolved markers at 1,000, audit at 10,000/30 days; capacity fails closed.
+- [x] Implement states `pending → sending → applied|rejected|unknown`, plus `expired|conflict` before dispatch. Atomically claim with a compare-and-set in `BEGIN IMMEDIATE`, commit before network I/O, and never hold the DB transaction during HTTP. Returning an existing outcome must not dispatch again.
+- [x] Allocate durable unresolved marker before dispatch keyed by actor/application/target/normalized-payload digest. Treat crash-left `sending` as unknown. Preview cleanup must not remove markers. Block equivalent preparation until authoritative reconciliation; never infer rejection from absent bounded feed data.
+- [x] Add tests for markers surviving expiry/cleanup/restart, concurrent equivalent preparations, resolution requiring evidence, and capacity denial without marker eviction. Also prepare two equivalent previews before either dispatches, then Save simultaneously using separate store connections/processes: an atomic unique marker constraint must permit only one dispatch. Keep reconciliation an internal/read-only operator path, not a force-retry or write tool.
+- [x] Run store tests green; review and commit only these files.
 
 ### Task 4: Explicit OAuth write scope and grant checks
 
@@ -116,13 +116,13 @@ Existing DCR client capabilities can request explicit new write consent without
 elevating existing grants. The environment flag accepts exactly `true`/`false`
 and defaults false. No deployment or production consent change has occurred.
 
-- [ ] Add failing tests for old read grant refresh attempting elevation, unknown scopes, expired/revoked grant approval, client/resource/subject mismatch, and refresh-token rotation preserving only authorized scopes.
-- [ ] Run `.venv/bin/python3.14 -m pytest tests/test_personal_auth.py tests/test_hosted_connector.py -q` and record expected new failures.
-- [ ] Support only scope sets `{tdx.read}` and `{tdx.read,tdx.write}` with explicit login consent text. Discovery may advertise both; defaults stay read. Existing family records missing write authority fail write checks. Installed FastMCP derives protected-resource `scopes_supported` from transport `required_scopes`; explicitly separate advertised support from required read scope rather than requiring write for all existing reads.
-- [ ] Store immutable grant family binding (subject, client, resource, original scopes, upstream expiry) at consent/code exchange. Preserve binding on revocation/replay updates. Expose an internal `validate_write_grant(binding)` helper that independently checks stored authorization and current revocation/expiry; do not rely on unvalidated tool arguments or cached claims.
-- [ ] Keep read transport authorization unchanged. Require personal auth for this write increment; reject write enablement under the external-IdP mode until equivalent grant-family semantics are designed. Carry validated family context to hosted write preparation without returning tokens to clients.
-- [ ] Add `TDX_HOSTED_WRITES_ENABLED` default false and an injectable runtime flag provider checked both at prepare and Save. Environment rollback/restart must block persisted pending approvals; existing reads remain usable.
-- [ ] Run auth/hosted tests green, review backwards compatibility and commit explicit paths after reviewing their existing untracked changes.
+- [x] Add failing tests for old read grant refresh attempting elevation, unknown scopes, expired/revoked grant approval, client/resource/subject mismatch, and refresh-token rotation preserving only authorized scopes.
+- [x] Run `.venv/bin/python3.14 -m pytest tests/test_personal_auth.py tests/test_hosted_connector.py -q` and record expected new failures.
+- [x] Support only scope sets `{tdx.read}` and `{tdx.read,tdx.write}` with explicit login consent text. Discovery may advertise both; defaults stay read. Existing family records missing write authority fail write checks. Installed FastMCP derives protected-resource `scopes_supported` from transport `required_scopes`; explicitly separate advertised support from required read scope rather than requiring write for all existing reads.
+- [x] Store immutable grant family binding (subject, client, resource, original scopes, upstream expiry) at consent/code exchange. Preserve binding on revocation/replay updates. Expose an internal `validate_write_grant(binding)` helper that independently checks stored authorization and current revocation/expiry; do not rely on unvalidated tool arguments or cached claims.
+- [x] Keep read transport authorization unchanged. Require personal auth for this write increment; reject write enablement under the external-IdP mode until equivalent grant-family semantics are designed. Carry validated family context to hosted write preparation without returning tokens to clients.
+- [x] Add `TDX_HOSTED_WRITES_ENABLED` default false and an injectable runtime flag provider checked both at prepare and Save. Environment rollback/restart must block persisted pending approvals; existing reads remain usable.
+- [x] Run auth/hosted tests green, review backwards compatibility and commit explicit paths after reviewing their existing untracked changes.
 
 ### Task 5: Preparation and commit orchestration
 
@@ -148,13 +148,13 @@ outcomes persist before optional readback. No hosted routes/tools are wired yet,
 and no live writes or deployment occurred. Public schema confirms `DaysOld` is
 integer days; full-snapshot comparison remains deliberately conservative.
 
-- [ ] Write failing tests: no upstream write at prepare; metadata resolves IDs to names; unknown notification effects block; missing required fields block; immutable payload; complete before/after preview; scope/flag/identity validation; changed baseline prevents save.
-- [ ] Run service tests red, then implement `prepare(principal, action)` producing operation ID, preview and review URL. Snapshot affected fields, validate application and metadata, include public/private setting and explicit/implicit notifications. Never create a savable preview for unsupported forms.
-- [ ] Implement `commit(capability, browser_binding)` using stored payload only: flag/grant/expiry checks, verified TDX identity and refreshed metadata/baseline, then atomic claim, one upstream apply, durable outcome. Where supported, use conditional writes; otherwise send partial intended fields and document the remaining last-moment race.
-- [ ] Acquire cross-worker same-ticket serialization before refreshing/comparing the baseline and retain it through dispatch/outcome recording; do not hold a SQLite transaction across HTTP. Use a durable ticket claim that cannot be automatically reclaimed after a crash without reconciliation. Test two distinct edits as well as duplicate operations. Upstream conditional validation remains authoritative. Grant revocation is checked immediately before dispatch; do not claim it can cancel a request already dispatched.
-- [ ] Separate save outcome from read-back outcome: successful mutation plus failed read-back remains applied, not unknown/retryable. Ambiguous save remains unknown and blocked. Return only safe result text, ticket ID and validated TDX link, never upstream raw error bodies.
-- [ ] Add simultaneous Save, duplicate retry, restart, conflict, expired token, revoked grant, disabled flag, missing upstream permission, notification and read-back failure tests; assert adapter call counts (zero or one as appropriate).
-- [ ] Run `.venv/bin/python3.14 -m pytest tests/test_ticket_write_service.py tests/test_ticket_write_store.py -q`; green, focused review, commit.
+- [x] Write failing tests: no upstream write at prepare; metadata resolves IDs to names; unknown notification effects block; missing required fields block; immutable payload; complete before/after preview; scope/flag/identity validation; changed baseline prevents save.
+- [x] Run service tests red, then implement `prepare(principal, action)` producing operation ID, preview and review URL. Snapshot affected fields, validate application and metadata, include public/private setting and explicit/implicit notifications. Never create a savable preview for unsupported forms.
+- [x] Implement `commit(capability, browser_binding)` using stored payload only: flag/grant/expiry checks, verified TDX identity and refreshed metadata/baseline, then atomic claim, one upstream apply, durable outcome. Where supported, use conditional writes; otherwise send partial intended fields and document the remaining last-moment race.
+- [x] Acquire cross-worker same-ticket serialization before refreshing/comparing the baseline and retain it through dispatch/outcome recording; do not hold a SQLite transaction across HTTP. Use a durable ticket claim that cannot be automatically reclaimed after a crash without reconciliation. Test two distinct edits as well as duplicate operations. Upstream conditional validation remains authoritative. Grant revocation is checked immediately before dispatch; do not claim it can cancel a request already dispatched.
+- [x] Separate save outcome from read-back outcome: successful mutation plus failed read-back remains applied, not unknown/retryable. Ambiguous save remains unknown and blocked. Return only safe result text, ticket ID and validated TDX link, never upstream raw error bodies.
+- [x] Add simultaneous Save, duplicate retry, restart, conflict, expired token, revoked grant, disabled flag, missing upstream permission, notification and read-back failure tests; assert adapter call counts (zero or one as appropriate).
+- [x] Run `.venv/bin/python3.14 -m pytest tests/test_ticket_write_service.py tests/test_ticket_write_store.py -q`; green, focused review, commit.
 
 ### Task 6: Human confirmation routes
 
@@ -202,16 +202,25 @@ font requests. Use navy-tinted neutrals, restrained contrast, no card grids or
 decorative animation. Include a fixed safe return-to-ChatGPT link and validated
 read-only ticket link; never accept arbitrary redirect URLs.
 
-- [ ] Write failing HTTP tests for GET being read-only, escaped malicious ticket content, exact preview, five-minute expiry, browser binding, strict origin, CSRF, content-type/body limits, absent external assets and security headers. Save must accept no replacement payload.
-- [ ] Implement GET review with single-browser capability binding, `__Host-` secure HttpOnly SameSite cookie and per-operation CSRF; POST Save validates everything server-side. Use no-store, no cross-origin referrer disclosure, frame denial and restrictive CSP. Reuse `Referrer-Policy: same-origin` from the corrected login flow: a blanket `no-referrer` on native forms can produce `Origin: null` and conflict with exact-origin checks. Browser-test the actual headers. No cross-site post-login redirect is required; show outcome on the same origin.
-- [ ] Add tests for link theft after binding, repeated GET behavior, parallel tabs, duplicate POST result, guessed capabilities, error-page leakage and grant expiry/revocation between preview and Save. Rate-limit review endpoints with bounded state, fail closed, and keep access/query logging disabled at app and hosting layers.
-- [ ] Run `.venv/bin/python3.14 -m pytest tests/test_ticket_write_routes.py tests/test_hosted_connector.py -q` green.
-- [ ] Browser-test synthetic data only via a test-only local harness with fake adapter (never shipped or routed in production). Verify keyboard operation, visible changed fields/recipients, no save before click, duplicate click causes one call, and conflict/unknown states are clear. Do not use production credentials in this harness.
-- [ ] Review/commit route tests and source; record browser evidence without capability URLs or ticket secrets.
+- [x] Write failing HTTP tests for GET being read-only, escaped malicious ticket content, exact preview, five-minute expiry, browser binding, strict origin, CSRF, content-type/body limits, absent external assets and security headers. Save must accept no replacement payload.
+- [x] Implement data-free GET bootstrap and POST open with single-browser capability binding, `__Host-` secure HttpOnly SameSite cookie and per-operation CSRF; POST Save validates everything server-side. Use no-store, no cross-origin referrer disclosure, frame denial and restrictive CSP. Reuse `Referrer-Policy: same-origin` from the corrected login flow: a blanket `no-referrer` on native forms can produce `Origin: null` and conflict with exact-origin checks. Browser-test the actual headers. No cross-site post-login redirect is required; show outcome on the same origin.
+- [x] Add tests for link theft after binding, repeated GET behavior, parallel tabs, duplicate POST result, guessed capabilities, error-page leakage and grant expiry/revocation between preview and Save. Rate-limit review endpoints with bounded state, fail closed, disable app access logs and keep capabilities out of hosting request URLs using fragment transport.
+- [x] Run `.venv/bin/python3.14 -m pytest tests/test_ticket_write_routes.py tests/test_hosted_connector.py -q` green.
+- [x] Browser-test synthetic data only via a test-only local harness with fake adapter (never shipped or routed in production). Verify keyboard operation, visible changed fields/recipients, no save before click, duplicate click causes one call, and conflict/unknown states are clear. Do not use production credentials in this harness.
+- [x] Review/commit route tests and source; record browser evidence without capability URLs or ticket secrets.
 
 ### Task 7: Hosted MCP tools and source-only packaging
 
 **Files:** Create `tools.py`, `tests/test_ticket_write_tools.py`; modify `hosted.py`, `scripts/stage_hosted_connector.py`, `tests/test_hosted_bundle.py`.
+
+Completed 2026-09-19: independent spec and final security/quality review approved
+deployment with writes disabled. The final full suite passes 535 Python tests,
+14 frontend tests, Ruff, and diff checks. Personal mode lists 14 tools; external
+mode and local stdio retain eight. Actual MCP HTTP tests verify auth challenges,
+matching top-level/compatibility scopes, private error redaction, and strict raw
+wire types. Review removed SDK JSON-string coercion so literal searches remain
+unchanged. The explicit source-only bundle includes all seven write modules and
+imports successfully. No live write consent, deployment, or mutation yet.
 
 Test validation through actual MCP calls, not only direct Python functions.
 FastMCP builds an outer argument model and can render validation exceptions
@@ -222,13 +231,17 @@ Also test sensitive-looking unexpected field names: Pydantic's
 `hide_input_in_errors` hides values but can still echo user-controlled error
 locations. Sanitize boundary validation failures to a fixed safe message for the
 new hosted tools, without globally changing the SDK or local read-only tools.
+The official Plugins reference identifies `_meta.securitySchemes` as a
+backward-compatible mirror. Publish matching top-level tool schemes as well,
+and verify their actual MCP listing. Tool OAuth challenges include both `error`
+and `error_description` as required by the official authentication guide.
 
-- [ ] Test hosted tools `prepare_ticket_comment`, `prepare_ticket_status`, `prepare_ticket_assignment`, `prepare_ticket_edit`, `prepare_ticket_creation`, plus bounded read-only `ticket_write_metadata` and owner-bound `ticket_write_result`. Result lookup cannot commit or clear an unresolved operation. Verify no commit tool and no new local stdio tools.
-- [ ] Implement typed tools delegating to service. Preparation metadata: `readOnlyHint=false`, `idempotentHint=false`, conservative destructive/open-world hints and required `tdx.read`+`tdx.write`. Existing read tools retain `tdx.read`. Correct the existing hosted loop that currently overwrites every tool's security scheme.
-- [ ] Update hosted-only server instructions and `connection_status` capability reporting: the shared plugin currently hardcodes no updates/read-only. Preserve local defaults; report write availability only when the hosted flag and the caller's validated grant permit it, not merely because write tools exist.
-- [ ] Return ordinary review links plus explicit text “not saved”; do not modify the ticket widget to auto-submit, and do not mark Save as widget-accessible. Limit metadata searches to the selected ticket application and bounded results.
-- [ ] Write failing bundle tests for each new module being included, secrets/test harness excluded, and local read-only plugin unaffected. Add each new module to the source allowlist, not a directory glob.
-- [ ] Run `.venv/bin/python3.14 -m pytest tests/test_ticket_write_tools.py tests/test_hosted_bundle.py tests/test_plugin.py tests/test_hosted_connector.py -q` and `node --test tests/frontend/*.test.cjs`; require green, then scoped review/commit.
+- [x] Test hosted tools `prepare_ticket_comment`, `prepare_ticket_status`, `prepare_ticket_assignment`, `prepare_ticket_edit`, plus bounded read-only `ticket_write_metadata` and owner-bound `ticket_write_result`. Result lookup cannot commit or clear an unresolved operation. Verify no creation or commit tool and no new local stdio tools.
+- [x] Implement typed tools delegating to service. Preparation metadata: `readOnlyHint=false`, `idempotentHint=false`, conservative destructive/open-world hints and required `tdx.read`+`tdx.write`. Existing read tools retain `tdx.read`. Correct the existing hosted loop that currently overwrites every tool's security scheme.
+- [x] Update hosted-only server instructions and `connection_status` capability reporting: the shared plugin currently hardcodes no updates/read-only. Preserve local defaults; report write availability only when the hosted flag and the caller's validated grant permit it, not merely because write tools exist.
+- [x] Return ordinary review links plus explicit text “not saved”; do not modify the ticket widget to auto-submit, and do not mark Save as widget-accessible. Limit metadata searches to the selected ticket application and bounded results.
+- [x] Write failing bundle tests for each new module being included, secrets/test harness excluded, and local read-only plugin unaffected. Add each new module to the source allowlist, not a directory glob.
+- [x] Run `.venv/bin/python3.14 -m pytest tests/test_ticket_write_tools.py tests/test_hosted_bundle.py tests/test_plugin.py tests/test_hosted_connector.py -q` and `node --test tests/frontend/*.test.cjs`; require green, then scoped review/commit.
 
 ### Task 8: Full verification, review and controlled rollout
 

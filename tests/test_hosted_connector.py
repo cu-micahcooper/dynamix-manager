@@ -349,6 +349,71 @@ def test_personal_app_registers_write_review_routes_and_service_only_in_personal
         assert http.get('/writes/review').status_code == 404
 
 
+def test_personal_hosted_server_registers_prepare_tools_and_preserves_per_tool_scopes(
+        tmp_path, monkeypatch):
+    import dynamix_manager.hosted as hosted
+    from dynamix_manager.hosted_vault import CredentialVault
+    from dynamix_manager.personal_auth_store import OAuthStore
+
+    settings = hosted.HostedSettings('https://connector.test', 'https://connector.test',
+                                     'https://connector.test/unused')
+    vault = CredentialVault(tmp_path / 'vault.sqlite', Fernet.generate_key())
+    captured = {}
+    real_create_server = hosted.create_server
+
+    def capture_server(*args, **kwargs):
+        captured['kwargs'] = kwargs
+        captured['server'] = real_create_server(*args, **kwargs)
+        return captured['server']
+
+    monkeypatch.setattr(hosted, 'create_server', capture_server)
+
+    class Provider:
+        routes = []
+
+        def __init__(self):
+            self.store = OAuthStore(vault)
+            self.allow = False
+            self.calls = 0
+
+        def guard(self, app):
+            return app
+
+        def write_grant_binding(self, principal):
+            self.calls += 1
+            if not self.allow:
+                raise RuntimeError('no current grant')
+            return {'verified': True}
+
+    provider = Provider()
+    state = {'enabled': False}
+    app = hosted.create_app(
+        settings, vault, auth_provider=provider,
+        writes_enabled_provider=lambda: state['enabled'],
+    )
+    assert app.write_service is not None
+    tools = {tool.name: tool for tool in captured['server']._tool_manager.list_tools()}
+    assert len(tools) == 14
+    assert tools['ticket_write_metadata'].meta['securitySchemes'][0]['scopes'] == ['tdx.read']
+    for name in ('prepare_ticket_comment', 'prepare_ticket_status',
+                 'prepare_ticket_assignment', 'prepare_ticket_edit',
+                 'ticket_write_result'):
+        assert tools[name].meta['securitySchemes'][0]['scopes'] == ['tdx.read', 'tdx.write']
+    for name in ('connection_status', 'ticket_statuses', 'search_tickets', 'my_queue',
+                 'get_ticket', 'ticket_feed', 'survey_report', 'days_off'):
+        assert tools[name].meta['securitySchemes'][0]['scopes'] == ['tdx.read']
+    assert 'NOT SAVED' in captured['kwargs']['instructions']
+    capability = captured['kwargs']['capability_provider']
+    assert capability()['write_available'] is False
+    assert provider.calls == 0
+    state['enabled'] = True
+    assert capability()['write_available'] is False
+    assert provider.calls == 1
+    provider.allow = True
+    assert capability()['write_available'] is True
+    assert capability()['read_only'] is False
+
+
 @pytest.mark.parametrize('value', ['', '0', '1', 'TRUE', 'False', 'yes', ' true '])
 def test_writes_enabled_environment_is_strict(value, monkeypatch):
     from dynamix_manager.hosted import from_environment

@@ -4,7 +4,8 @@ The caller must durably claim the operation and compare the baseline before call
 apply_once. This adapter deliberately provides neither retries nor approval logic.
 """
 import json
-from urllib.parse import urlsplit
+from urllib.parse import urlencode, urlsplit
+from uuid import UUID
 
 import requests
 
@@ -56,6 +57,173 @@ class WriteAdapter:
             return self.read(path)
         except Exception:
             raise ValueError("Required ticket metadata is unavailable.") from None
+
+    def _metadata_request(self, method, path, *, payload=None):
+        """Make one bounded read-only metadata request and collapse all failures."""
+        if method not in {"GET", "POST"} or not path.startswith("/api/"):
+            raise ValueError("Ticket write metadata is unavailable.")
+        options = {
+            "headers": self._headers,
+            "timeout": (5, 30),
+            "allow_redirects": False,
+        }
+        if method == "POST":
+            options["json"] = payload
+        try:
+            response = self.request(method, self.base_url + path, **options)
+            if response.status_code != 200:
+                raise ValueError
+            result = response.json()
+        except Exception:
+            raise ValueError("Ticket write metadata is unavailable.") from None
+        if not isinstance(result, list):
+            raise ValueError("Ticket write metadata is unavailable.")
+        return result
+
+    @staticmethod
+    def _valid_option(item):
+        return (
+            isinstance(item, dict)
+            and type(item.get("ID")) is int
+            and item["ID"] > 0
+            and isinstance(item.get("Name"), str)
+            and bool(item["Name"].strip())
+            and item.get("IsActive") is True
+        )
+
+    def discover_metadata(self, kind, *, search=None, limit=10):
+        """Return a minimal, bounded projection of write-supporting metadata."""
+        if kind not in {"statuses", "priorities", "people", "groups"}:
+            raise ValueError("Unsupported ticket write metadata kind.")
+        if type(limit) is not int or not 1 <= limit <= 10:
+            raise ValueError("Metadata limit must be between 1 and 10.")
+        if kind in {"statuses", "priorities"}:
+            if search is not None:
+                raise ValueError("Search is unsupported for this metadata kind.")
+            rows = self._metadata_request(
+                "GET", f"/api/{self.app_id}/tickets/{kind}"
+            )
+            results = []
+            for item in rows:
+                if not self._valid_option(item):
+                    continue
+                if kind == "statuses":
+                    if (
+                        type(item.get("StatusClass")) is not int
+                        or item["StatusClass"] not in range(1, 7)
+                        or item.get("RequireGoesOffHold") is not False
+                    ):
+                        continue
+                    results.append({
+                        "ID": item["ID"],
+                        "Name": item["Name"],
+                        "StatusClass": item["StatusClass"],
+                        "RequireGoesOffHold": item["RequireGoesOffHold"],
+                    })
+                else:
+                    results.append({"ID": item["ID"], "Name": item["Name"]})
+                if len(results) == limit:
+                    break
+            return self._metadata_result(kind, results)
+
+        if not isinstance(search, str):
+            raise ValueError("Person and group searches require 2 to 100 characters.")
+        search = search.strip()
+        if not 2 <= len(search) <= 100:
+            raise ValueError("Person and group searches require 2 to 100 characters.")
+        if kind == "people":
+            return self._discover_people(search, limit)
+        return self._discover_groups(search, limit)
+
+    @staticmethod
+    def _metadata_result(kind, results):
+        return {
+            "kind": kind,
+            "results": results,
+            "returned": len(results),
+            "complete": False,
+        }
+
+    def _discover_people(self, search, limit):
+        query = urlencode({"searchText": search, "maxResults": limit})
+        candidates = self._metadata_request("GET", f"/api/people/lookup?{query}")
+        results, seen = [], set()
+        for candidate in candidates[:limit]:
+            if not isinstance(candidate, dict):
+                continue
+            try:
+                uid = str(UUID(str(candidate.get("UID"))))
+            except (TypeError, ValueError, AttributeError):
+                continue
+            if uid in seen:
+                continue
+            seen.add(uid)
+            details = self._metadata_object("GET", f"/api/people/{uid}")
+            name = details.get("FullName")
+            try:
+                details_uid = str(UUID(str(details.get("UID"))))
+            except (TypeError, ValueError, AttributeError):
+                continue
+            if (
+                details_uid != uid
+                or details.get("IsActive") is not True
+                or not isinstance(name, str)
+                or not name.strip()
+                or not self._app_eligible(details.get("OrgApplications"), person=True)
+            ):
+                continue
+            results.append({"ID": uid, "Name": name, "AppID": self.app_id})
+        return self._metadata_result("people", results)
+
+    def _discover_groups(self, search, limit):
+        candidates = self._metadata_request(
+            "POST",
+            "/api/groups/search",
+            payload={"NameLike": search, "IsActive": True, "HasAppID": self.app_id},
+        )
+        results, seen = [], set()
+        for candidate in candidates[:limit]:
+            if (
+                not isinstance(candidate, dict)
+                or type(candidate.get("ID")) is not int
+                or candidate["ID"] <= 0
+                or candidate["ID"] in seen
+            ):
+                continue
+            group_id = candidate["ID"]
+            seen.add(group_id)
+            group = self._metadata_object("GET", f"/api/groups/{group_id}")
+            applications = self._metadata_request(
+                "GET", f"/api/groups/{group_id}/applications"
+            )
+            if (
+                not self._valid_option(group)
+                or group["ID"] != group_id
+                or not self._app_eligible(applications, group_id=group_id)
+            ):
+                continue
+            results.append({"ID": group_id, "Name": group["Name"], "AppID": self.app_id})
+        return self._metadata_result("groups", results)
+
+    def _metadata_object(self, method, path):
+        if method != "GET" or not path.startswith("/api/"):
+            raise ValueError("Ticket write metadata is unavailable.")
+        try:
+            response = self.request(
+                method,
+                self.base_url + path,
+                headers=self._headers,
+                timeout=(5, 30),
+                allow_redirects=False,
+            )
+            if response.status_code != 200:
+                raise ValueError
+            result = response.json()
+        except Exception:
+            raise ValueError("Ticket write metadata is unavailable.") from None
+        if not isinstance(result, dict):
+            raise ValueError("Ticket write metadata is unavailable.")
+        return result
 
     def snapshot(self, ticket_id):
         if type(ticket_id) is not int or ticket_id <= 0:
