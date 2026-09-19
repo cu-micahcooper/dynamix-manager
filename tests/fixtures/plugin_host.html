@@ -1,0 +1,22 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>TeamDynamix drill-down preview</title>
+<style>body{font:15px system-ui;background:#e9eef3;margin:0;padding:24px;color:#24364a}main{max-width:780px;margin:auto}p{line-height:1.5}iframe{width:100%;height:760px;border:1px solid #cbd5df;border-radius:12px;background:#f6f8fa}</style>
+<main><h1>Ticket drill-down</h1><p>Local preview with synthetic tickets and a simulated ChatGPT MCP bridge. Select a ticket to inspect it.</p><iframe title="TeamDynamix app" src="/widget"></iframe></main>
+<script>
+const tickets=[{ID:1042,Title:'Lecture room display loses connection',StatusName:'In Process',PriorityName:'Normal',ResponsibleFullName:'Sample Technician',url:'https://cedarville.teamdynamix.com/TDNext/Apps/634/Tickets/TicketDet.aspx?TicketID=1042'},{ID:1043,Title:'Guest Wi-Fi access for visiting speaker',StatusName:'New',PriorityName:'Normal',ResponsibleGroupName:'Client Services'}];
+const frame=document.querySelector('iframe');
+function send(data){frame.contentWindow.postMessage({jsonrpc:'2.0',...data},location.origin);}
+window.addEventListener('message',event=>{
+ if(event.source!==frame.contentWindow||event.origin!==location.origin)return;
+ const msg=event.data;
+ if(msg.method==='ui/initialize')send({id:msg.id,result:{protocolVersion:'2026-01-26',hostInfo:{name:'Local test host',version:'1.0'},hostCapabilities:{serverTools:{}}}});
+ if(msg.method==='ui/notifications/initialized')send({method:'ui/notifications/tool-result',params:{structuredContent:{tickets,warning:'Synthetic preview · two sample tickets'}}});
+ if(msg.method==='tools/call'){
+  const id=msg.params.arguments.ticket_id;
+  let data;
+  if(msg.params.name==='get_ticket')data={detail:{...tickets.find(t=>t.ID===id),RequestorName:'Sample Requester',CreatedDate:'2026-09-18T09:15:00',Attributes:[{Name:'Location',ValueText:'Classroom 204'}]},description_text:'The classroom display disconnects after several minutes.\n\nPlease inspect the adapter and test the presentation connection before the next class.'};
+  else if(msg.params.name==='ticket_feed')data={ticket_id:id,items:[{CreatedFullName:'Sample Technician',CreatedDate:'2026-09-18T10:20:00',IsPrivate:false,body_text:'I will visit the room before the next class and bring a replacement adapter.'},{CreatedFullName:'Sample Technician',CreatedDate:'2026-09-18T10:25:00',IsPrivate:true,body_text:'Internal note: reserve a spare adapter for testing.'}],warning:'Bounded activity slice; replies are not expanded.'};
+  send({id:msg.id,result:{structuredContent:data}});
+ }
+});
+</script></html>

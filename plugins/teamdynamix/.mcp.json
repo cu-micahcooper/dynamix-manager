@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "teamdynamix": {
+      "command": "/Users/micahcooper/dynamix-manager/.venv/bin/python3.14",
+      "args": ["-m", "dynamix_manager.plugin", "--project-root", "/Users/micahcooper/dynamix-manager"]
+    }
+  }
+}
