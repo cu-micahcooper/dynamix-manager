@@ -105,6 +105,17 @@ reservations needed to record results. No live writes or deployment occurred.
 
 **Files:** Modify `personal_auth.py`, `personal_auth_store.py`, `hosted.py`; extend `tests/test_personal_auth.py`, `tests/test_hosted_connector.py`.
 
+Completed 2026-09-19: independent spec and security/quality reviews approved.
+61 focused auth/hosted tests and the full 439-test Python suite pass. The helper
+`write_grant_binding(access_token)` reloads server-side access authority;
+`validate_write_grant(binding)` rechecks immutable durable consent, current
+configuration, expiry and revocation. `app.write_runtime.require_enabled()` is
+the dynamic, fail-closed gate for the forthcoming prepare/Save service. Discovery
+advertises both personal scopes while transport still requires only read.
+Existing DCR client capabilities can request explicit new write consent without
+elevating existing grants. The environment flag accepts exactly `true`/`false`
+and defaults false. No deployment or production consent change has occurred.
+
 - [ ] Add failing tests for old read grant refresh attempting elevation, unknown scopes, expired/revoked grant approval, client/resource/subject mismatch, and refresh-token rotation preserving only authorized scopes.
 - [ ] Run `.venv/bin/python3.14 -m pytest tests/test_personal_auth.py tests/test_hosted_connector.py -q` and record expected new failures.
 - [ ] Support only scope sets `{tdx.read}` and `{tdx.read,tdx.write}` with explicit login consent text. Discovery may advertise both; defaults stay read. Existing family records missing write authority fail write checks. Installed FastMCP derives protected-resource `scopes_supported` from transport `required_scopes`; explicitly separate advertised support from required read scope rather than requiring write for all existing reads.
@@ -115,7 +126,17 @@ reservations needed to record results. No live writes or deployment occurred.
 
 ### Task 5: Preparation and commit orchestration
 
-**Files:** Create `service.py`, `tests/test_ticket_write_service.py`.
+**Files:** Create `service.py`, `tests/test_ticket_write_service.py`. If needed,
+add a narrow owner-bound operation-ID lookup to `store.py` with store tests for
+the later read-only result tool; never return a capability or dispatch through
+that lookup.
+
+Browser Save has no MCP bearer context. Its service connection must come only
+from the stored, freshly validated grant binding, then the encrypted personal
+vault, with the configured UID verified before any ticket operation. Use a
+scoped connection context that closes the upstream session on every exit,
+including identity failure. Never fall back to the local `.env` or admin login.
+The review URL must use the fragment transport described in Task 6.
 
 - [ ] Write failing tests: no upstream write at prepare; metadata resolves IDs to names; unknown notification effects block; missing required fields block; immutable payload; complete before/after preview; scope/flag/identity validation; changed baseline prevents save.
 - [ ] Run service tests red, then implement `prepare(principal, action)` producing operation ID, preview and review URL. Snapshot affected fields, validate application and metadata, include public/private setting and explicit/implicit notifications. Never create a savable preview for unsupported forms.
@@ -128,6 +149,18 @@ reservations needed to record results. No live writes or deployment occurred.
 ### Task 6: Human confirmation routes
 
 **Files:** Create `routes.py`, `tests/test_ticket_write_routes.py`; wire routes through `hosted.py`.
+
+Logging-safe transport detail (2026-09-19): Railway documents HTTP path logs
+(`https://docs.railway.com/observability/logs`); do not assume all edge logging
+can be disabled. Use `/writes/review#<capability>` so the capability never reaches
+the server in a URL. A small CSP-hashed same-origin script removes the fragment
+and submits a bounded POST to open the preview, not save it. Server-render the
+actual escaped review and explicit Save form. Opening/binding cannot dispatch a
+TDX mutation. Preserve a secure HttpOnly browser cookie across previews; derive
+stable per-capability CSRF from that secret browser binding, never from public
+operation ID alone. Neither capability nor CSRF appears in any request URL.
+Reject unexpected query parameters, keep bodies/headers out of app logs, and
+browser-test fragment removal, strict Origin, repeat opening and actual Save.
 
 - [ ] Write failing HTTP tests for GET being read-only, escaped malicious ticket content, exact preview, five-minute expiry, browser binding, strict origin, CSRF, content-type/body limits, absent external assets and security headers. Save must accept no replacement payload.
 - [ ] Implement GET review with single-browser capability binding, `__Host-` secure HttpOnly SameSite cookie and per-operation CSRF; POST Save validates everything server-side. Use no-store, no cross-origin referrer disclosure, frame denial and restrictive CSP. Reuse `Referrer-Policy: same-origin` from the corrected login flow: a blanket `no-referrer` on native forms can produce `Origin: null` and conflict with exact-origin checks. Browser-test the actual headers. No cross-site post-login redirect is required; show outcome on the same origin.

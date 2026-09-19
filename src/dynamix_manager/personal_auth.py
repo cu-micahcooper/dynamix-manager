@@ -1,0 +1,437 @@
+"""Account-restricted TDX login and local OAuth grants for the personal pilot."""
+
+import hashlib
+import html
+import logging
+import math
+import secrets
+import time
+from contextlib import contextmanager
+from collections.abc import Mapping
+from urllib.parse import parse_qs, urlencode, urlsplit
+from uuid import UUID
+
+import jwt
+from mcp.server.auth.provider import (
+    AccessToken, AuthorizationCode, AuthorizeError, RefreshToken, RegistrationError,
+    TokenError, construct_redirect_uri,
+)
+from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
+from starlette.concurrency import run_in_threadpool
+from starlette.responses import HTMLResponse, JSONResponse
+from starlette.routing import Route
+
+from dynamix_manager.personal_auth_store import OAuthStore, StateCapacityError
+from dynamix_manager.plugin import Connection
+
+# no-referrer makes native browser form POSTs send Origin: null, breaking the
+# strict Origin check below. same-origin retains it without cross-site leakage.
+HEADERS = {'Cache-Control': 'no-store', 'Pragma': 'no-cache', 'Referrer-Policy': 'same-origin',
+           'X-Frame-Options': 'DENY', 'X-Content-Type-Options': 'nosniff',
+           'Content-Security-Policy': "default-src 'none'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'"}
+COOKIE = '__Host-tdx-login'
+logger = logging.getLogger(__name__)
+READ_SCOPES = frozenset({'tdx.read'})
+WRITE_SCOPES = frozenset({'tdx.read', 'tdx.write'})
+SUPPORTED_SCOPE_SETS = frozenset({READ_SCOPES, WRITE_SCOPES})
+GRANT_BINDING_KEYS = frozenset({
+    'subject', 'client_id', 'resource', 'family', 'scopes', 'grant_expiry',
+})
+
+
+def _canonical_scopes(scopes):
+    selected = READ_SCOPES if scopes is None else frozenset(scopes)
+    if selected not in SUPPORTED_SCOPE_SETS:
+        raise ValueError('Unsupported OAuth scope set.')
+    return ['tdx.read', 'tdx.write'] if selected == WRITE_SCOPES else ['tdx.read']
+
+
+class PersonalAuthProvider:
+    def __init__(self, settings, vault, allowed_uid, redirect_uris, *, login=None):
+        self.settings, self.vault = settings, vault
+        self.allowed_uid = str(UUID(allowed_uid))
+        if not isinstance(redirect_uris, list) or any(not isinstance(x, str) for x in redirect_uris):
+            raise ValueError('Redirect allowlist must be a JSON list of exact HTTPS URLs.')
+        for uri in redirect_uris:
+            parts = urlsplit(uri)
+            if (parts.scheme != 'https' or not parts.hostname or parts.username or parts.password
+                    or parts.fragment or '*' in uri):
+                raise ValueError('Redirect allowlist must contain exact HTTPS URLs.')
+        self.redirect_uris = frozenset(redirect_uris)
+        self.store = OAuthStore(vault)
+        self.login = login or self._tdx_login
+        self.routes = [Route('/personal/login', self.login_page, methods=['GET', 'POST'])]
+
+    def _tdx_login(self, username, password):
+        connection = Connection('/unused', values={
+            'TDX_BASE_URL': self.settings.tdx_url, 'TDX_APP_ID': self.settings.tdx_client_id,
+            'WORKBENCH_PERSONAL_USERNAME': username, 'WORKBENCH_PERSONAL_PASSWORD': password})
+        try:
+            if connection.auth_mode != 'user':
+                raise ValueError('Personal account required.')
+            # The only token decoded here comes directly from an HTTPS TDX login response.
+            connection.token = connection.client.authenticate()
+            connection.client.password = ''
+            claims = jwt.decode(connection.token, options={'verify_signature': False})
+            expiry = claims.get('exp')
+            if (isinstance(expiry, bool) or not isinstance(expiry, (int, float))
+                    or not math.isfinite(expiry) or expiry <= time.time()):
+                raise ValueError('Known upstream expiry required.')
+            return connection.identity(), connection.token, int(expiry)
+        finally:
+            connection.client.password = ''
+            connection.client.session.close()
+
+    async def get_client(self, client_id):
+        with self.store.transaction() as db:
+            value = self.store.get(db, 'client', client_id)
+        if not value:
+            return None
+        # Scope registration describes client capability, not user consent. Existing
+        # read-only DCR records must be able to initiate a fresh write step-up, while
+        # authorize() still requires a new login and explicit selected-scope consent.
+        return OAuthClientInformationFull.model_validate({**value, 'scope': 'tdx.read tdx.write'})
+
+    async def register_client(self, client_info):
+        if (not client_info.redirect_uris or any(str(uri) not in self.redirect_uris for uri in client_info.redirect_uris)):
+            raise RegistrationError('invalid_redirect_uri', 'Callback is not approved.')
+        try:
+            _canonical_scopes(client_info.scope.split() if client_info.scope else None)
+        except ValueError:
+            raise RegistrationError('invalid_client_metadata', 'Requested scope set is not supported.') from None
+        try:
+            with self.store.transaction() as db:
+                self.store.put(db, 'client', client_info.client_id, client_info.model_dump(mode='json'))
+        except StateCapacityError:
+            raise RegistrationError('invalid_client_metadata', 'Registration capacity reached.') from None
+
+    async def authorize(self, client, params):
+        try:
+            scopes = _canonical_scopes(params.scopes)
+        except ValueError:
+            raise AuthorizeError('invalid_scope', 'Requested scope set is not supported.') from None
+        if (str(params.redirect_uri) not in self.redirect_uris
+                or params.resource != self.settings.resource):
+            raise AuthorizeError('invalid_request', 'Authorization request is not permitted.')
+        transaction = secrets.token_urlsafe(32)
+        try:
+            with self.store.transaction() as db:
+                self.store.put(db, 'transaction', transaction, {
+                    'client': client.client_id,
+                    'params': {**params.model_dump(mode='json'), 'scopes': scopes},
+                    'expires': time.time() + 300, 'browser': None})
+        except StateCapacityError:
+            raise AuthorizeError('temporarily_unavailable', 'Try again later.') from None
+        return self.settings.public_url + '/personal/login?transaction=' + transaction
+
+    async def login_page(self, request):
+        def denied(reason='session'):
+            # Only fixed internal labels; never log request values or exceptions.
+            logger.warning('personal_login_denied: %s', reason)
+            return HTMLResponse('Login could not be completed. Start again from the connector.', status_code=400, headers=HEADERS)
+        if request.method == 'GET':
+            key = request.query_params.get('transaction', '')
+            browser, csrf = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
+            with self.store.transaction() as db:
+                value = self.store.get(db, 'transaction', key)
+                if not value or value['expires'] <= time.time() or value['browser']:
+                    return denied()
+                value.update(browser=hashlib.sha256(browser.encode()).hexdigest(), csrf=csrf)
+                self.store.put(db, 'transaction', key, value)
+            callback = html.escape(value['params']['redirect_uri'], quote=True)
+            write_access = set(value['params']['scopes']) == WRITE_SCOPES
+            access_description = ('read and modify access (tdx.read and tdx.write)'
+                                  if write_access else 'read-only access (tdx.read)')
+            consent_label = ('Allow read and modify access (tdx.read and tdx.write)'
+                             if write_access else 'Allow read-only access (tdx.read)')
+            response = HTMLResponse(f'''<!doctype html><html lang="en"><meta charset="utf-8">
+<meta name="viewport" content="width=device-width"><title>TeamDynamix personal connector</title>
+<h1>Connect your TeamDynamix account</h1><p>This personal connector requests {access_description}.
+Only the approved personal account can connect.</p><p>Callback destination: {callback}</p>
+<p>Complete this form within five minutes. After signing in, select Continue to ChatGPT.</p>
+<form method="post" action="/personal/login">
+<input type="hidden" name="transaction" value="{html.escape(key, quote=True)}">
+<input type="hidden" name="csrf" value="{csrf}">
+<p><label>Username <input name="username" autocomplete="username" required maxlength="254"></label></p>
+<p><label>Password <input name="password" type="password" autocomplete="current-password" required maxlength="1024"></label></p>
+<p><label><input type="checkbox" name="consent" value="yes" required> {consent_label}</label></p>
+<button type="submit">Connect</button></form></html>''', headers=HEADERS)
+            response.set_cookie(COOKIE, browser, max_age=300, secure=True, httponly=True, samesite='strict', path='/')
+            return response
+        form = await request.form()
+        key = str(form.get('transaction', ''))
+        with self.store.transaction() as db:
+            value = self.store.get(db, 'transaction', key)
+            self.store.delete(db, 'transaction', key)
+        if not value or value['expires'] <= time.time():
+            return denied('session')
+        if request.headers.get('origin') != self.settings.public_url:
+            return denied('origin')
+        if not secrets.compare_digest(value.get('browser') or '', hashlib.sha256(request.cookies.get(COOKIE, '').encode()).hexdigest()):
+            return denied('browser_cookie')
+        if not secrets.compare_digest((value.get('csrf') or '').encode(), str(form.get('csrf', '')).encode()):
+            return denied('csrf')
+        if form.get('consent') != 'yes':
+            return denied('consent')
+        username, password = form.get('username'), form.get('password')
+        if (not isinstance(username, str) or not 0 < len(username) <= 254
+                or not isinstance(password, str) or not 0 < len(password) <= 1024):
+            return denied('credential_fields')
+        try:
+            uid, upstream, expiry = await run_in_threadpool(self.login, username, password)
+            if (str(UUID(uid)) != self.allowed_uid or isinstance(expiry, bool)
+                    or not isinstance(expiry, (int, float)) or not math.isfinite(expiry)
+                    or expiry <= time.time() or not upstream):
+                return denied('account_or_expiry')
+            self.vault.put(self.settings.issuer, self.allowed_uid, self.allowed_uid, upstream, expiry)
+        except Exception:
+            # Never log request values, upstream responses, or exception strings.
+            return denied('upstream_or_vault')
+        finally:
+            password = None
+        params = value['params']
+        if params['redirect_uri'] not in self.redirect_uris:
+            return denied()
+        code = secrets.token_urlsafe(32)
+        try:
+            with self.store.transaction() as db:
+                self.store.put(db, 'code', code, {**params, 'client_id': value['client'],
+                    'expires_at': min(time.time() + 120, expiry), 'subject': self.allowed_uid,
+                    'upstream_expiry': int(expiry)})
+        except StateCapacityError:
+            return denied()
+        # Keep credential form submissions same-origin. Some browsers also apply
+        # form-action to redirect targets, so finish via an explicit GET link.
+        target = html.escape(construct_redirect_uri(params['redirect_uri'], code=code, state=params['state']), quote=True)
+        response = HTMLResponse(f'''<!doctype html><html lang="en"><meta charset="utf-8">
+<meta name="viewport" content="width=device-width"><title>TeamDynamix sign-in succeeded</title>
+<h1>TeamDynamix sign-in succeeded</h1>
+<p>Your credentials were accepted. Complete the connection within two minutes.</p>
+<p><a href="{target}" rel="noreferrer">Continue to ChatGPT</a></p>
+<p>Do not submit the login form again.</p></html>''', headers=HEADERS)
+        response.delete_cookie(COOKIE, secure=True, httponly=True, samesite='strict')
+        return response
+
+    async def load_authorization_code(self, client, authorization_code):
+        with self.store.transaction() as db:
+            value = self.store.get(db, 'code', authorization_code)
+        if not value or value['client_id'] != client.client_id or value['expires_at'] <= time.time():
+            return None
+        return AuthorizationCode(code=authorization_code, **value)
+
+    def _issue(self, db, grant, family):
+        now = int(time.time())
+        expires = min(now + 600, grant['upstream_expiry'])
+        if expires <= now:
+            raise TokenError('invalid_grant')
+        access, refresh = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
+        common = {**grant, 'scopes': _canonical_scopes(grant['scopes']), 'family': family}
+        self.store.put(db, 'access', access, {**common, 'expires_at': expires})
+        self.store.put(db, 'refresh', refresh, {**common, 'expires_at': grant['upstream_expiry'], 'used': False})
+        return OAuthToken(access_token=access, refresh_token=refresh, token_type='Bearer', expires_in=expires-now, scope=' '.join(grant['scopes']))
+
+    @contextmanager
+    def _token_transaction(self):
+        try:
+            with self.store.transaction() as db:
+                yield db
+        except StateCapacityError:
+            raise TokenError('invalid_grant', 'Token capacity reached; try again later.') from None
+
+    async def exchange_authorization_code(self, client, authorization_code):
+        with self._token_transaction() as db:
+            value = self.store.get(db, 'code', authorization_code.code)
+            if (not value or value['client_id'] != client.client_id or value['expires_at'] <= time.time()
+                    or value['resource'] != self.settings.resource):
+                raise TokenError('invalid_grant')
+            self.store.delete(db, 'code', authorization_code.code)
+            family = secrets.token_urlsafe(32)
+            scopes = _canonical_scopes(value['scopes'])
+            self.store.put(db, 'family', family, {
+                'revoked': False, 'expires_at': value['upstream_expiry'],
+                'issuer': self.settings.issuer,
+                'subject': value['subject'], 'client_id': value['client_id'],
+                'resource': value['resource'], 'scopes': scopes,
+                'grant_expiry': value['upstream_expiry'],
+            })
+            return self._issue(db, {**{k: value[k] for k in (
+                'client_id', 'subject', 'resource', 'upstream_expiry')}, 'scopes': scopes}, family)
+
+    def _valid(self, db, value):
+        if not value or value['expires_at'] <= time.time() or value['subject'] != self.allowed_uid or value['resource'] != self.settings.resource:
+            return False
+        family = self.store.get(db, 'family', value['family'])
+        return family and not family['revoked'] and family['expires_at'] > time.time()
+
+    async def load_refresh_token(self, client, refresh_token):
+        with self.store.transaction() as db:
+            value = self.store.get(db, 'refresh', refresh_token)
+            if not value or value['client_id'] != client.client_id:
+                return None
+            if value['used']:
+                self.store.revoke_family(db, value['family'], value['upstream_expiry'])
+                return None
+            if not self._valid(db, value):
+                return None
+        return RefreshToken(token=refresh_token, **value)
+
+    async def exchange_refresh_token(self, client, refresh_token, scopes):
+        result = None
+        try:
+            scopes = _canonical_scopes(scopes)
+        except ValueError:
+            raise TokenError('invalid_grant') from None
+        with self._token_transaction() as db:
+            value = self.store.get(db, 'refresh', refresh_token.token)
+            if value and value['client_id'] == client.client_id:
+                if value['used']:
+                    self.store.revoke_family(db, value['family'], value['upstream_expiry'])
+                elif self._valid(db, value) and set(scopes).issubset(value['scopes']):
+                    value['used'] = True
+                    self.store.put(db, 'refresh', refresh_token.token, value)
+                    result = self._issue(db, {**value, 'scopes': scopes}, value['family'])
+        if result is None:
+            raise TokenError('invalid_grant')
+        return result
+
+    async def load_access_token(self, token):
+        with self.store.transaction() as db:
+            value = self.store.get(db, 'access', token)
+            if not self._valid(db, value):
+                return None
+        # AccessToken drops unknown model fields. Carry the server-internal family
+        # only in claims; write_grant_binding still re-loads and validates the
+        # access record and durable family rather than trusting this context alone.
+        return AccessToken(token=token, claims={
+            'iss': self.settings.issuer, 'tdx_grant_family': value['family']}, **value)
+
+    def validate_write_grant(self, binding):
+        """Return a normalized binding only when durable write authority is current."""
+        denied = RuntimeError('Current write authorization is required.')
+        if not isinstance(binding, Mapping) or set(binding) != GRANT_BINDING_KEYS:
+            raise denied
+        subject, client_id = binding.get('subject'), binding.get('client_id')
+        resource, family = binding.get('resource'), binding.get('family')
+        expiry, scopes = binding.get('grant_expiry'), binding.get('scopes')
+        if (any(not isinstance(value, str) or not value for value in
+                (subject, client_id, resource, family))
+                or subject != self.allowed_uid or resource != self.settings.resource
+                or isinstance(expiry, bool) or not isinstance(expiry, (int, float))
+                or not math.isfinite(expiry) or expiry <= time.time()):
+            raise denied
+        try:
+            scopes = _canonical_scopes(scopes)
+        except (TypeError, ValueError):
+            raise denied from None
+        if set(scopes) != WRITE_SCOPES:
+            raise denied
+        with self.store.transaction() as db:
+            durable = self.store.get(db, 'family', family)
+        expected = {
+            'subject': subject, 'client_id': client_id, 'resource': resource,
+            'scopes': scopes, 'grant_expiry': expiry,
+        }
+        if (not durable or durable.get('revoked') is not False
+                or durable.get('issuer') != self.settings.issuer
+                or durable.get('expires_at') != expiry
+                or durable.get('expires_at', 0) <= time.time()
+                or any(durable.get(key) != value for key, value in expected.items())):
+            raise denied
+        return {**expected, 'family': family}
+
+    def write_grant_binding(self, access_token):
+        """Extract a write binding from a server-loaded, currently valid access token."""
+        denied = RuntimeError('Current write authorization is required.')
+        if not isinstance(access_token, AccessToken):
+            raise denied
+        claims = access_token.claims if isinstance(access_token.claims, dict) else {}
+        family = claims.get('tdx_grant_family')
+        if (claims.get('iss') != self.settings.issuer or not isinstance(family, str)
+                or set(access_token.scopes) != WRITE_SCOPES
+                or access_token.resource != self.settings.resource
+                or access_token.subject != self.allowed_uid
+                or not isinstance(access_token.client_id, str) or not access_token.client_id):
+            raise denied
+        with self.store.transaction() as db:
+            stored = self.store.get(db, 'access', access_token.token)
+            if not self._valid(db, stored):
+                raise denied
+        if (stored['family'] != family or stored['subject'] != access_token.subject
+                or stored['client_id'] != access_token.client_id
+                or stored['resource'] != access_token.resource
+                or stored['scopes'] != access_token.scopes
+                or stored['expires_at'] != access_token.expires_at):
+            raise denied
+        return self.validate_write_grant({
+            'subject': stored['subject'], 'client_id': stored['client_id'],
+            'resource': stored['resource'], 'family': family,
+            'scopes': stored['scopes'], 'grant_expiry': stored['upstream_expiry'],
+        })
+
+    async def revoke_token(self, token):
+        with self.store.transaction() as db:
+            for kind in ('access', 'refresh'):
+                value = self.store.get(db, kind, token.token)
+                if value:
+                    self.store.revoke_family(db, value['family'], value['upstream_expiry'])
+
+    def guard(self, app):
+        provider = self
+
+        async def guarded(scope, receive, send):
+            if scope['type'] != 'http' or scope['path'] not in ('/token', '/register', '/authorize', '/revoke', '/personal/login'):
+                return await app(scope, receive, send)
+            body = bytearray()
+            while True:
+                message = await receive()
+                if message['type'] == 'http.disconnect':
+                    return
+                body.extend(message.get('body', b''))
+                if len(body) > 16384 or len(scope.get('query_string', b'')) > 8192:
+                    return await JSONResponse({'error': 'invalid_request'}, status_code=413, headers=HEADERS)(scope, receive, send)
+                if not message.get('more_body'):
+                    break
+            # Single-replica persistent global rate bound also survives restarts and cannot
+            # be bypassed by spoofing forwarding headers. No usernames/IPs are retained.
+            with provider.store.transaction() as db:
+                bucket = provider.store.get(db, 'rate', scope['path']) or {'start': time.time(), 'count': 0}
+                if time.time() - bucket['start'] >= 60:
+                    bucket = {'start': time.time(), 'count': 0}
+                bucket['count'] += 1
+                provider.store.put(db, 'rate', scope['path'], bucket)
+            if bucket['count'] > 30:
+                return await JSONResponse({'error': 'temporarily_unavailable'}, status_code=429, headers=HEADERS)(scope, receive, send)
+            if scope['path'] != '/register' and scope['method'] == 'POST':
+                try:
+                    form = parse_qs(body.decode('utf-8'), keep_blank_values=True, max_num_fields=30)
+                    content_type = dict(scope['headers']).get(b'content-type', b'').split(b';')[0].strip().lower()
+                    valid = content_type == b'application/x-www-form-urlencoded' and all(len(v) == 1 for v in form.values())
+                    if scope['path'] in ('/token', '/authorize'):
+                        valid = valid and form.get('resource') == [provider.settings.resource]
+                except (ValueError, UnicodeError):
+                    valid = False
+                if not valid:
+                    return await JSONResponse({'error': 'invalid_request'}, status_code=400, headers=HEADERS)(scope, receive, send)
+                if scope['path'] == '/revoke' and 'client_secret' not in form:
+                    # SDK 1.x requires this nullable field even for public clients.
+                    # Its client authenticator still checks registered confidential clients.
+                    form['client_secret'] = ['']
+                    body = bytearray(urlencode(form, doseq=True).encode())
+                    scope = {**scope, 'headers': [(k, v) for k, v in scope['headers'] if k != b'content-length']}
+            if scope['path'] == '/authorize' and scope['method'] == 'GET':
+                try:
+                    query = parse_qs(scope.get('query_string', b'').decode(), keep_blank_values=True, max_num_fields=30)
+                    valid = query.get('resource') == [provider.settings.resource] and all(len(v) == 1 for v in query.values())
+                except (ValueError, UnicodeError):
+                    valid = False
+                if not valid:
+                    return await JSONResponse({'error': 'invalid_request'}, status_code=400, headers=HEADERS)(scope, receive, send)
+            async def replay():
+                return {'type': 'http.request', 'body': bytes(body), 'more_body': False}
+            async def private_send(message):
+                if message['type'] == 'http.response.start':
+                    message['headers'] = [(k, v) for k, v in message['headers'] if k.decode().lower() not in {x.lower() for x in HEADERS}]
+                    message['headers'] += [(k.lower().encode(), v.encode()) for k, v in HEADERS.items()]
+                await send(message)
+            await app(scope, replay, private_send)
+        return guarded

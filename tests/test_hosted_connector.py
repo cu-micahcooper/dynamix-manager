@@ -1,0 +1,360 @@
+import asyncio
+import time
+import sqlite3
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from unittest.mock import Mock
+
+import jwt
+import pytest
+from cryptography.fernet import Fernet
+from cryptography.hazmat.primitives.asymmetric import rsa
+
+
+def test_vault_encrypts_binds_and_revokes(tmp_path):
+    from dynamix_manager.hosted_vault import CredentialVault
+    path = tmp_path / 'vault.sqlite'
+    vault = CredentialVault(path, Fernet.generate_key())
+    vault.put('issuer', 'alice', '00000000-0000-0000-0000-000000000001',
+              'sensitive-tdx-token', int(time.time()) + 60)
+    assert vault.get('issuer', 'alice')['token'] == 'sensitive-tdx-token'
+    assert b'sensitive-tdx-token' not in path.read_bytes()
+    with pytest.raises(RuntimeError, match='linked'):
+        vault.get('issuer', 'bob')
+    vault.revoke('issuer', 'alice')
+    with pytest.raises(RuntimeError, match='linked'):
+        vault.get('issuer', 'alice')
+
+
+def test_vault_rejects_expired_credentials(tmp_path):
+    from dynamix_manager.hosted_vault import CredentialVault
+    vault = CredentialVault(tmp_path / 'vault.sqlite', Fernet.generate_key())
+    with pytest.raises(ValueError):
+        vault.put('issuer', 'alice', '00000000-0000-0000-0000-000000000001', 'token', 1)
+
+
+def test_vault_rejects_swapped_and_tampered_records(tmp_path):
+    from dynamix_manager.hosted_vault import CredentialVault
+    path = tmp_path / 'vault.sqlite'
+    vault = CredentialVault(path, Fernet.generate_key())
+    vault.put('issuer', 'alice', '00000000-0000-0000-0000-000000000001', 'secret', time.time() + 60)
+    with sqlite3.connect(path) as db:
+        value = db.execute('SELECT value FROM credentials').fetchone()[0]
+        db.execute('INSERT INTO credentials VALUES (?,?)', (vault._id('issuer', 'bob'), value))
+    with pytest.raises(RuntimeError, match='relinked'):
+        vault.get('issuer', 'bob')
+    with sqlite3.connect(path) as db:
+        db.execute('UPDATE credentials SET value=?', (b'broken',))
+    with pytest.raises(RuntimeError, match='relinked'):
+        vault.get('issuer', 'alice')
+
+
+def test_vault_checks_expiry_on_each_read(tmp_path, monkeypatch):
+    from dynamix_manager.hosted_vault import CredentialVault
+    vault = CredentialVault(tmp_path / 'vault.sqlite', Fernet.generate_key())
+    vault.put('issuer', 'alice', '00000000-0000-0000-0000-000000000001', 'secret', time.time() + 60)
+    monkeypatch.setattr('dynamix_manager.hosted_vault.time.time', lambda: 10**12)
+    with pytest.raises(RuntimeError, match='relinked'):
+        vault.get('issuer', 'alice')
+
+
+def test_signed_oauth_tokens_are_strictly_validated():
+    from dynamix_manager.hosted import OAuthVerifier
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    jwk = jwt.algorithms.RSAAlgorithm.to_jwk(key.public_key(), as_dict=True)
+    jwk['kid'] = 'test'
+
+    async def keys():
+        return {'keys': [jwk]}
+
+    verifier = OAuthVerifier('https://identity.test', 'https://connector.test/mcp',
+                             'https://identity.test/keys', keys_loader=keys)
+    claims = dict(iss='https://identity.test', aud='https://connector.test/mcp',
+                  sub='alice', exp=int(time.time()) + 60, iat=int(time.time()),
+                  scope='tdx.read', client_id='chatgpt')
+
+    def verify(values):
+        token = jwt.encode(values, key, algorithm='RS256', headers={'kid': 'test'})
+        return asyncio.run(verifier.verify_token(token))
+
+    assert verify(claims).subject == 'alice'
+    for change in [{'iss': 'https://evil.test'}, {'aud': 'other'}, {'exp': 1},
+                   {'scope': 'other'}, {'sub': ''}, {'client_id': ''},
+                   {'aud': [claims['aud'], 'other']}, {'scope': ['tdx.read']},
+                   {'iat': int(time.time()) + 600}]:
+        assert verify({**claims, **change}) is None
+    for missing in ('exp', 'sub', 'aud', 'iss', 'iat'):
+        assert verify({k: v for k, v in claims.items() if k != missing}) is None
+    assert asyncio.run(verifier.verify_token('not-a-token')) is None
+    unknown = jwt.encode(claims, key, algorithm='RS256', headers={'kid': 'unknown'})
+    assert asyncio.run(verifier.verify_token(unknown)) is None
+    forged = jwt.encode(claims, 'a' * 32, algorithm='HS256', headers={'kid': 'test'})
+    assert asyncio.run(verifier.verify_token(forged)) is None
+
+
+@pytest.mark.parametrize('payload', [None, {}, {'keys': None}, {'keys': ['invalid']}, {'keys': []}])
+def test_jwks_malformed_responses_fail_closed(payload):
+    from dynamix_manager.hosted import OAuthVerifier
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    token = jwt.encode({'sub': 'alice'}, key, algorithm='RS256', headers={'kid': 'test'})
+
+    async def keys():
+        return payload
+
+    verifier = OAuthVerifier('https://identity.test', 'https://connector.test/mcp',
+                             'https://identity.test/keys', keys_loader=keys)
+    assert asyncio.run(verifier.verify_token(token)) is None
+
+
+def test_hosted_http_isolation_and_authentication(tmp_path, monkeypatch):
+    from starlette.testclient import TestClient
+    from dynamix_manager.hosted import HostedSettings, create_app
+    from dynamix_manager.hosted_vault import CredentialVault
+    from dynamix_manager.plugin import Connection
+    monkeypatch.setenv('TDX_USERNAME', 'SHARED_ACCOUNT_MUST_NOT_BE_USED')
+    monkeypatch.setenv('TDX_PASSWORD', 'SHARED_SECRET_MUST_NOT_BE_USED')
+
+    settings = HostedSettings('https://connector.test', 'https://identity.test',
+                              'https://identity.test/keys')
+    vault = CredentialVault(tmp_path / 'vault.sqlite', Fernet.generate_key())
+    uids = {'alice': '00000000-0000-0000-0000-000000000001',
+            'bob': '00000000-0000-0000-0000-000000000002'}
+    for user, uid in uids.items():
+        vault.put(settings.issuer, user, uid, user + '-tdx', int(time.time()) + 60)
+    clients = []
+    mismatch = set()
+    slow_started, release_slow = threading.Event(), threading.Event()
+    slow = set()
+
+    def make_connection(values):
+        assert 'TDX_USERNAME' not in values and 'TDX_PASSWORD' not in values
+        client = Mock()
+        personal = values['WORKBENCH_PERSONAL_TOKEN'].split('-')[0]
+        client.list_ticketing_applications.side_effect = lambda x: x
+        client.fetch_applications.return_value = [{'AppID': 634, 'Name': 'InfoTech Tickets'}]
+        client.session.get.return_value.json.return_value = {
+            'UID': uids['bob'] if personal in mismatch else uids[personal]}
+        def get_ticket(*args, **kwargs):
+            if personal in slow:
+                slow_started.set()
+                release_slow.wait(3)
+            return {'ID': 1, 'Title': personal}
+        client.get_ticket.side_effect = get_ticket
+        clients.append(client)
+        return Connection('/unused', values=values, client=client)
+
+    from mcp.server.auth.provider import AccessToken
+
+    class Verifier:
+        async def verify_token(self, token):
+            if token not in {*uids, 'no-scope'}:
+                return None
+            return AccessToken(token=token, client_id='chatgpt', subject=token,
+                               scopes=[] if token == 'no-scope' else ['tdx.read'], resource=settings.resource,
+                               claims={'iss': settings.issuer})
+
+    app = create_app(settings, vault, verifier=Verifier(), connection_factory=make_connection)
+    with TestClient(app, base_url=settings.public_url) as http:
+        body = {'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
+                'params': {'name': 'get_ticket', 'arguments': {'ticket_id': 1}}}
+        accept = {'Accept': 'application/json, text/event-stream'}
+        assert http.post('/mcp', json=body, headers=accept).status_code == 401
+        assert http.post('/mcp', json=body, headers={**accept, 'Authorization': 'Bearer no-scope'}).status_code == 403
+        assert http.get('/healthz').json() == {'status': 'ok'}
+        resource_body = {'jsonrpc': '2.0', 'id': 2, 'method': 'resources/read',
+                         'params': {'uri': 'ui://teamdynamix/tickets-v2.html'}}
+        assert http.post('/mcp', json=resource_body, headers=accept).status_code == 401
+        metadata = http.get('/.well-known/oauth-protected-resource/mcp').json()
+        assert metadata['resource'] == settings.resource
+        assert metadata['scopes_supported'] == ['tdx.read']
+        for user in uids:
+            response = http.post('/mcp', json=body, headers={**accept, 'Authorization': f'Bearer {user}'})
+            assert response.status_code == 200, response.text
+            result = response.json()['result']['structuredContent']
+            assert result['detail']['Title'] == user
+            clients[-1].get_ticket.assert_called_once_with(1, user + '-tdx', 634, max_attempts=1)
+            clients[-1].session.close.assert_called_once()
+        def request(user):
+            r = http.post('/mcp', json=body, headers={**accept, 'Authorization': f'Bearer {user}'})
+            assert r.json()['result']['structuredContent']['detail']['Title'] == user
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            list(pool.map(request, ['alice', 'bob'] * 5))
+        slow.add('alice')
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            pending = pool.submit(request, 'alice')
+            assert slow_started.wait(2)
+            started = time.monotonic()
+            try:
+                assert http.get('/healthz').status_code == 200
+                request('bob')
+                assert time.monotonic() - started < 1.5
+            finally:
+                release_slow.set()
+            pending.result()
+        slow.clear()
+        for client in clients:
+            client.session.close.assert_called_once()
+        mismatch.add('alice')
+        response = http.post('/mcp', json=body, headers={**accept, 'Authorization': 'Bearer alice'})
+        assert response.json()['result']['isError']
+        clients[-1].get_ticket.assert_not_called()
+        clients[-1].session.close.assert_called_once()
+        count = len(clients)
+        vault.revoke(settings.issuer, 'alice')
+        response = http.post('/mcp', json=body, headers={**accept, 'Authorization': 'Bearer alice'})
+        assert response.json()['result']['isError']
+        assert len(clients) == count
+
+
+def test_missing_hosted_configuration_never_uses_project_env(monkeypatch):
+    from dynamix_manager.hosted import from_environment
+    monkeypatch.delenv('TDX_HOSTED_PUBLIC_URL', raising=False)
+    with pytest.raises(ValueError, match='Missing required'):
+        from_environment()
+
+
+@pytest.mark.parametrize('public', ['http://connector.test', 'https://user:pass@connector.test',
+                                   'https://connector.test/subpath', 'https://connector.test?x=1'])
+def test_hosted_rejects_unsafe_urls(public):
+    from dynamix_manager.hosted import HostedSettings
+    with pytest.raises(ValueError):
+        HostedSettings(public, 'https://identity.test', 'https://identity.test/keys')
+
+
+def test_real_signed_tokens_protect_http_tools_and_resources(tmp_path):
+    from starlette.testclient import TestClient
+    from dynamix_manager.hosted import HostedSettings, OAuthVerifier, create_app
+    from dynamix_manager.hosted_vault import CredentialVault
+    settings = HostedSettings('https://connector.test', 'https://identity.test',
+                              'https://identity.test/keys')
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    jwk = jwt.algorithms.RSAAlgorithm.to_jwk(key.public_key(), as_dict=True)
+    jwk['kid'] = 'test'
+
+    async def keys():
+        return {'keys': [jwk]}
+
+    verifier = OAuthVerifier(settings.issuer, settings.resource, settings.jwks_url, keys_loader=keys)
+    vault = CredentialVault(tmp_path / 'vault.sqlite', Fernet.generate_key())
+    claims = dict(iss=settings.issuer, aud=settings.resource, sub='alice',
+                  exp=int(time.time()) + 60, iat=int(time.time()), scope='tdx.read', client_id='chatgpt')
+
+    def headers(changes=None):
+        token = jwt.encode({**claims, **(changes or {})}, key, algorithm='RS256', headers={'kid': 'test'})
+        return {'Authorization': 'Bearer ' + token, 'Accept': 'application/json, text/event-stream'}
+
+    with TestClient(create_app(settings, vault, verifier=verifier), base_url=settings.public_url) as http:
+        listing = {'jsonrpc': '2.0', 'id': 1, 'method': 'tools/list'}
+        for change in [{'aud': 'other'}, {'iss': 'other'}, {'exp': 1}, {'scope': 'other'}]:
+            response = http.post('/mcp', json=listing, headers=headers(change))
+            assert response.status_code == 401
+            assert 'resource_metadata=' in response.headers['www-authenticate']
+        tools = http.post('/mcp', json=listing, headers=headers()).json()['result']['tools']
+        assert len(tools) == 8
+        assert all(t['_meta']['securitySchemes'][0]['scopes'] == ['tdx.read'] for t in tools)
+        resource = {'jsonrpc': '2.0', 'id': 2, 'method': 'resources/read',
+                    'params': {'uri': 'ui://teamdynamix/tickets-v2.html'}}
+        result = http.post('/mcp', json=resource, headers=headers())
+        assert result.status_code == 200
+        assert 'text/html' in result.json()['result']['contents'][0]['mimeType']
+        assert result.headers['cache-control'] == 'no-store'
+        # A valid connector identity alone does not grant upstream ticket access.
+        call = {'jsonrpc': '2.0', 'id': 3, 'method': 'tools/call',
+                'params': {'name': 'get_ticket', 'arguments': {'ticket_id': 1}}}
+        assert http.post('/mcp', json=call, headers=headers()).json()['result']['isError']
+
+
+def test_hosted_write_runtime_is_dynamic_personal_and_fail_closed():
+    from dynamix_manager.hosted import HostedWriteRuntime
+    state = {'enabled': False}
+    runtime = HostedWriteRuntime(lambda: state['enabled'], personal_auth=True)
+    with pytest.raises(RuntimeError, match='disabled'):
+        runtime.require_enabled()
+    state['enabled'] = True
+    runtime.require_enabled()
+    state['enabled'] = False
+    with pytest.raises(RuntimeError, match='disabled'):
+        runtime.require_enabled()
+
+    external = HostedWriteRuntime(lambda: state['enabled'], personal_auth=False)
+    state['enabled'] = True
+    with pytest.raises(RuntimeError, match='personal authorization'):
+        external.require_enabled()
+    broken = HostedWriteRuntime(lambda: (_ for _ in ()).throw(ValueError('secret')), personal_auth=True)
+    with pytest.raises(RuntimeError, match='disabled') as error:
+        broken.require_enabled()
+    assert 'secret' not in str(error.value)
+    for value in (1, 'true', None):
+        with pytest.raises(RuntimeError, match='disabled'):
+            HostedWriteRuntime(lambda value=value: value, personal_auth=True).require_enabled()
+    with pytest.raises(TypeError):
+        HostedWriteRuntime(True, personal_auth=True)
+
+
+def test_create_app_exposes_rechecked_write_runtime(tmp_path):
+    from dynamix_manager.hosted import HostedSettings, create_app
+    from dynamix_manager.hosted_vault import CredentialVault
+    settings = HostedSettings('https://connector.test', 'https://identity.test',
+                              'https://identity.test/keys')
+    vault = CredentialVault(tmp_path / 'vault.sqlite', Fernet.generate_key())
+    state = {'enabled': False}
+
+    class Verifier:
+        async def verify_token(self, token):
+            return None
+
+    app = create_app(settings, vault, verifier=Verifier(),
+                     writes_enabled_provider=lambda: state['enabled'])
+    assert app.write_runtime.personal_auth is False
+    with pytest.raises(RuntimeError, match='disabled'):
+        app.write_runtime.require_enabled()
+    state['enabled'] = True
+    with pytest.raises(RuntimeError, match='personal authorization'):
+        app.write_runtime.require_enabled()
+    with pytest.raises(TypeError):
+        create_app(settings, vault, verifier=Verifier(), writes_enabled_provider=False)
+
+
+@pytest.mark.parametrize('value', ['', '0', '1', 'TRUE', 'False', 'yes', ' true '])
+def test_writes_enabled_environment_is_strict(value, monkeypatch):
+    from dynamix_manager.hosted import from_environment
+    monkeypatch.setenv('TDX_HOSTED_WRITES_ENABLED', value)
+    with pytest.raises(ValueError, match='TDX_HOSTED_WRITES_ENABLED'):
+        from_environment()
+
+
+def test_external_identity_provider_cannot_enable_writes(tmp_path, monkeypatch):
+    from dynamix_manager.hosted import from_environment
+    values = {
+        'TDX_HOSTED_AUTH_MODE': 'external',
+        'TDX_HOSTED_WRITES_ENABLED': 'true',
+        'TDX_HOSTED_PUBLIC_URL': 'https://connector.test',
+        'TDX_HOSTED_ISSUER': 'https://identity.test',
+        'TDX_HOSTED_JWKS_URL': 'https://identity.test/keys',
+        'TDX_HOSTED_VAULT_PATH': str(tmp_path / 'vault.sqlite'),
+        'TDX_HOSTED_VAULT_KEY': Fernet.generate_key().decode(),
+    }
+    for key, value in values.items():
+        monkeypatch.setenv(key, value)
+    with pytest.raises(ValueError, match='personal authorization'):
+        from_environment()
+
+
+def test_personal_environment_defaults_writes_off_and_can_enable(tmp_path, monkeypatch):
+    from dynamix_manager.hosted import from_environment
+    values = {
+        'TDX_HOSTED_AUTH_MODE': 'personal',
+        'TDX_HOSTED_PUBLIC_URL': 'https://connector.test',
+        'TDX_HOSTED_VAULT_PATH': str(tmp_path / 'vault.sqlite'),
+        'TDX_HOSTED_VAULT_KEY': Fernet.generate_key().decode(),
+        'TDX_HOSTED_ALLOWED_UID': '00000000-0000-0000-0000-000000000001',
+        'TDX_HOSTED_REDIRECT_URIS': '[]',
+    }
+    for key, value in values.items():
+        monkeypatch.setenv(key, value)
+    app = from_environment()
+    with pytest.raises(RuntimeError, match='disabled'):
+        app.write_runtime.require_enabled()
+    monkeypatch.setenv('TDX_HOSTED_WRITES_ENABLED', 'true')
+    enabled = from_environment()
+    enabled.write_runtime.require_enabled()
