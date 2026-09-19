@@ -75,7 +75,31 @@ def test_assignment_preserves_unselected_field_and_names_preview():
     assert prepared.preview.fields[1].before == prepared.preview.fields[1].after
 
 
-@pytest.mark.parametrize("code,outcome", [(401,"rejected"),(403,"rejected"),(429,"rejected"),(500,"unknown"),(503,"unknown"),(302,"unknown"),(201,"unknown")])
+@pytest.mark.parametrize("action", [
+    dict(kind="comment", ticket_id=1001, comments="Hello"),
+    dict(kind="status", ticket_id=1001, comments="Done", status_id=5),
+])
+def test_feed_created_response_is_applied_once_without_response_body(action):
+    adapter, calls, _ = setup_adapter()
+    prepared = adapter.validate(parse_action(action))
+    adapter.request = lambda *args, **kwargs: (calls.append((args, kwargs)) or SimpleNamespace(status_code=201))
+    result = adapter.apply_once(prepared)
+    assert result.outcome == "applied"
+    assert result.status_code == 201
+    assert len(calls) == 1
+    assert calls[0][0][0] == "POST"
+    assert calls[0][0][1].endswith("/feed")
+
+
+def test_patch_created_response_remains_unknown():
+    adapter, calls, _ = setup_adapter()
+    prepared = adapter.validate(parse_action(dict(kind="edit", ticket_id=1001, title="After")))
+    adapter.request = lambda *args, **kwargs: (calls.append(1) or SimpleNamespace(status_code=201))
+    assert adapter.apply_once(prepared).outcome == "unknown"
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("code,outcome", [(401,"rejected"),(403,"rejected"),(429,"rejected"),(500,"unknown"),(503,"unknown"),(302,"unknown"),(202,"unknown"),(204,"unknown")])
 def test_one_attempt_and_classified_outcomes(code, outcome):
     adapter, calls, _ = setup_adapter()
     prepared = adapter.validate(parse_action(dict(kind="comment", ticket_id=1001, comments="Hello")))

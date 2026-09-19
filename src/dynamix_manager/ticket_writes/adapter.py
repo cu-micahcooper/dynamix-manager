@@ -353,7 +353,10 @@ class WriteAdapter:
         except Exception:
             return WriteResult(outcome="unknown", message="The upstream outcome is unknown; do not retry.")
         status = response.status_code
-        if status == 200:
+        # The published feed contract lists 200; Cedarville also returns 201
+        # for a created feed entry (verified against persisted dispatch status
+        # and authoritative feed read-back). Do not broaden PATCH or accept 202.
+        if status == 200 or (feed and status == 201):
             if not feed:
                 try:
                     ticket = response.json()

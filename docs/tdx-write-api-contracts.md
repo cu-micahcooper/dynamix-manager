@@ -28,6 +28,15 @@ This is not a claim that all five capabilities passed Task 1. Comments, status c
 
 OpenAPI operation `Tickets_PostTicketFeed` accepts a required `TicketFeedEntry` request body and returns HTTP 200 described as the generated item update. Its 200 response does **not** declare a JSON response schema; do not depend on invented response keys to decide success.
 
+Live correction, 2026-09-19: Cedarville returned HTTP 201 for the user's saved
+comment. The encrypted operation result preserved status_code=201; authoritative
+ticket-feed read-back confirmed the exact comment and requested notification
+recipient. Accept 200 or 201 for POST feed operations (comment/status), without
+depending on a response-body schema. PATCH still requires 200 and matching ticket
+identity. 202, unverified other statuses, and transport failures remain unknown;
+never retry them automatically. The historical unknown record is not silently
+rewritten by this classification fix and still requires operator reconciliation.
+
 `FeedEntry` fields:
 
 | Field | Type and meaning |
