@@ -84,6 +84,15 @@ priority metadata and the personal user's `OrgApplications` shape; no live write
 
 **Files:** Create `store.py`, `tests/test_ticket_write_store.py`; reuse vault encryption and protected DB access without changing existing OAuth expiry cleanup.
 
+Completed 2026-09-19: independent spec and quality reviews approved; 28 store
+tests and 73 combined model/adapter/store tests pass. Review fixes cover nested
+payload repr redaction, mandatory CSRF for claim/check, and abandoned full-pool
+expiry recovery. The conservative 128-record cap reserves a slot for every
+retained operation throughout its lifecycle, including unresolved operations;
+the separate 1,000-marker cap is defense in depth and may not be reached before
+the total-record limit. Known outcomes release locks/markers, never capacity
+reservations needed to record results. No live writes or deployment occurred.
+
 - [ ] Write failing lifecycle tests with injected clock: prepare, expire, bind browser, atomically claim, finish, duplicate Save, parallel claim, crash/reopen, capacity overflow and encryption-at-rest inspection.
 - [ ] Run `.venv/bin/python3.14 -m pytest tests/test_ticket_write_store.py -q` and observe red.
 - [ ] Implement separate encrypted tables for operations, unresolved markers and audit. Use random 256-bit capabilities stored hashed, expiry=300 seconds, encrypted immutable payload, owner/client/resource/grant binding, and payload digest. Bound previews at 128, unresolved markers at 1,000, audit at 10,000/30 days; capacity fails closed.
@@ -133,6 +142,7 @@ priority metadata and the personal user's `OrgApplications` shape; no live write
 
 - [ ] Test hosted tools `prepare_ticket_comment`, `prepare_ticket_status`, `prepare_ticket_assignment`, `prepare_ticket_edit`, `prepare_ticket_creation`, plus bounded read-only `ticket_write_metadata` and owner-bound `ticket_write_result`. Result lookup cannot commit or clear an unresolved operation. Verify no commit tool and no new local stdio tools.
 - [ ] Implement typed tools delegating to service. Preparation metadata: `readOnlyHint=false`, `idempotentHint=false`, conservative destructive/open-world hints and required `tdx.read`+`tdx.write`. Existing read tools retain `tdx.read`. Correct the existing hosted loop that currently overwrites every tool's security scheme.
+- [ ] Update hosted-only server instructions and `connection_status` capability reporting: the shared plugin currently hardcodes no updates/read-only. Preserve local defaults; report write availability only when the hosted flag and the caller's validated grant permit it, not merely because write tools exist.
 - [ ] Return ordinary review links plus explicit text “not saved”; do not modify the ticket widget to auto-submit, and do not mark Save as widget-accessible. Limit metadata searches to the selected ticket application and bounded results.
 - [ ] Write failing bundle tests for each new module being included, secrets/test harness excluded, and local read-only plugin unaffected. Add each new module to the source allowlist, not a directory glob.
 - [ ] Run `.venv/bin/python3.14 -m pytest tests/test_ticket_write_tools.py tests/test_hosted_bundle.py tests/test_plugin.py tests/test_hosted_connector.py -q` and `node --test tests/frontend/*.test.cjs`; require green, then scoped review/commit.
