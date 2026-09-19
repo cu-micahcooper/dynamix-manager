@@ -299,6 +299,11 @@ tests pass; the deployed pending-preview rollback test remains unverified.
   settings listing; automatic step-up was therefore not established. Reconnect
   and explicit consent remain the next live gate; do not infer tool execution
   or successful authorization from assistant prose.
+- Settings explicitly marked the five write-scope tools `RECONNECT NEEDED`.
+  Reconnect opened the live personal-login form requesting `tdx.read tdx.write`
+  with an unchecked explicit read-and-modify consent box and the correct
+  allowlisted ChatGPT callback. Stopped at that form for the user; no credentials
+  were entered and no broader grant was accepted during this verification.
 - No production ticket was modified. Live write consent, an exact user-selected
   preview and human Save/read-back, the remaining operation classes, and a live
   pending-preview flag rollback remain unverified. The connector's old read-only
