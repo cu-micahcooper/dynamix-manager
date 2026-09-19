@@ -332,6 +332,22 @@ def test_open_review_rechecks_flag_grant_and_binds_browser_without_write(setup):
     assert setup.upstream.apply_count == 0
 
 
+def test_status_for_validated_review_record_uses_safe_public_projection(setup):
+    prepared = setup.service.prepare(
+        "principal", parse_action(dict(kind="comment", ticket_id=1001, comments="Hello")))
+    record = setup.service.open_review(capability(prepared), "browser", "csrf")
+
+    status = setup.service.status_for_record(record)
+
+    assert status.outcome == "pending"
+    assert status.ticket_id == 1001
+    assert status.ticket_url == (
+        "https://tenant.example/TDNext/Apps/42/Tickets/"
+        "TicketDet.aspx?TicketID=1001"
+    )
+    assert "capability" not in repr(status).lower()
+
+
 def test_commit_conflicts_on_baseline_or_metadata_drift_and_sends_nothing(setup):
     first = prepared_and_open(setup)
     setup.upstream.records["/api/42/tickets/1001"]["ModifiedDate"] = "version-2"

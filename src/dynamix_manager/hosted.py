@@ -19,6 +19,8 @@ from starlette.responses import JSONResponse
 
 from dynamix_manager.hosted_vault import CredentialVault
 from dynamix_manager.plugin import Connection, create_server
+from dynamix_manager.ticket_writes.routes import create_ticket_write_routes
+from dynamix_manager.ticket_writes.service import create_ticket_write_service
 
 
 class OAuthVerifier:
@@ -192,6 +194,13 @@ def create_app(settings, vault, *, verifier=None, connection_factory=None, auth_
     http_app.router.routes.extend(create_protected_resource_routes(
         resource_url=settings.resource, authorization_servers=[settings.issuer],
         scopes_supported=(['tdx.read', 'tdx.write'] if auth_provider else ['tdx.read'])))
+    write_service = None
+    if auth_provider:
+        write_service = create_ticket_write_service(
+            settings, vault, auth_provider, write_runtime,
+            connection_factory=connection_factory)
+        http_app.router.routes.extend(
+            create_ticket_write_routes(settings, write_service, auth_provider.store))
     if auth_provider:
         http_app.routes.extend(auth_provider.routes)
         http_app = auth_provider.guard(http_app)
@@ -218,6 +227,7 @@ def create_app(settings, vault, *, verifier=None, connection_factory=None, auth_
 
     application = RequestIsolation()
     application.write_runtime = write_runtime
+    application.write_service = write_service
     return application
 
 

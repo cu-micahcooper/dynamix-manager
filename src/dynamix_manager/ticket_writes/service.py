@@ -335,6 +335,10 @@ class TicketWriteService:
         record = self.store.get_for_owner(operation_id, binding)
         return self._safe_status(record)
 
+    def status_for_record(self, record):
+        """Project a record returned by validated ``open_review`` into safe UI data."""
+        return self._safe_status(record)
+
     @staticmethod
     def _same_approved_change(stored, refreshed):
         if (

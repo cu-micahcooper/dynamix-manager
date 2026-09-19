@@ -160,6 +160,17 @@ integer days; full-snapshot comparison remains deliberately conservative.
 
 **Files:** Create `routes.py`, `tests/test_ticket_write_routes.py`; wire routes through `hosted.py`.
 
+Completed 2026-09-19: independent spec and security/quality reviews approved.
+84 focused tests, full 496 Python tests, and 14 existing frontend tests pass;
+Ruff and diff checks are clean. Isolated HTTPS Chromium verified real Origin/CSP
+and Secure Strict cookie behavior, cross-site entry with two live tabs, explicit
+keyboard Save, duplicate POST one-dispatch, complete 320px layouts, conflict zero
+dispatch, and unknown one-attempt/no-retry. Synthetic screenshots were visually
+reviewed. Review fixed disconnected-body error hardening. Concurrent first-ever
+opens without an established cookie can invalidate one preview; a reviewer
+verified this fails closed with zero dispatch and it is documented as a pilot
+usability limitation. No production mutation or deployment occurred.
+
 Logging-safe transport detail (2026-09-19): Railway documents HTTP path logs
 (`https://docs.railway.com/observability/logs`); do not assume all edge logging
 can be disabled. Use `/writes/review#<capability>` so the capability never reaches
@@ -171,6 +182,14 @@ stable per-capability CSRF from that secret browser binding, never from public
 operation ID alone. Neither capability nor CSRF appears in any request URL.
 Reject unexpected query parameters, keep bodies/headers out of app logs, and
 browser-test fragment removal, strict Origin, repeat opening and actual Save.
+
+Browser refinement verified with isolated Chromium on 2026-09-19: a cross-site
+ChatGPT navigation does not send an existing SameSite=Strict cookie on the initial
+GET, but the bootstrap's same-origin POST does. Therefore GET must not create or
+replace the browser cookie. Initialize/preserve it on POST open instead; otherwise
+opening a second ChatGPT review link would invalidate an already-bound preview.
+Save still requires the existing cookie and per-capability CSRF. Test cross-site
+entry and parallel previews, not only repeated same-origin GETs.
 
 UI direction from the existing `.impeccable.md`: restrained editorial briefing,
 clear/accountable/sober for this consequential action (no jokes or ornaments).
@@ -199,6 +218,10 @@ FastMCP builds an outer argument model and can render validation exceptions
 before the function runs; configure strict extra-field rejection and suppress
 input values in validation errors there as well as in nested action models.
 Preserve omitted versus explicit-null edit fields through the tool boundary.
+Also test sensitive-looking unexpected field names: Pydantic's
+`hide_input_in_errors` hides values but can still echo user-controlled error
+locations. Sanitize boundary validation failures to a fixed safe message for the
+new hosted tools, without globally changing the SDK or local read-only tools.
 
 - [ ] Test hosted tools `prepare_ticket_comment`, `prepare_ticket_status`, `prepare_ticket_assignment`, `prepare_ticket_edit`, `prepare_ticket_creation`, plus bounded read-only `ticket_write_metadata` and owner-bound `ticket_write_result`. Result lookup cannot commit or clear an unresolved operation. Verify no commit tool and no new local stdio tools.
 - [ ] Implement typed tools delegating to service. Preparation metadata: `readOnlyHint=false`, `idempotentHint=false`, conservative destructive/open-world hints and required `tdx.read`+`tdx.write`. Existing read tools retain `tdx.read`. Correct the existing hosted loop that currently overwrites every tool's security scheme.

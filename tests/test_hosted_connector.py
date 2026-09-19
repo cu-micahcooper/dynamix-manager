@@ -315,6 +315,40 @@ def test_create_app_exposes_rechecked_write_runtime(tmp_path):
         create_app(settings, vault, verifier=Verifier(), writes_enabled_provider=False)
 
 
+def test_personal_app_registers_write_review_routes_and_service_only_in_personal_mode(tmp_path):
+    from starlette.testclient import TestClient
+    from dynamix_manager.hosted import HostedSettings, create_app
+    from dynamix_manager.hosted_vault import CredentialVault
+
+    settings = HostedSettings('https://connector.test', 'https://identity.test',
+                              'https://identity.test/keys')
+    vault = CredentialVault(tmp_path / 'vault.sqlite', Fernet.generate_key())
+
+    class Provider:
+        routes = []
+
+        def __init__(self):
+            from dynamix_manager.personal_auth_store import OAuthStore
+            self.store = OAuthStore(vault)
+
+        def guard(self, app):
+            return app
+
+    personal = create_app(settings, vault, auth_provider=Provider())
+    assert personal.write_service is not None
+    with TestClient(personal, base_url=settings.public_url) as http:
+        assert http.get('/writes/review').status_code == 200
+
+    class Verifier:
+        async def verify_token(self, token):
+            return None
+
+    external = create_app(settings, vault, verifier=Verifier())
+    assert external.write_service is None
+    with TestClient(external, base_url=settings.public_url) as http:
+        assert http.get('/writes/review').status_code == 404
+
+
 @pytest.mark.parametrize('value', ['', '0', '1', 'TRUE', 'False', 'yes', ' true '])
 def test_writes_enabled_environment_is_strict(value, monkeypatch):
     from dynamix_manager.hosted import from_environment
