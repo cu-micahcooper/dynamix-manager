@@ -37,12 +37,22 @@ Create `tests/test_ticket_write_models.py`, `tests/test_ticket_write_adapter.py`
 
 **Files:** Read `src/dynamix_manager/tdx_client.py`, `plugin.py`, `hosted.py`, `personal_auth.py`; create `docs/tdx-write-api-contracts.md`.
 
+Execution checkpoint 2026-09-18: baseline rerun passed 344 Python/14 frontend
+tests. Official API evidence is recorded in `docs/tdx-write-api-contracts.md`.
+The full five-action evidence gate has not passed: arbitrary form creation lacks
+the field/rule/default metadata needed for the approved pre-save validation.
+Comments, ordinary status changes, explicit-field assignment and partial field
+edits have documented contracts suitable for synthetic implementation. No product
+code, deployment, OAuth permission or production ticket has been changed. Obtain
+direction on staged delivery or an authoritative selected-form contract before
+changing the approved full-scope implementation path.
+
 - [ ] Run `git status --short`, inspect relevant source and local AGENTS instructions, then run `.venv/bin/python3.14 -m pytest -q` and `node --test tests/frontend/*.test.cjs`. Record actual baseline results, not historical counts.
 - [ ] Read official Cedarville/TeamDynamix API documentation using read-only requests/browsing. Record source URLs, retrieval date, method/path, request/response fields, permissions, notification effects, custom-field requirements, partial-update semantics, and conditional-write support for each of the five actions.
 - [ ] Verify metadata sources for requester, active assignee/group, priority, type/form, statuses and required creation attributes. Record whether permission to create/edit can be read in advance or only authoritatively checked by mutation responses.
 - [ ] Record sanitized minimal request/response fixtures in the contract document; use synthetic names and IDs in tests. Never record auth headers, tokens or actual private ticket text.
 - [ ] Build a support matrix: comment visibility/recipient behavior; status closure requirements; assignment user/group behavior; title/description/priority partial edits; creation validation. If any required contract is unsupported or unclear, stop that capability and report the evidence gap before implementation. Do not replace partial edits with full-object updates or silently reduce scope.
-- [ ] Verify current official OpenAI MCP OAuth/per-tool scope metadata behavior needed for step-up consent; preserve read-only clients. This is documentation research, not a ChatGPT permission change.
+- [x] Verify current official OpenAI MCP OAuth/per-tool scope metadata behavior needed for step-up consent; preserve read-only clients. This is documentation research, not a ChatGPT permission change. Verified 2026-09-18: https://developers.openai.com/plugins/build/auth requires per-tool scopes, resource metadata and runtime `mcp/www_authenticate` errors. Add an insufficient-scope error result test; metadata alone does not trigger step-up UI.
 - [ ] Review/commit only the new API evidence document. Do not guess executable mutation payloads in advance of this gate.
 
 ### Task 2: Typed models and single-attempt adapter
@@ -74,7 +84,7 @@ Create `tests/test_ticket_write_models.py`, `tests/test_ticket_write_adapter.py`
 
 - [ ] Add failing tests for old read grant refresh attempting elevation, unknown scopes, expired/revoked grant approval, client/resource/subject mismatch, and refresh-token rotation preserving only authorized scopes.
 - [ ] Run `.venv/bin/python3.14 -m pytest tests/test_personal_auth.py tests/test_hosted_connector.py -q` and record expected new failures.
-- [ ] Support only scope sets `{tdx.read}` and `{tdx.read,tdx.write}` with explicit login consent text. Discovery may advertise both; defaults stay read. Existing family records missing write authority fail write checks.
+- [ ] Support only scope sets `{tdx.read}` and `{tdx.read,tdx.write}` with explicit login consent text. Discovery may advertise both; defaults stay read. Existing family records missing write authority fail write checks. Installed FastMCP derives protected-resource `scopes_supported` from transport `required_scopes`; explicitly separate advertised support from required read scope rather than requiring write for all existing reads.
 - [ ] Store immutable grant family binding (subject, client, resource, original scopes, upstream expiry) at consent/code exchange. Preserve binding on revocation/replay updates. Expose an internal `validate_write_grant(binding)` helper that independently checks stored authorization and current revocation/expiry; do not rely on unvalidated tool arguments or cached claims.
 - [ ] Keep read transport authorization unchanged. Require personal auth for this write increment; reject write enablement under the external-IdP mode until equivalent grant-family semantics are designed. Carry validated family context to hosted write preparation without returning tokens to clients.
 - [ ] Add `TDX_HOSTED_WRITES_ENABLED` default false and an injectable runtime flag provider checked both at prepare and Save. Environment rollback/restart must block persisted pending approvals; existing reads remain usable.
@@ -97,7 +107,7 @@ Create `tests/test_ticket_write_models.py`, `tests/test_ticket_write_adapter.py`
 **Files:** Create `routes.py`, `tests/test_ticket_write_routes.py`; wire routes through `hosted.py`.
 
 - [ ] Write failing HTTP tests for GET being read-only, escaped malicious ticket content, exact preview, five-minute expiry, browser binding, strict origin, CSRF, content-type/body limits, absent external assets and security headers. Save must accept no replacement payload.
-- [ ] Implement GET review with single-browser capability binding, `__Host-` secure HttpOnly SameSite cookie and per-operation CSRF; POST Save validates everything server-side. Use no-store, no-referrer, frame denial and restrictive CSP. No cross-site post-login redirect is required; show outcome on the same origin.
+- [ ] Implement GET review with single-browser capability binding, `__Host-` secure HttpOnly SameSite cookie and per-operation CSRF; POST Save validates everything server-side. Use no-store, no cross-origin referrer disclosure, frame denial and restrictive CSP. Reuse `Referrer-Policy: same-origin` from the corrected login flow: a blanket `no-referrer` on native forms can produce `Origin: null` and conflict with exact-origin checks. Browser-test the actual headers. No cross-site post-login redirect is required; show outcome on the same origin.
 - [ ] Add tests for link theft after binding, repeated GET behavior, parallel tabs, duplicate POST result, guessed capabilities, error-page leakage and grant expiry/revocation between preview and Save. Rate-limit review endpoints with bounded state, fail closed, and keep access/query logging disabled at app and hosting layers.
 - [ ] Run `.venv/bin/python3.14 -m pytest tests/test_ticket_write_routes.py tests/test_hosted_connector.py -q` green.
 - [ ] Browser-test synthetic data only via a test-only local harness with fake adapter (never shipped or routed in production). Verify keyboard operation, visible changed fields/recipients, no save before click, duplicate click causes one call, and conflict/unknown states are clear. Do not use production credentials in this harness.
