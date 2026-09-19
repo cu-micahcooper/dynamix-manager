@@ -138,6 +138,16 @@ scoped connection context that closes the upstream session on every exit,
 including identity failure. Never fall back to the local `.env` or admin login.
 The review URL must use the fragment transport described in Task 6.
 
+Completed 2026-09-19: independent spec and quality reviews approved; 100 combined
+model/adapter/store/service tests and the full 466-test Python suite pass. The
+`TicketWriteService` provides prepare, open_review, commit and exact-owner result;
+the production factory uses only the validated grant's personal vault token.
+Review fixes sanitize preparation failures and recheck flag/consent after live
+reads before issuing any capability. Claim precedes preflight, and accepted
+outcomes persist before optional readback. No hosted routes/tools are wired yet,
+and no live writes or deployment occurred. Public schema confirms `DaysOld` is
+integer days; full-snapshot comparison remains deliberately conservative.
+
 - [ ] Write failing tests: no upstream write at prepare; metadata resolves IDs to names; unknown notification effects block; missing required fields block; immutable payload; complete before/after preview; scope/flag/identity validation; changed baseline prevents save.
 - [ ] Run service tests red, then implement `prepare(principal, action)` producing operation ID, preview and review URL. Snapshot affected fields, validate application and metadata, include public/private setting and explicit/implicit notifications. Never create a savable preview for unsupported forms.
 - [ ] Implement `commit(capability, browser_binding)` using stored payload only: flag/grant/expiry checks, verified TDX identity and refreshed metadata/baseline, then atomic claim, one upstream apply, durable outcome. Where supported, use conditional writes; otherwise send partial intended fields and document the remaining last-moment race.
@@ -162,6 +172,17 @@ operation ID alone. Neither capability nor CSRF appears in any request URL.
 Reject unexpected query parameters, keep bodies/headers out of app logs, and
 browser-test fragment removal, strict Origin, repeat opening and actual Save.
 
+UI direction from the existing `.impeccable.md`: restrained editorial briefing,
+clear/accountable/sober for this consequential action (no jokes or ornaments).
+Use an open, left-aligned layout, explicit Before/After labels, complete wrapping
+text, separate visibility/recipient sections, and one primary Save button. Stack
+comparisons on narrow screens; keep visible keyboard focus and 44px controls.
+Do not optimistically report success. Locally available Palatino/Palatino Linotype
+headings with Trebuchet MS body text and serif/sans-serif fallbacks avoid external
+font requests. Use navy-tinted neutrals, restrained contrast, no card grids or
+decorative animation. Include a fixed safe return-to-ChatGPT link and validated
+read-only ticket link; never accept arbitrary redirect URLs.
+
 - [ ] Write failing HTTP tests for GET being read-only, escaped malicious ticket content, exact preview, five-minute expiry, browser binding, strict origin, CSRF, content-type/body limits, absent external assets and security headers. Save must accept no replacement payload.
 - [ ] Implement GET review with single-browser capability binding, `__Host-` secure HttpOnly SameSite cookie and per-operation CSRF; POST Save validates everything server-side. Use no-store, no cross-origin referrer disclosure, frame denial and restrictive CSP. Reuse `Referrer-Policy: same-origin` from the corrected login flow: a blanket `no-referrer` on native forms can produce `Origin: null` and conflict with exact-origin checks. Browser-test the actual headers. No cross-site post-login redirect is required; show outcome on the same origin.
 - [ ] Add tests for link theft after binding, repeated GET behavior, parallel tabs, duplicate POST result, guessed capabilities, error-page leakage and grant expiry/revocation between preview and Save. Rate-limit review endpoints with bounded state, fail closed, and keep access/query logging disabled at app and hosting layers.
@@ -172,6 +193,12 @@ browser-test fragment removal, strict Origin, repeat opening and actual Save.
 ### Task 7: Hosted MCP tools and source-only packaging
 
 **Files:** Create `tools.py`, `tests/test_ticket_write_tools.py`; modify `hosted.py`, `scripts/stage_hosted_connector.py`, `tests/test_hosted_bundle.py`.
+
+Test validation through actual MCP calls, not only direct Python functions.
+FastMCP builds an outer argument model and can render validation exceptions
+before the function runs; configure strict extra-field rejection and suppress
+input values in validation errors there as well as in nested action models.
+Preserve omitted versus explicit-null edit fields through the tool boundary.
 
 - [ ] Test hosted tools `prepare_ticket_comment`, `prepare_ticket_status`, `prepare_ticket_assignment`, `prepare_ticket_edit`, `prepare_ticket_creation`, plus bounded read-only `ticket_write_metadata` and owner-bound `ticket_write_result`. Result lookup cannot commit or clear an unresolved operation. Verify no commit tool and no new local stdio tools.
 - [ ] Implement typed tools delegating to service. Preparation metadata: `readOnlyHint=false`, `idempotentHint=false`, conservative destructive/open-world hints and required `tdx.read`+`tdx.write`. Existing read tools retain `tdx.read`. Correct the existing hosted loop that currently overwrites every tool's security scheme.

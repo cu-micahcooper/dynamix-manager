@@ -448,3 +448,23 @@ def test_prepare_rejects_incomplete_or_non_write_binding(store_setup, bad):
     store, _, _, _ = store_setup
     with pytest.raises(ValueError):
         store.prepare(bad, prepared())
+
+
+def test_operation_id_lookup_requires_exact_current_owner_binding(store_setup):
+    from dynamix_manager.ticket_writes.store import WriteBindingError
+
+    store, _, _, _ = store_setup
+    owner = binding()
+    issued = store.prepare(owner, prepared())
+    record = store.get_for_owner(issued.operation_id, owner)
+    assert record.operation_id == issued.operation_id
+    assert not hasattr(record, "capability")
+
+    for field, replacement in (
+        ("subject", "other-user"),
+        ("client_id", "other-client"),
+        ("resource", "https://other.example/mcp"),
+        ("family", "other-family"),
+    ):
+        with pytest.raises(WriteBindingError):
+            store.get_for_owner(issued.operation_id, binding(**{field: replacement}))

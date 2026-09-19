@@ -456,6 +456,24 @@ class WriteStore:
                 self._bind_checks(data, browser)
             return self._record(data)
 
+    def get_for_owner(self, operation_id, binding):
+        """Return an operation by public ID only for its exact current grant owner.
+
+        This lookup intentionally has no capability recovery or dispatch path.  The
+        caller must first obtain a freshly validated grant binding from the auth
+        provider; the store independently enforces its shape, write scope and
+        expiry before comparing every ownership dimension.
+        """
+        validated = GrantBinding.validate(binding, float(self.clock()))
+        with self._transaction() as db:
+            self._begin(db)
+            data = self._operation_row_by_id(db, operation_id)
+            expected = self._canonical(validated.as_json())
+            actual = self._canonical(data["binding"])
+            if not hmac.compare_digest(actual, expected):
+                raise WriteBindingError("Ticket-write operation belongs to another grant.")
+            return self._record(data)
+
     def check(self, capability, browser, csrf):
         now = float(self.clock())
         with self._transaction() as db:
