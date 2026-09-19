@@ -12,6 +12,11 @@
 
 ## Execution rules and current context
 
+- Staged rollout approved 2026-09-18: implement only comment/status/assign/edit.
+  Reject creation inputs and do not register a creation preparation tool. Creation
+  references in the original tasks below are deferred acceptance criteria, not
+  current implementation requirements. Evidence gate passed for these four actions.
+
 - Repository: `/Users/micahcooper/dynamix-manager`; approved spec: `docs/superpowers/specs/2026-09-18-ticket-writes-design.md` (commit `c6fd4be`). All paths below are relative to that repository.
 - The working tree contains uncommitted hosted connector source and unrelated user work. Do not create a clean-HEAD worktree that omits the working connector. Stay in the current checkout for this increment, record initial status, preserve unrelated edits, and stage explicit owned paths only. Do not commit unrelated pre-existing changes as part of these tasks.
 - Use `.venv/bin/python3.14 -m pytest` (the older venv aliases are stale). Use `node --test tests/frontend/*.test.cjs` for frontend regression. Confirm executables before running.
@@ -45,19 +50,28 @@ Comments, ordinary status changes, explicit-field assignment and partial field
 edits have documented contracts suitable for synthetic implementation. No product
 code, deployment, OAuth permission or production ticket has been changed. Obtain
 direction on staged delivery or an authoritative selected-form contract before
-changing the approved full-scope implementation path.
+changing the approved full-scope implementation path. The user then approved
+staged delivery; the evidence gate is complete for the four current operations,
+with creation explicitly deferred rather than silently treated as verified.
 
-- [ ] Run `git status --short`, inspect relevant source and local AGENTS instructions, then run `.venv/bin/python3.14 -m pytest -q` and `node --test tests/frontend/*.test.cjs`. Record actual baseline results, not historical counts.
-- [ ] Read official Cedarville/TeamDynamix API documentation using read-only requests/browsing. Record source URLs, retrieval date, method/path, request/response fields, permissions, notification effects, custom-field requirements, partial-update semantics, and conditional-write support for each of the five actions.
-- [ ] Verify metadata sources for requester, active assignee/group, priority, type/form, statuses and required creation attributes. Record whether permission to create/edit can be read in advance or only authoritatively checked by mutation responses.
-- [ ] Record sanitized minimal request/response fixtures in the contract document; use synthetic names and IDs in tests. Never record auth headers, tokens or actual private ticket text.
-- [ ] Build a support matrix: comment visibility/recipient behavior; status closure requirements; assignment user/group behavior; title/description/priority partial edits; creation validation. If any required contract is unsupported or unclear, stop that capability and report the evidence gap before implementation. Do not replace partial edits with full-object updates or silently reduce scope.
+- [x] Run `git status --short`, inspect relevant source and local AGENTS instructions, then run `.venv/bin/python3.14 -m pytest -q` and `node --test tests/frontend/*.test.cjs`. Record actual baseline results, not historical counts.
+- [x] Read official Cedarville/TeamDynamix API documentation using read-only requests/browsing. Record source URLs, retrieval date, method/path, request/response fields, permissions, notification effects, custom-field requirements, partial-update semantics, and conditional-write support for each of the five actions.
+- [x] Verify metadata sources for requester, active assignee/group, priority, type/form, statuses and required creation attributes. Record whether permission to create/edit can be read in advance or only authoritatively checked by mutation responses. Creation gap documented and deferred by approval.
+- [x] Record sanitized minimal request/response fixtures in the contract document; use synthetic names and IDs in tests. Never record auth headers, tokens or actual private ticket text.
+- [x] Build a support matrix: comment visibility/recipient behavior; status closure requirements; assignment user/group behavior; title/description/priority partial edits; creation validation. If any required contract is unsupported or unclear, stop that capability and report the evidence gap before implementation. Do not replace partial edits with full-object updates or silently reduce scope.
 - [x] Verify current official OpenAI MCP OAuth/per-tool scope metadata behavior needed for step-up consent; preserve read-only clients. This is documentation research, not a ChatGPT permission change. Verified 2026-09-18: https://developers.openai.com/plugins/build/auth requires per-tool scopes, resource metadata and runtime `mcp/www_authenticate` errors. Add an insufficient-scope error result test; metadata alone does not trigger step-up UI.
-- [ ] Review/commit only the new API evidence document. Do not guess executable mutation payloads in advance of this gate.
+- [x] Review/commit only the new API evidence document. Do not guess executable mutation payloads in advance of this gate. Evidence committed in `99afcb1`.
 
 ### Task 2: Typed models and single-attempt adapter
 
 **Files:** Create package `__init__.py`, `models.py`, `adapter.py` and associated model/adapter tests.
+
+Completed for the approved four-action stage: 45 focused tests pass; independent
+spec and quality reviews approved. Prepared records bind tenant URL and app ID;
+serialization retains omitted fields. Assignment notifications remain fail-closed
+when exact recipients cannot be verified; converted-ticket status/assignment and
+date-required statuses are explicitly rejected. Live read-only checks confirmed
+priority metadata and the personal user's `OrgApplications` shape; no live writes.
 
 - [ ] Write parametrized failing tests for the five action models with `extra='forbid'`, positive ticket IDs, bounded strings/collections, explicit nullable-versus-omitted values, allowed editable fields, and rejection of deletion/bulk/admin/other-app requests.
 - [ ] Run `.venv/bin/python3.14 -m pytest tests/test_ticket_write_models.py -q`; confirm failure is missing implementation, not fixture/import infrastructure.

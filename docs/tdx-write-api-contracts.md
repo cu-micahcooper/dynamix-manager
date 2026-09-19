@@ -97,6 +97,13 @@ The vendor form guide confirms configurable required/hidden/default fields and d
 
 Search results alone do not prove assignability. Resolve selected records individually and filter by configured application before exposing choices. Fail closed when necessary metadata is unavailable to the personal actor; do not acquire admin credentials to fill the gap. No researched endpoint offers an authoritative per-ticket create/edit authorization dry run. A successful read cannot guarantee a subsequent write, and the real mutation remains authoritative about permission at dispatch time. Permission denial must be shown safely without blindly retrying.
 
+Membership shape verified directly against OpenAPI during implementation:
+`User.Applications` is an array of system-application strings, not platform IDs.
+Use `User.OrgApplications` (`UserApplication` inheriting `Application`) with `ID`
+and `IsActive` for user platform membership. Group application associations use
+`GroupApplication.AppID` (and `GroupID`), not the user shape; the group itself has
+`IsActive`. Do not use synthetic fixtures that make these distinct shapes identical.
+
 ## Synthetic contract fixtures (not live captures)
 
 These fixtures show only documented wire shapes. IDs, text, dates and emails are synthetic; they do not assert that a tenant would accept them or that blocked capabilities are ready. Mutation responses for feed are intentionally not invented.
@@ -141,3 +148,13 @@ There is deliberately no executable creation or implicit cross-field assignment-
 The coordinating agent verified [OpenAI OAuth documentation](https://developers.openai.com/plugins/build/auth) on 2026-09-18. Per-tool `securitySchemes` scopes, protected-resource metadata, and a runtime `_meta["mcp/www_authenticate"]` challenge with `insufficient_scope`/`error_description` support requesting additional tool authorization. The server must independently validate issuer, audience, expiry, and required scopes. Existing read grants must not silently gain write authority. This documents the authorization mechanism, not a completed ChatGPT consent test.
 
 The coordinating agent reported a fresh baseline of 344 Python tests and 14 frontend tests passing on 2026-09-18. Those tests validate the pre-implementation repository, not production write contracts. No write capability is live-verified by this research.
+
+## Staged implementation checkpoint
+
+The user subsequently approved deferring creation and implementing the other four
+operation classes. A read-only call through the connected hosted pilot confirmed
+personal authentication and InfoTech Tickets app 634. Its live status metadata
+includes completed/cancelled statuses without required off-hold dates and several
+on-hold statuses with `RequireGoesOffHold=true`. At least one on-hold-class status
+does not require the date: validation must inspect the flag, not infer the
+requirement solely from status class. No ticket content or writes were involved.

@@ -1,5 +1,14 @@
 # Confirmed ticket writes in the hosted ChatGPT pilot
 
+## Approved staged delivery (2026-09-18)
+
+After the API evidence review, the user approved shipping comments, ordinary
+status changes, explicit-field reassignment and title/description/priority edits
+first. Ticket creation is deferred and must remain disabled, with no savable
+preview, until a selected form's required fields/defaults can be verified.
+The original five-action goal below is retained as future context; this amendment
+governs the current implementation. All other safeguards remain unchanged.
+
 ## Approved intent and boundaries
 
 Extend the working personal Railway connector from read-only ticket access to
