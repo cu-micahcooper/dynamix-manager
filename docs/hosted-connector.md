@@ -389,6 +389,16 @@ unapproved callback registration 400. The service keeps its explicit
 `TDX_HOSTED_WRITES_ENABLED=true`, which now matches the default. Refresh the
 connector's tool definitions in ChatGPT after this deployment.
 
+### Stay-connected deployment — 2026-09-20
+
+Commit `cb9d22c` added remembered logins with automatic TDX token renewal and
+90-day connector grants. Railway deployment `dcb9648b-bff0-441e-bd38-3a7f7b71d1bf`
+succeeded; live checks: `/healthz` 200, unauthenticated `/mcp` 401,
+`/writes/review` 410, and a real DCR + authorize round trip rendered the login
+page with "Keep me connected" checked by default. Existing links made before
+this deployment hold no password and still expire with their TDX token; sign in
+once more through ChatGPT with the box checked to switch to renewal.
+
 ### ChatGPT tool surface
 
 Personal mode exposes 14 tools: the existing eight read tools, four direct-write
