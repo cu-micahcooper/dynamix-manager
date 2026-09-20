@@ -47,11 +47,27 @@ never substitute a guessed callback or wildcard.
 The login page asks for personal TDX credentials and explicit consent to the
 requested read-only or read-and-write scopes. Read-only remains the default. Credentials
 are sent only to the connector over HTTPS and then Cedarville's TDX API. The
-returned identity must match the configured UID. The password is not persisted;
-the expiring TDX token is encrypted in the vault. Connector access tokens expire
-within ten minutes, with single-use rotating refresh tokens bounded by TDX expiry.
-Replaying a used refresh token revokes its entire grant family. Expired TDX access
-requires signing in again. This is an OAuth bridge, not native TDX OAuth or SSO.
+returned identity must match the configured UID. Connector access tokens expire
+within ten minutes, with single-use rotating refresh tokens. Replaying a used
+refresh token revokes its entire grant family. This is an OAuth bridge, not native
+TDX OAuth or SSO.
+
+**Staying connected.** TDX bearer tokens last about 24 hours and cannot be
+refreshed, so by default the connector would need a new sign-in every day. The
+login form's "Keep me connected" box (checked by default) stores the username and
+password, encrypted in the same vault envelope as the token under the external
+Fernet key. When a request finds the stored token within one hour of expiry, the
+connector logs in to TDX again, verifies the returned UID still matches, replaces
+the token and continues; the person sees no interruption. Remembered logins issue
+90-day connector grants so ChatGPT keeps refreshing silently. A failed renewal
+keeps using a still-valid token and logs only a fixed label; if the token has
+already expired the next request asks for a fresh sign-in. A renewal that
+authenticates as a different UID wipes the stored link. Tradeoff: the personal
+password is at rest on the host, so anyone holding both the volume and the vault
+key could log in as that person rather than for at most 24 hours. To stop storing
+it, sign in again with the box unchecked (which overwrites the record with a
+token-only link bounded by TDX expiry), or remove the vault record as the
+operator.
 
 The pilot intentionally allows only one person. Its public login endpoints have
 global rate limits suitable for a small pilot; do not treat this as a production

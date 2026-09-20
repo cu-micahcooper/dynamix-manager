@@ -495,3 +495,23 @@ def test_result_ignores_the_write_gate_but_requires_current_grant_and_never_conn
     setup.provider.revoked = True
     with pytest.raises(RuntimeError, match="authorization"):
         setup.service.result("principal", result.operation_id)
+
+
+def test_service_uses_injected_credential_provider_for_personal_token(setup):
+    from dynamix_manager.ticket_writes.service import TicketWriteService
+
+    served = []
+
+    def credential_provider(subject):
+        served.append(subject)
+        return {"uid": UID, "token": "renewed-secret"}
+
+    service = TicketWriteService(
+        setup.settings, setup.vault, setup.provider, setup.runtime, store=setup.store,
+        connection_factory=setup.service.connection_factory, adapter_factory=setup.service.adapter_factory,
+        credential_provider=credential_provider,
+    )
+    result = service.submit("principal", parse_action(dict(kind="comment", ticket_id=1001, comments="x")), "r1")
+    assert result.outcome == "applied"
+    assert served == [UID, UID]
+    assert {c.token for c in setup.connections} == {"renewed-secret"}

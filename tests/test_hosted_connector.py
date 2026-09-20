@@ -58,6 +58,34 @@ def test_vault_checks_expiry_on_each_read(tmp_path, monkeypatch):
         vault.get('issuer', 'alice')
 
 
+def test_vault_stores_renewal_credentials_and_updates_tokens(tmp_path, monkeypatch):
+    from dynamix_manager.hosted_vault import CredentialVault
+    path = tmp_path / 'vault.sqlite'
+    vault = CredentialVault(path, Fernet.generate_key())
+    uid = '00000000-0000-0000-0000-000000000001'
+    now = time.time()
+    vault.put('issuer', 'alice', uid, 'token-1', now + 60, username='alice@example.edu', password='pw-secret')
+    record = vault.get('issuer', 'alice')
+    assert record['username'] == 'alice@example.edu' and record['password'] == 'pw-secret'
+    assert b'pw-secret' not in path.read_bytes() and b'alice@example.edu' not in path.read_bytes()
+    vault.update_token('issuer', 'alice', 'token-2', now + 7200)
+    record = vault.get('issuer', 'alice')
+    assert record['token'] == 'token-2' and record['expires_at'] == now + 7200
+    assert record['password'] == 'pw-secret' and record['uid'] == uid
+    with pytest.raises(RuntimeError, match='linked'):
+        vault.update_token('issuer', 'bob', 'token', now + 60)
+    with pytest.raises(ValueError):
+        vault.update_token('issuer', 'alice', 'token-3', now - 1)
+    monkeypatch.setattr('dynamix_manager.hosted_vault.time.time', lambda: now + 10_000)
+    with pytest.raises(RuntimeError, match='relinked'):
+        vault.get('issuer', 'alice')
+    expired = vault.get('issuer', 'alice', allow_expired=True)
+    assert expired['token'] == 'token-2' and expired['password'] == 'pw-secret'
+    plain = CredentialVault(tmp_path / 'plain.sqlite', Fernet.generate_key())
+    plain.put('issuer', 'carol', uid, 'token', now + 10_060)
+    assert plain.get('issuer', 'carol').get('password') is None
+
+
 def test_signed_oauth_tokens_are_strictly_validated():
     from dynamix_manager.hosted import OAuthVerifier
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
@@ -528,3 +556,46 @@ def test_personal_environment_defaults_writes_on_and_can_disable(tmp_path, monke
         from_environment().write_runtime.require_enabled()
     monkeypatch.setenv('TDX_HOSTED_WRITES_ENABLED', 'true')
     from_environment().write_runtime.require_enabled()
+
+
+def test_personal_app_renews_expiring_tdx_token_before_serving_a_request(tmp_path):
+    from starlette.testclient import TestClient
+    from dynamix_manager.hosted import HostedSettings, create_app
+    from dynamix_manager.hosted_vault import CredentialVault
+    from dynamix_manager.personal_auth import PersonalAuthProvider
+    from dynamix_manager.plugin import Connection
+    import test_personal_auth as flow
+
+    settings = HostedSettings('https://connector.test', 'https://connector.test', 'https://connector.test/unused')
+    vault = CredentialVault(tmp_path / 'vault.sqlite', Fernet.generate_key())
+    logins, tokens_seen = [], []
+
+    def login(username, password):
+        logins.append((username, password))
+        return flow.UID, f'tdx-token-{len(logins)}', int(time.time()) + 86400
+
+    def make_connection(values):
+        tokens_seen.append(values['WORKBENCH_PERSONAL_TOKEN'])
+        client = Mock()
+        client.list_ticketing_applications.side_effect = lambda x: x
+        client.fetch_applications.return_value = [{'AppID': 634, 'Name': 'InfoTech Tickets'}]
+        client.session.get.return_value.json.return_value = {'UID': flow.UID}
+        return Connection(values, client=client)
+
+    provider = PersonalAuthProvider(settings, vault, flow.UID, [flow.CALLBACK], login=login)
+    app = create_app(settings, vault, auth_provider=provider, connection_factory=make_connection)
+    with TestClient(app, base_url=settings.public_url) as http:
+        client = flow.register(http).json()['client_id']
+        code = flow.obtain_code(http, client, remember=True)
+        access = flow.exchange(http, client, code).json()['access_token']
+        headers = {'Authorization': 'Bearer ' + access, 'Accept': 'application/json, text/event-stream'}
+        call = {'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
+                'params': {'name': 'connection_status', 'arguments': {}}}
+        assert http.post('/mcp', json=call, headers=headers).json()['result']['structuredContent']['connected']
+        assert tokens_seen == ['tdx-token-1'] and len(logins) == 1
+        # The stored TDX token is about to expire: the next request renews it transparently.
+        vault.update_token(settings.issuer, flow.UID, 'tdx-token-1', time.time() + 30)
+        assert http.post('/mcp', json=call, headers=headers).json()['result']['structuredContent']['connected']
+        assert tokens_seen[-1] == 'tdx-token-2' and len(logins) == 2
+        assert logins[-1] == ('allowed', 'private-password')
+        assert vault.get(settings.issuer, flow.UID)['token'] == 'tdx-token-2'

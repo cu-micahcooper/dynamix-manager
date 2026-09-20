@@ -5,6 +5,7 @@ import html
 import logging
 import math
 import secrets
+import threading
 import time
 from contextlib import contextmanager
 from collections.abc import Mapping
@@ -47,8 +48,14 @@ def _canonical_scopes(scopes):
 
 
 class PersonalAuthProvider:
+    # Renew the stored TDX token when it has less than this long to live.
+    RENEW_MARGIN = 3600
+    # Connector grants for a remembered login outlive the 24-hour TDX token.
+    GRANT_LIFETIME = 90 * 24 * 60 * 60
+
     def __init__(self, settings, vault, allowed_uid, redirect_uris, *, login=None):
         self.settings, self.vault = settings, vault
+        self._renewal_lock = threading.Lock()
         self.allowed_uid = str(UUID(allowed_uid))
         if not isinstance(redirect_uris, list) or any(not isinstance(x, str) for x in redirect_uris):
             raise ValueError('Redirect allowlist must be a JSON list of exact HTTPS URLs.')
@@ -81,6 +88,41 @@ class PersonalAuthProvider:
         finally:
             connection.client.password = ''
             connection.client.session.close()
+
+    def personal_credential(self, subject):
+        """Return the linked TDX credential, renewing an expiring token when a password is stored.
+
+        Without stored renewal credentials the record is only valid until the TDX token
+        expires. A failed renewal keeps serving a still-valid token and never leaks the
+        upstream error; renewal that authenticates as a different person wipes the link.
+        """
+        issuer = self.settings.issuer
+        with self._renewal_lock:
+            record = self.vault.get(issuer, subject, allow_expired=True)
+            expired = record['expires_at'] <= time.time()
+            if record['expires_at'] - time.time() > self.RENEW_MARGIN:
+                return record
+            if not record.get('username') or not record.get('password'):
+                if expired:
+                    raise RuntimeError('Personal TeamDynamix access must be relinked.')
+                return record
+            try:
+                uid, token, expiry = self.login(record['username'], record['password'])
+                uid = str(UUID(str(uid)))
+                if (isinstance(expiry, bool) or not isinstance(expiry, (int, float))
+                        or not math.isfinite(expiry) or expiry <= time.time() or not token):
+                    raise ValueError('Known upstream expiry required.')
+            except Exception:
+                logger.warning('personal_renewal_failed')
+                if expired:
+                    raise RuntimeError('Personal TeamDynamix access must be relinked.') from None
+                return record
+            if uid != record['uid'] or uid != self.allowed_uid:
+                logger.warning('personal_renewal_identity_mismatch')
+                self.vault.revoke(issuer, subject)
+                raise RuntimeError('Personal TeamDynamix access must be relinked.')
+            self.vault.update_token(issuer, subject, token, int(expiry))
+            return {**record, 'token': token, 'expires_at': int(expiry)}
 
     async def get_client(self, client_id):
         with self.store.transaction() as db:
@@ -155,6 +197,9 @@ Only the approved personal account can connect.</p><p>Callback destination: {cal
 <p><label>Username <input name="username" autocomplete="username" required maxlength="254"></label></p>
 <p><label>Password <input name="password" type="password" autocomplete="current-password" required maxlength="1024"></label></p>
 <p><label><input type="checkbox" name="consent" value="yes" required> {consent_label}</label></p>
+<p><label><input type="checkbox" name="remember" value="yes" checked> Keep me connected: store my
+username and password encrypted so the connector can renew TeamDynamix access itself instead of
+asking me to sign in every day. Leave unchecked to reconnect manually when TeamDynamix access expires.</label></p>
 <button type="submit">Connect</button></form></html>''', headers=HEADERS)
             response.set_cookie(COOKIE, browser, max_age=300, secure=True, httponly=True, samesite='strict', path='/')
             return response
@@ -177,13 +222,16 @@ Only the approved personal account can connect.</p><p>Callback destination: {cal
         if (not isinstance(username, str) or not 0 < len(username) <= 254
                 or not isinstance(password, str) or not 0 < len(password) <= 1024):
             return denied('credential_fields')
+        remember = form.get('remember') == 'yes'
         try:
             uid, upstream, expiry = await run_in_threadpool(self.login, username, password)
             if (str(UUID(uid)) != self.allowed_uid or isinstance(expiry, bool)
                     or not isinstance(expiry, (int, float)) or not math.isfinite(expiry)
                     or expiry <= time.time() or not upstream):
                 return denied('account_or_expiry')
-            self.vault.put(self.settings.issuer, self.allowed_uid, self.allowed_uid, upstream, expiry)
+            self.vault.put(self.settings.issuer, self.allowed_uid, self.allowed_uid, upstream, expiry,
+                           username=username if remember else None,
+                           password=password if remember else None)
         except Exception:
             # Never log request values, upstream responses, or exception strings.
             return denied('upstream_or_vault')
@@ -192,12 +240,14 @@ Only the approved personal account can connect.</p><p>Callback destination: {cal
         params = value['params']
         if params['redirect_uri'] not in self.redirect_uris:
             return denied()
+        # A remembered login can renew its TDX token, so the connector grant may outlive it.
+        grant_expiry = int(time.time() + self.GRANT_LIFETIME) if remember else int(expiry)
         code = secrets.token_urlsafe(32)
         try:
             with self.store.transaction() as db:
                 self.store.put(db, 'code', code, {**params, 'client_id': value['client'],
-                    'expires_at': min(time.time() + 120, expiry), 'subject': self.allowed_uid,
-                    'upstream_expiry': int(expiry)})
+                    'expires_at': min(time.time() + 120, grant_expiry), 'subject': self.allowed_uid,
+                    'upstream_expiry': grant_expiry})
         except StateCapacityError:
             return denied()
         # Keep credential form submissions same-origin. Some browsers also apply

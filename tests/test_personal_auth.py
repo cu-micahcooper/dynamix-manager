@@ -42,7 +42,7 @@ def register(http, callback=CALLBACK, scope='tdx.read'):
         'response_types': ['code'], **({'scope': scope} if scope is not None else {})})
 
 
-def login_form(http, client, scope='tdx.read'):
+def login_form(http, client, scope='tdx.read', *, page=None):
     response = http.get('/authorize', params={'client_id': client, 'response_type': 'code',
         'redirect_uri': CALLBACK, **({'scope': scope} if scope is not None else {}), 'state': 'original-state',
         'resource': 'https://connector.test/mcp', 'code_challenge_method': 'S256',
@@ -50,12 +50,17 @@ def login_form(http, client, scope='tdx.read'):
     assert response.status_code == 200, response.text
     assert response.headers['referrer-policy'] == 'same-origin'
     assert CALLBACK in response.text
+    if page is not None:
+        page.append(response.text)
     return dict(re.findall(r'name="(transaction|csrf)" value="([^"]+)"', response.text))
 
 
-def obtain_code(http, client, scope='tdx.read'):
+def obtain_code(http, client, scope='tdx.read', *, remember=False):
     form = login_form(http, client, scope)
-    response = http.post('/personal/login', data={**form, 'username': 'allowed', 'password': 'private-password', 'consent': 'yes'},
+    data = {**form, 'username': 'allowed', 'password': 'private-password', 'consent': 'yes'}
+    if remember:
+        data['remember'] = 'yes'
+    response = http.post('/personal/login', data=data,
                          headers={'Origin': 'https://connector.test'}, follow_redirects=False)
     assert response.status_code == 200, response.text
     assert 'Continue to ChatGPT' in response.text
@@ -503,3 +508,90 @@ def test_write_binding_requires_server_loaded_trusted_token_context(pilot):
         candidate = AccessToken(**{**loaded.model_dump(), **changes})
         with pytest.raises(RuntimeError, match='write authorization'):
             provider.write_grant_binding(candidate)
+
+
+def family_record(provider, access_token):
+    family = asyncio.run(provider.load_access_token(access_token)).claims['tdx_grant_family']
+    with provider.store.transaction() as db:
+        return provider.store.get(db, 'family', family)
+
+
+def test_remember_login_stores_credentials_and_issues_long_lived_grant(pilot):
+    http, provider, calls, vault = pilot
+    client = register(http).json()['client_id']
+    page = []
+    login_form(http, client, page=page)
+    assert 'name="remember"' in page[0] and 'checked' in page[0]
+    assert 'encrypted' in page[0].lower()
+
+    code = obtain_code(http, client, remember=True)
+    stored = vault.get(provider.settings.issuer, UID)
+    assert stored['username'] == 'allowed' and stored['password'] == 'private-password'
+    assert b'private-password' not in vault.path.read_bytes()
+    tokens = exchange(http, client, code).json()
+    family = family_record(provider, tokens['access_token'])
+    assert family['expires_at'] > time.time() + 80 * 86400
+    assert family['expires_at'] <= time.time() + provider.GRANT_LIFETIME + 5
+
+
+def test_login_without_remember_keeps_grant_bounded_by_tdx_expiry(pilot):
+    http, provider, calls, vault = pilot
+    client = register(http).json()['client_id']
+    code = obtain_code(http, client)
+    stored = vault.get(provider.settings.issuer, UID)
+    assert stored.get('password') is None and stored.get('username') is None
+    tokens = exchange(http, client, code).json()
+    assert family_record(provider, tokens['access_token'])['expires_at'] <= time.time() + 1800
+
+
+def test_personal_credential_renews_expiring_token_with_stored_password(pilot, monkeypatch):
+    http, provider, calls, vault = pilot
+    now = time.time()
+    monkeypatch.setattr(provider, 'RENEW_MARGIN', 300)
+    vault.put(provider.settings.issuer, UID, UID, 'fresh-token', now + 1200, username='allowed', password='private-password')
+    assert provider.personal_credential(UID)['token'] == 'fresh-token'
+    assert calls == []
+    vault.update_token(provider.settings.issuer, UID, 'stale-token', now + 120)
+    renewed = provider.personal_credential(UID)
+    assert renewed['token'] == 'upstream-secret' and renewed['uid'] == UID
+    assert calls == [('allowed', 'private-password')]
+    assert vault.get(provider.settings.issuer, UID)['token'] == 'upstream-secret'
+    assert provider.personal_credential(UID)['token'] == 'upstream-secret'
+    assert len(calls) == 1
+
+
+def test_personal_credential_without_password_or_with_failed_renewal_falls_back_safely(pilot, monkeypatch):
+    http, provider, calls, vault = pilot
+    now = time.time()
+    clock = [now]
+    monkeypatch.setattr('dynamix_manager.hosted_vault.time.time', lambda: clock[0])
+    monkeypatch.setattr('dynamix_manager.personal_auth.time.time', lambda: clock[0])
+    vault.put(provider.settings.issuer, UID, UID, 'old-token', now + 120)
+    assert provider.personal_credential(UID)['token'] == 'old-token'
+    assert calls == []
+    clock[0] = now + 200
+    with pytest.raises(RuntimeError, match='relinked'):
+        provider.personal_credential(UID)
+
+    clock[0] = now
+    vault.put(provider.settings.issuer, UID, UID, 'old-token', now + 120, username='allowed', password='pw')
+
+    def failing(username, password):
+        raise RuntimeError('private upstream failure detail')
+
+    provider.login = failing
+    assert provider.personal_credential(UID)['token'] == 'old-token'
+    clock[0] = now + 200
+    with pytest.raises(RuntimeError) as error:
+        provider.personal_credential(UID)
+    assert 'private upstream' not in str(error.value)
+
+
+def test_personal_credential_wipes_credentials_that_renew_as_another_identity(pilot):
+    http, provider, calls, vault = pilot
+    now = time.time()
+    vault.put(provider.settings.issuer, UID, UID, 'stale-token', now + 120, username='other', password='pw')
+    with pytest.raises(RuntimeError, match='relinked'):
+        provider.personal_credential(UID)
+    with pytest.raises(RuntimeError, match='linked'):
+        vault.get(provider.settings.issuer, UID, allow_expired=True)

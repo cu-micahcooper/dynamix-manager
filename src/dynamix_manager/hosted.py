@@ -187,6 +187,11 @@ def create_app(settings, vault, *, verifier=None, connection_factory=None, auth_
         (lambda: False) if writes_enabled_provider is None else writes_enabled_provider,
         personal_auth=auth_provider is not None)
 
+    # Personal providers renew expiring TDX tokens from stored credentials; anything else
+    # (external issuers, minimal providers) reads the vault record as-is.
+    credential_provider = (getattr(auth_provider, 'personal_credential', None)
+                           or (lambda subject: vault.get(settings.issuer, subject)))
+
     def resolve():
         principal = get_access_token()
         active = sessions.get()
@@ -194,7 +199,7 @@ def create_app(settings, vault, *, verifier=None, connection_factory=None, auth_
                 or (principal.claims or {}).get('iss') != settings.issuer
                 or 'tdx.read' not in principal.scopes):
             raise RuntimeError('Authenticated personal access is required.')
-        credential = vault.get(settings.issuer, principal.subject)
+        credential = credential_provider(principal.subject)
         values = {'TDX_BASE_URL': settings.tdx_url, 'TDX_APP_ID': settings.tdx_client_id,
                   'WORKBENCH_PERSONAL_TOKEN': credential['token']}
         c = connection_factory(values) if connection_factory else Connection(values)
@@ -207,7 +212,8 @@ def create_app(settings, vault, *, verifier=None, connection_factory=None, auth_
     if auth_provider:
         write_service = create_ticket_write_service(
             settings, vault, auth_provider, write_runtime,
-            connection_factory=connection_factory)
+            connection_factory=connection_factory,
+            credential_provider=credential_provider)
 
     def capabilities():
         available = False

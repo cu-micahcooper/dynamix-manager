@@ -39,19 +39,30 @@ class CredentialVault:
     def _id(issuer, subject):
         return hashlib.sha256(json.dumps([issuer, subject]).encode()).hexdigest()
 
-    def put(self, issuer, subject, uid, token, expires_at):
-        """Provision only after independently validating principal ownership and TDX UID."""
+    def put(self, issuer, subject, uid, token, expires_at, *, username=None, password=None):
+        """Provision only after independently validating principal ownership and TDX UID.
+
+        ``username``/``password`` are optional renewal credentials. When present the
+        connector can log in again to replace an expiring TDX token; they are encrypted
+        in the same envelope as the token and never returned to clients.
+        """
         uid = str(UUID(uid))
         if not issuer or not subject or not token or expires_at <= time.time():
             raise ValueError('A valid identity and unexpired personal credential are required.')
-        value = self.cipher.encrypt(json.dumps(dict(
-            issuer=issuer, subject=subject, uid=uid, token=token, expires_at=expires_at,
-        )).encode())
+        if bool(username) != bool(password):
+            raise ValueError('Renewal credentials require both a username and a password.')
+        record = dict(issuer=issuer, subject=subject, uid=uid, token=token, expires_at=expires_at)
+        if username:
+            record.update(username=username, password=password)
+        self._write(issuer, subject, record)
+
+    def _write(self, issuer, subject, record):
+        value = self.cipher.encrypt(json.dumps(record).encode())
         with self._db() as db:
             db.execute('INSERT OR REPLACE INTO credentials VALUES (?, ?)',
                        (self._id(issuer, subject), value))
 
-    def get(self, issuer, subject):
+    def get(self, issuer, subject, *, allow_expired=False):
         with self._db() as db:
             row = db.execute('SELECT value FROM credentials WHERE id=?',
                              (self._id(issuer, subject),)).fetchone()
@@ -61,11 +72,18 @@ class CredentialVault:
             value = json.loads(self.cipher.decrypt(row[0]))
             if value['issuer'] != issuer or value['subject'] != subject:
                 raise ValueError('binding')
-            if value['expires_at'] <= time.time():
+            if value['expires_at'] <= time.time() and not allow_expired:
                 raise ValueError('expired')
         except (InvalidToken, ValueError, KeyError, TypeError):
             raise RuntimeError('Personal TeamDynamix access must be relinked.') from None
         return value
+
+    def update_token(self, issuer, subject, token, expires_at):
+        """Replace the TDX token of a linked record, keeping its identity and renewal credentials."""
+        record = self.get(issuer, subject, allow_expired=True)
+        if not token or expires_at <= time.time():
+            raise ValueError('An unexpired personal credential is required.')
+        self._write(issuer, subject, {**record, 'token': token, 'expires_at': expires_at})
 
     def revoke(self, issuer, subject):
         with self._db() as db:

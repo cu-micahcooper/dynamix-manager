@@ -87,6 +87,7 @@ class TicketWriteService:
         store=None,
         connection_factory=None,
         adapter_factory=None,
+        credential_provider=None,
     ):
         self.settings = settings
         self.vault = vault
@@ -95,6 +96,10 @@ class TicketWriteService:
         self.store = store or WriteStore(vault)
         self.connection_factory = connection_factory or self._default_connection
         self.adapter_factory = adapter_factory or WriteAdapter.from_connection
+        self.credential_provider = credential_provider or self._default_credential
+
+    def _default_credential(self, subject):
+        return self.vault.get(self.settings.issuer, subject)
 
     def _default_connection(self, values):
         return Connection(values)
@@ -133,7 +138,7 @@ class TicketWriteService:
         connection = None
         try:
             try:
-                credential = self.vault.get(self.settings.issuer, binding.subject)
+                credential = self.credential_provider(binding.subject)
                 uid = credential["uid"]
                 token = credential["token"]
             except Exception:
@@ -356,6 +361,7 @@ def create_ticket_write_service(
     store=None,
     connection_factory=None,
     adapter_factory=None,
+    credential_provider=None,
 ):
     """Production composition point for the hosted write tools."""
     return TicketWriteService(
@@ -366,4 +372,5 @@ def create_ticket_write_service(
         store=store,
         connection_factory=connection_factory,
         adapter_factory=adapter_factory,
+        credential_provider=credential_provider,
     )
