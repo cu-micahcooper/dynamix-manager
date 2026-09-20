@@ -19,7 +19,7 @@ from typing import Literal, Mapping
 
 from cryptography.fernet import InvalidToken
 
-from .models import PreparedChange
+from .models import PreparedChange, parse_action
 
 
 class WriteStoreError(RuntimeError):
@@ -142,6 +142,19 @@ class ClaimResult:
     claim_token: str | None = field(default=None, repr=False)
 
 
+@dataclass(frozen=True)
+class DirectReplayResult:
+    operation_id: str
+    ticket_id: int
+    base_url: str
+    app_id: int
+    result: StoredResult
+
+    @property
+    def effective_state(self):
+        return self.result.outcome
+
+
 def _validate_evidence(evidence_id, observed_at):
     if not isinstance(evidence_id, str) or not evidence_id.strip():
         raise ValueError("A specific authoritative evidence identifier is required.")
@@ -177,6 +190,8 @@ class WriteStore:
     MAX_NORMAL = 128
     MAX_UNRESOLVED = 1000
     MAX_AUDIT = 10_000
+    DIRECT_RETENTION = 30 * 24 * 60 * 60
+    MAX_DIRECT = 10_000
     _TERMINAL = frozenset({"applied", "rejected", "unknown", "conflict", "expired"})
     _KNOWN = frozenset({"applied", "rejected", "conflict", "expired"})
 
@@ -218,6 +233,14 @@ class WriteStore:
             """)
             db.execute("CREATE INDEX IF NOT EXISTS ticket_write_operations_expiry ON ticket_write_operations(expires)")
             db.execute("CREATE INDEX IF NOT EXISTS ticket_write_audit_created ON ticket_write_audit(created)")
+            db.execute("""
+                CREATE TABLE IF NOT EXISTS ticket_write_requests (
+                    id TEXT PRIMARY KEY,
+                    operation_id TEXT UNIQUE NOT NULL,
+                    expires REAL NOT NULL,
+                    value BLOB NOT NULL
+                )
+            """)
 
     @staticmethod
     def _digest(domain, value):
@@ -256,6 +279,7 @@ class WriteStore:
         self._cleanup(db, float(self.clock()))
 
     def _cleanup(self, db, now):
+        db.execute("DELETE FROM ticket_write_requests WHERE expires <= ?", (now,))
         db.execute("DELETE FROM ticket_write_audit WHERE created <= ?", (now - self.AUDIT_RETENTION,))
         rows = db.execute(
             "SELECT id,capability_hash,state,expires,purge_at,unresolved,value "
@@ -368,14 +392,66 @@ class WriteStore:
         identity = [prepared.base_url, prepared.app_id, prepared.action.ticket_id]
         return hashlib.sha256(self._canonical(identity).encode()).hexdigest()
 
+    def _direct_identity(self, binding, action, request_id):
+        if not isinstance(request_id, str) or not request_id.strip() or len(request_id) > 200:
+            raise ValueError("A nonblank request ID of at most 200 characters is required.")
+        action = parse_action(action)
+        # Include effective defaults while preserving omitted versus explicit-null edits.
+        normalized = action.model_dump(mode="json")
+        for name in type(action).model_fields:
+            if name not in normalized and getattr(action, name) is not None:
+                value = getattr(action, name)
+                normalized[name] = list(value) if isinstance(value, tuple) else value
+        owner = binding.as_json()
+        request_hash = self._digest("direct-request", self._canonical([owner, request_id]))
+        action_hash = self._digest("direct-action", self._canonical(normalized))
+        return request_hash, action_hash
+
+    def _lookup_direct(self, db, binding, action, request_id):
+        request_hash, action_hash = self._direct_identity(binding, action, request_id)
+        row = db.execute("SELECT operation_id,expires,value FROM ticket_write_requests WHERE id=?",
+                         (request_hash,)).fetchone()
+        if row is None:
+            return None
+        operation_id, expires, value = row
+        data = self._open("direct-request", request_hash, value)
+        if data.get("operation_id") != operation_id or data.get("expires") != expires:
+            raise WriteIntegrityError("Request binding failed integrity validation.")
+        if data.get("binding") != binding.as_json():
+            raise WriteBindingError("Ticket-write request belongs to another grant.")
+        if not hmac.compare_digest(data["action_hash"], action_hash):
+            raise WriteBindingError("The request ID was already used with different arguments.")
+        try:
+            return self._record(self._operation_row_by_id(db, operation_id))
+        except WriteNotFoundError:
+            return DirectReplayResult(operation_id, data["ticket_id"], data["base_url"],
+                                      data["app_id"], StoredResult("expired",
+                                      "This request was already processed; its result has expired. No change was resubmitted."))
+
+    def lookup_direct(self, binding, action, request_id):
+        validated = GrantBinding.validate(binding, float(self.clock()))
+        with self._transaction() as db:
+            self._begin(db)
+            return self._lookup_direct(db, validated, action, request_id)
+
+    def prepare_direct(self, binding, prepared, request_id):
+        if not isinstance(request_id, str) or not request_id.strip() or len(request_id) > 200:
+            raise ValueError("A nonblank request ID of at most 200 characters is required.")
+        return self._prepare(binding, prepared, request_id=request_id)
+
     def prepare(self, binding, prepared):
+        return self._prepare(binding, prepared)
+
+    def _prepare(self, binding, prepared, *, request_id=None):
         now = float(self.clock())
         binding = GrantBinding.validate(binding, now)
         if not isinstance(prepared, PreparedChange):
             raise ValueError("An immutable PreparedChange is required.")
         operation_id = secrets.token_hex(16)
-        capability = secrets.token_urlsafe(32)
-        capability_hash = self._digest("capability", capability)
+        # Direct operations retain the legacy column without issuing a capability.
+        capability = secrets.token_urlsafe(32) if request_id is None else None
+        capability_hash = (self._digest("capability", capability) if capability is not None
+                           else self._digest("direct-operation", operation_id))
         expires_at = min(now + self.APPROVAL_TTL, binding.grant_expiry)
         equivalence_hash = self._equivalence_hash(binding, prepared)
         ticket_hash = self._ticket_hash(prepared)
@@ -397,9 +473,24 @@ class WriteStore:
             "equivalence_hash": equivalence_hash,
             "ticket_hash": ticket_hash,
             "result": None,
+            "direct": request_id is not None,
         }
         with self._transaction() as db:
             self._begin(db)
+            if request_id is not None:
+                existing = self._lookup_direct(db, binding, prepared.action, request_id)
+                if existing is not None:
+                    return existing
+                if db.execute("SELECT COUNT(*) FROM ticket_write_requests").fetchone()[0] >= self.MAX_DIRECT:
+                    raise WriteCapacityError("Ticket-write request capacity reached.")
+                request_hash, action_hash = self._direct_identity(binding, prepared.action, request_id)
+                expiry = now + self.DIRECT_RETENTION
+                tombstone = dict(operation_id=operation_id, expires=expiry, binding=binding.as_json(),
+                                 action_hash=action_hash, ticket_id=prepared.action.ticket_id,
+                                 base_url=prepared.base_url, app_id=prepared.app_id)
+                db.execute("INSERT INTO ticket_write_requests VALUES (?,?,?,?)",
+                           (request_hash, operation_id, expiry,
+                            self._seal("direct-request", request_hash, tombstone)))
             if db.execute("SELECT 1 FROM ticket_write_markers WHERE id=?", (equivalence_hash,)).fetchone():
                 raise EquivalentWriteBlocked("An equivalent write has an unresolved outcome.")
             if db.execute("SELECT COUNT(*) FROM ticket_write_markers").fetchone()[0] >= self.MAX_UNRESOLVED:
@@ -413,7 +504,7 @@ class WriteStore:
                 (operation_id, capability_hash, "pending", expires_at, None, 0, value),
             )
             self._audit(db, data, "pending", now)
-        return IssuedOperation(operation_id, capability, expires_at)
+        return self._record(data) if request_id is not None else IssuedOperation(operation_id, capability, expires_at)
 
     def _bind_checks(self, data, browser, csrf=None, *, require_csrf=False):
         browser_hash = self._digest("browser", browser)
@@ -524,12 +615,24 @@ class WriteStore:
                 self._write_operation(db, other, unresolved=0)
                 self._audit(db, other, "conflict", now)
 
+    def claim_direct(self, operation_id, binding):
+        validated = GrantBinding.validate(binding, float(self.clock()))
+        return self._claim(operation_id=operation_id, binding=validated)
+
     def claim(self, capability, browser, csrf):
+        return self._claim(capability=capability, browser=browser, csrf=csrf)
+
+    def _claim(self, *, capability=None, browser=None, csrf=None, operation_id=None, binding=None):
         now = float(self.clock())
         with self._transaction() as db:
             self._begin(db)
-            data = self._operation_row_by_capability(db, capability)
-            self._bind_checks(data, browser, csrf, require_csrf=True)
+            if operation_id is not None:
+                data = self._operation_row_by_id(db, operation_id)
+                if not data.get("direct") or data["binding"] != binding.as_json():
+                    raise WriteBindingError("Ticket-write operation belongs to another grant or workflow.")
+            else:
+                data = self._operation_row_by_capability(db, capability)
+                self._bind_checks(data, browser, csrf, require_csrf=True)
             if data["state"] != "pending":
                 return ClaimResult(False, self._record(data))
             if now >= data["expires_at"]:
@@ -541,6 +644,9 @@ class WriteStore:
                     db, data, now, "conflict", "An equivalent write is unresolved.")
             if db.execute("SELECT 1 FROM ticket_write_locks WHERE id=?",
                           (data["ticket_hash"],)).fetchone():
+                if data.get("direct"):
+                    return self._terminal_before_dispatch(
+                        db, data, now, "conflict", "Another write for this ticket is unresolved.")
                 raise TicketLockedError("Another write for this ticket is unresolved.")
             if db.execute("SELECT COUNT(*) FROM ticket_write_markers").fetchone()[0] >= self.MAX_UNRESOLVED:
                 raise WriteCapacityError("Unresolved ticket-write capacity reached.")
@@ -558,6 +664,9 @@ class WriteStore:
                     db.execute("DELETE FROM ticket_write_locks WHERE operation_id=?", (data["id"],))
                     return self._terminal_before_dispatch(
                         db, data, now, "conflict", "An equivalent write is unresolved.")
+                if data.get("direct"):
+                    return self._terminal_before_dispatch(
+                        db, data, now, "conflict", "Another write for this ticket is unresolved.")
                 raise TicketLockedError("Another write for this ticket is unresolved.") from None
             self._write_operation(db, data, unresolved=1)
             self._audit(db, data, "sending", now)

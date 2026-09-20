@@ -315,7 +315,7 @@ def test_create_app_exposes_rechecked_write_runtime(tmp_path):
         create_app(settings, vault, verifier=Verifier(), writes_enabled_provider=False)
 
 
-def test_personal_app_registers_write_review_routes_and_service_only_in_personal_mode(tmp_path):
+def test_personal_app_retires_write_review_routes_and_service_only_in_personal_mode(tmp_path):
     from starlette.testclient import TestClient
     from dynamix_manager.hosted import HostedSettings, create_app
     from dynamix_manager.hosted_vault import CredentialVault
@@ -337,7 +337,7 @@ def test_personal_app_registers_write_review_routes_and_service_only_in_personal
     personal = create_app(settings, vault, auth_provider=Provider())
     assert personal.write_service is not None
     with TestClient(personal, base_url=settings.public_url) as http:
-        assert http.get('/writes/review').status_code == 200
+        assert http.get('/writes/review').status_code == 410
 
     class Verifier:
         async def verify_token(self, token):
@@ -395,14 +395,15 @@ def test_personal_hosted_server_registers_prepare_tools_and_preserves_per_tool_s
     tools = {tool.name: tool for tool in captured['server']._tool_manager.list_tools()}
     assert len(tools) == 14
     assert tools['ticket_write_metadata'].meta['securitySchemes'][0]['scopes'] == ['tdx.read']
-    for name in ('prepare_ticket_comment', 'prepare_ticket_status',
-                 'prepare_ticket_assignment', 'prepare_ticket_edit',
+    for name in ('add_ticket_comment', 'update_ticket_status',
+                 'assign_ticket', 'edit_ticket',
                  'ticket_write_result'):
         assert tools[name].meta['securitySchemes'][0]['scopes'] == ['tdx.read', 'tdx.write']
     for name in ('connection_status', 'ticket_statuses', 'search_tickets', 'my_queue',
                  'get_ticket', 'ticket_feed', 'survey_report', 'days_off'):
         assert tools[name].meta['securitySchemes'][0]['scopes'] == ['tdx.read']
-    assert 'NOT SAVED' in captured['kwargs']['instructions']
+    assert 'explicit user request' in captured['kwargs']['instructions']
+    assert 'review link' not in captured['kwargs']['instructions']
     capability = captured['kwargs']['capability_provider']
     assert capability()['write_available'] is False
     assert provider.calls == 0

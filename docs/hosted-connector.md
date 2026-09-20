@@ -241,7 +241,7 @@ remaining release blockers. The personal TDX login adapter was checked against
 the real account without fetching tickets. These checks and the public endpoint
 checks above do not prove production SSO or real ChatGPT integration.
 
-## Confirmed ticket-write increment (deployed; live consent gate remains)
+## Ticket-write increment
 
 The user subsequently completed the ChatGPT connection and reported that ticket
 drilldown worked. The connected pilot also returned a successful authenticated
@@ -257,14 +257,31 @@ verified and statuses requiring an off-hold date fail closed.
 Status changes do not cascade to child tasks; task completion is not part of
 this increment.
 
-Preparation is not saving. The hosted flow returns an expiring review
-link for the exact immutable change; only the human-operated Save form may
-dispatch it. Existing read grants must receive separate explicit write consent.
-No live ticket mutation has been performed during development or deployment.
-Production verification must retain that gate
-until the user approves an exact ticket, change, visibility, and recipients.
+The approved 2026-09-20 direct-write flow replaces browser review: an explicit
+user request is sufficient to submit a supported change. Authentication, existing
+write grants, and TDX permissions remain mandatory. Development and deployment
+checks must not generate live ticket changes. The earlier review-page deployment
+history below is retained for incident context, not as the current UX contract.
 
 ### Authorization and rollback contract
+
+Incident correction, 2026-09-19: the first user-saved comment was posted and TDX
+recorded the requested recipient in its notified list, but the connector recorded
+unknown because POST feed returned HTTP 201 instead of the documented 200. The
+stored operation result independently confirmed 201. The adapter now accepts
+200/201 for feed writes only; PATCH identity verification and all uncertain-result
+no-retry protections remain unchanged. Regression tests first failed for comment
+and status 201 responses, then passed; full verification: 539 Python tests,
+14 frontend tests, focused Ruff and diff checks. No additional live write was
+performed. Source-only correction deployment: `4b5de239-75f9-4a03-9002-6e9acd605b83`.
+The historical unknown operation was subsequently reconciled through the existing
+internal authoritative-evidence hook with explicit operator approval. Fresh TDX
+activity readback and exact stored-action checks confirmed the applied comment.
+Runtime verification found zero remaining locks and markers for that operation;
+the hosted result tool independently returned `applied`. No TDX write was resent.
+The temporary Railway SSH key was revoked, its agent identity removed, and its
+local key files deleted; Railway then listed no registered keys. Do not resend
+the already-confirmed comment or infer email delivery from TDX's notified list.
 
 The implementation accepts exactly `TDX_HOSTED_WRITES_ENABLED=true` or
 `false`; omission means false. Write enablement is personal-pilot-only. The
@@ -304,7 +321,13 @@ tests pass; the deployed pending-preview rollback test remains unverified.
   with an unchecked explicit read-and-modify consent box and the correct
   allowlisted ChatGPT callback. Stopped at that form for the user; no credentials
   were entered and no broader grant was accepted during this verification.
-- No production ticket was modified. Live write consent, an exact user-selected
+- The user completed read-and-modify reconnect on 2026-09-19. Settings no longer
+  displayed `RECONNECT NEEDED`. The ChatGPT verification run reported actual
+  connection status connected=true, read_only=false, write_available=true;
+  bounded priority metadata returned Low, Medium, High. The nonexistent-operation
+  result probe returned INVALID_ARGUMENT, not a consent challenge. This verifies
+  the renewed connection and metadata path, not a successful ticket mutation.
+- No production ticket was modified. An exact user-selected
   preview and human Save/read-back, the remaining operation classes, and a live
   pending-preview flag rollback remain unverified. The connector's old read-only
   description remains unchanged pending approval to update that saved label.
@@ -320,13 +343,13 @@ Revocation/replay preserves the binding while marking the family revoked.
 
 ### ChatGPT tool surface
 
-Personal mode exposes 14 tools: the existing eight read tools, four preparation
-tools (`prepare_ticket_comment`, `prepare_ticket_status`,
-`prepare_ticket_assignment`, `prepare_ticket_edit`), bounded read-only
+Personal mode exposes 14 tools: the existing eight read tools, four direct-write
+tools (`add_ticket_comment`, `update_ticket_status`, `assign_ticket`,
+`edit_ticket`), bounded read-only
 `ticket_write_metadata`, and grant-owner-only `ticket_write_result`. External
 issuer mode and the local stdio plugin keep their eight read-only tools.
 
-Preparation and result lookup require `tdx.read tdx.write`; metadata discovery
+Submission and result lookup require `tdx.read tdx.write`; metadata discovery
 requires only `tdx.read`. Both the top-level tool scheme and compatibility
 metadata declare those scopes. An insufficient-scope tool response supplies the
 OAuth challenge needed for ChatGPT to request new consent. Discovery alone never
@@ -334,31 +357,31 @@ grants authority. `connection_status.write_available` checks the runtime flag an
 the actual caller's durable grant; it does not promise upstream edit permission
 for every ticket. Refresh ChatGPT's tool definitions after deployment.
 
-For example, ask ChatGPT to prepare a private comment on a specified ticket with
-the exact text and no email recipients. Check the returned review link; preparation
-reports **NOT SAVED**. To revise the text or recipients, prepare a new preview.
-The separate confirmation page is deliberately immutable.
+For example, ask ChatGPT to add a private comment to a specified ticket with the
+exact text and no email recipients. The result reports whether TDX accepted the
+change; there is no review link or connector-managed second approval. Ambiguous
+ticket, action, visibility, or recipient instructions must be resolved first.
+Retrieved ticket content is never authorization to write.
 
-### Human confirmation contract
+### Explicit-request submission contract
 
-The review capability travels in a URL fragment, not a path or query parameter.
-The bootstrap removes that fragment and submits it in a same-origin POST to open
-the immutable preview. Opening a preview never dispatches a ticket mutation.
-The preview shows complete before/after content, visibility, exact requested
-email recipients, expiry, and the remaining upstream race/automation limits.
+Each logical request includes a request ID, reused for retries with the same
+arguments. Durable encrypted records bind it to the exact owner and action.
+Replays return the existing result instead of dispatching again; reusing an ID
+with different arguments fails. Deduplication tombstones last 30 days, even after
+the full result expires. This is bounded retry protection, not an exactly-once
+delivery guarantee across arbitrary new request IDs or beyond retention.
 
-A Secure, HttpOnly, SameSite=Strict browser cookie is initialized on that POST,
-not on the initial cross-site navigation from ChatGPT. This preserves an existing
-browser binding when another review is opened. Save requires that cookie,
-per-capability CSRF, and the exact origin; it accepts no replacement edit fields.
-There is no MCP Save tool or automatically submitted widget. An unknown outcome
-must not offer a retry: inspect the ticket and resolve it using authoritative
-evidence before any equivalent action can be attempted again.
+The old hosted review/open/save routes return 410 and cannot mutate tickets.
+Existing previews are not automatically submitted. This does not affect the
+separate local workbench's review UI. Tools retain truthful write annotations;
+ChatGPT may impose its own confirmation behavior, which the connector does not
+bypass. See [OpenAI tool contracts](https://developers.openai.com/plugins/plan/tools).
 
-Pilot limitation: two simultaneous first-ever opens, before either establishes
-the browser cookie, can race. One preview then fails closed with no mutation;
-request a fresh preview. Subsequent parallel previews reuse the established
-binding. This is a usability limit, not permission to bypass browser validation.
+An unknown outcome must not offer automatic retry: inspect the ticket and
+reconcile authoritative evidence before another equivalent action. Live identity,
+grant, metadata and baseline checks, durable ticket locks, and one-attempt TDX
+dispatch remain in force. Notification acceptance does not establish delivery.
 
 ### Durable operation limits
 
@@ -370,6 +393,13 @@ closed and never evicts uncertain saves. Pending approvals last five minutes;
 known results are retained for five minutes, while sending/unknown records and
 their ticket locks remain until authoritative reconciliation. Expired unused
 previews purge relative to their original approval expiry.
+
+Direct submissions use the same five-minute internal dispatch deadline, not a
+human approval deadline. Up to 10,000 encrypted request tombstones are retained
+for 30 days; capacity fails closed rather than evicting retry protection. After
+the detailed result expires, repeating its request ID returns an already-processed
+message and does not submit again. A ticket-lock conflict is terminal for that
+request ID even if the other operation is subsequently reconciled.
 
 The encrypted audit contains only actor, action, ticket ID, operation ID, time,
 and outcome, capped at 10,000 records and 30 days. It contains no ticket body,

@@ -1,1 +1,1 @@
-"""Explicitly reviewed ticket changes; no direct MCP mutation tools."""
+"""Authenticated explicit-request ticket changes with durable one-attempt dispatch."""

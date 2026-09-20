@@ -7,9 +7,7 @@ import pytest
 from mcp.types import CallToolResult
 
 from dynamix_manager.plugin import create_server
-from dynamix_manager.ticket_writes.models import ChangePreview, PreviewField
 from dynamix_manager.ticket_writes.service import (
-    PreparedOperation,
     TicketPreparationRejected,
     TicketWriteStatus,
     WriteAuthorizationRequired,
@@ -25,22 +23,18 @@ class FakeService:
         self.thread_ids = []
         self.settings = SimpleNamespace(public_url="https://connector.example")
 
-    def prepare(self, principal, action):
+    def submit(self, principal, action, request_id):
         self.thread_ids.append(threading.get_ident())
         if self.failure:
             raise self.failure
         self.actions.append(action)
-        return PreparedOperation(
+        assert request_id == "request-1"
+        return TicketWriteStatus(
             operation_id="privatevalue" if self.malformed else "a" * 32,
-            preview=ChangePreview(
-                application="InfoTech Tickets",
-                ticket_id=action.ticket_id,
-                ticket_title="Synthetic ticket",
-                action=action.kind,
-                fields=(PreviewField(name="Comment", before=None, after="Synthetic"),),
-            ),
-            review_url="https://connector.example/writes/review#review-capability",
-            expires_at=1234.0,
+            outcome="applied", message="TeamDynamix accepted the change.",
+            ticket_id=action.ticket_id,
+            ticket_url="https://tenant.example/TDNext/Apps/42/Tickets/TicketDet.aspx?TicketID=1001",
+            status_code=201,
         )
 
     def result(self, principal, operation_id):
@@ -69,6 +63,8 @@ class FakeConnection:
 
 
 def run(server, name, arguments):
+    if name in {"add_ticket_comment", "update_ticket_status", "assign_ticket", "edit_ticket"} and isinstance(arguments, dict):
+        arguments = {"request_id": "request-1", **arguments}
     return asyncio.run(server.call_tool(name, arguments))
 
 
@@ -90,19 +86,19 @@ def tools_server():
     return server, service
 
 
-def test_registers_only_four_prepare_tools_and_two_bounded_read_tools(tools_server):
+def test_registers_only_four_direct_tools_and_two_bounded_read_tools(tools_server):
     server, _ = tools_server
     tools = {tool.name: tool for tool in server._tool_manager.list_tools()}
     assert set(tools) == {
         "connection_status", "ticket_statuses", "search_tickets", "my_queue",
         "get_ticket", "ticket_feed", "survey_report", "days_off",
-        "prepare_ticket_comment", "prepare_ticket_status",
-        "prepare_ticket_assignment", "prepare_ticket_edit",
+        "add_ticket_comment", "update_ticket_status",
+        "assign_ticket", "edit_ticket",
         "ticket_write_metadata", "ticket_write_result",
     }
     for name in (
-        "prepare_ticket_comment", "prepare_ticket_status",
-        "prepare_ticket_assignment", "prepare_ticket_edit",
+        "add_ticket_comment", "update_ticket_status",
+        "assign_ticket", "edit_ticket",
     ):
         tool = tools[name]
         assert tool.annotations.readOnlyHint is False
@@ -123,29 +119,22 @@ def test_registers_only_four_prepare_tools_and_two_bounded_read_tools(tools_serv
 @pytest.mark.parametrize(
     ("name", "action"),
     [
-        ("prepare_ticket_comment", {"kind": "comment", "ticket_id": 1001, "comments": "Hello"}),
-        ("prepare_ticket_status", {"kind": "status", "ticket_id": 1001, "comments": "Done", "status_id": 5}),
-        ("prepare_ticket_assignment", {"kind": "assign", "ticket_id": 1001, "responsible_group_id": 4}),
-        ("prepare_ticket_edit", {"kind": "edit", "ticket_id": 1001, "description": None}),
+        ("add_ticket_comment", {"kind": "comment", "ticket_id": 1001, "comments": "Hello"}),
+        ("update_ticket_status", {"kind": "status", "ticket_id": 1001, "comments": "Done", "status_id": 5}),
+        ("assign_ticket", {"kind": "assign", "ticket_id": 1001, "responsible_group_id": 4}),
+        ("edit_ticket", {"kind": "edit", "ticket_id": 1001, "description": None}),
     ],
 )
-def test_prepare_tools_use_strict_typed_actions_and_return_not_saved_review(name, action, tools_server):
+def test_direct_tools_use_strict_typed_actions_and_return_result(name, action, tools_server):
     server, service = tools_server
     result = structured(run(server, name, {"action": action}))
-    expected_preview = ChangePreview(
-        application="InfoTech Tickets",
-        ticket_id=action["ticket_id"],
-        ticket_title="Synthetic ticket",
-        action=action["kind"],
-        fields=(PreviewField(name="Comment", before=None, after="Synthetic"),),
-    ).model_dump(mode="json")
     assert result == {
-        "not_saved": True,
-        "message": "NOT SAVED. Review the immutable preview and use the review link to approve Save.",
+        "outcome": "applied",
+        "message": "TeamDynamix accepted the change.",
         "operation_id": "a" * 32,
-        "preview": expected_preview,
-        "review_url": "https://connector.example/writes/review#review-capability",
-        "expires_at": 1234.0,
+        "ticket_id": action["ticket_id"],
+        "ticket_url": "https://tenant.example/TDNext/Apps/42/Tickets/TicketDet.aspx?TicketID=1001",
+        "status_code": 201,
     }
     captured = service.actions[-1]
     assert captured.kind == action["kind"]
@@ -172,14 +161,14 @@ def test_result_returns_only_safe_owner_checked_projection(tools_server):
 @pytest.mark.parametrize(
     ("name", "arguments"),
     [
-        ("prepare_ticket_comment", {"action": {"ticket_id": 1, "comments": "missing kind"}}),
-        ("prepare_ticket_comment", {"action": {"kind": "comment", "ticket_id": 1, "comments": "x", "privatecanary": "x"}}),
-        ("prepare_ticket_comment", {"action": {"kind": "comment", "ticket_id": 1, "comments": "x", "notify": ["privatevalue"]}}),
-        ("prepare_ticket_assignment", {"action": {"kind": "assign", "ticket_id": 1, "responsible_uid": None}}),
-        ("prepare_ticket_edit", {"action": {"kind": "edit", "ticket_id": 1}}),
+        ("add_ticket_comment", {"action": {"ticket_id": 1, "comments": "missing kind"}}),
+        ("add_ticket_comment", {"action": {"kind": "comment", "ticket_id": 1, "comments": "x", "privatecanary": "x"}}),
+        ("add_ticket_comment", {"action": {"kind": "comment", "ticket_id": 1, "comments": "x", "notify": ["privatevalue"]}}),
+        ("assign_ticket", {"action": {"kind": "assign", "ticket_id": 1, "responsible_uid": None}}),
+        ("edit_ticket", {"action": {"kind": "edit", "ticket_id": 1}}),
         ("ticket_write_result", {"operation_id": "A" * 32}),
         ("ticket_write_result", {"operation_id": "a" * 31}),
-        ("prepare_ticket_comment", ["privatevalue"]),
+        ("add_ticket_comment", ["privatevalue"]),
     ],
 )
 def test_real_mcp_validation_is_strict_and_redacts_inputs(name, arguments, tools_server):
@@ -196,7 +185,7 @@ def test_real_mcp_validation_is_strict_and_redacts_inputs(name, arguments, tools
 def test_outer_unknown_argument_is_rejected_without_echo(tools_server):
     server, service = tools_server
     with pytest.raises(Exception) as error:
-        run(server, "prepare_ticket_comment", {
+        run(server, "add_ticket_comment", {
             "action": {"kind": "comment", "ticket_id": 1, "comments": "x"},
             "privatecanary": "privatevalue",
         })
@@ -205,22 +194,43 @@ def test_outer_unknown_argument_is_rejected_without_echo(tools_server):
     assert service.actions == []
 
 
+@pytest.mark.parametrize("request_id", [None, "", " ", "private canary", "a" * 201, 12])
+def test_direct_tools_reject_invalid_request_id(tools_server, request_id):
+    server, service = tools_server
+    with pytest.raises(Exception, match="Invalid tool arguments"):
+        run(server, "add_ticket_comment", {
+            "action": {"kind": "comment", "ticket_id": 1, "comments": "x"},
+            "request_id": request_id,
+        })
+    assert service.actions == []
+
+
+def test_direct_tools_require_request_id_and_old_prepare_names_are_absent(tools_server):
+    server, service = tools_server
+    with pytest.raises(Exception, match="Invalid tool arguments"):
+        asyncio.run(server.call_tool("add_ticket_comment", {
+            "action": {"kind": "comment", "ticket_id": 1, "comments": "x"},
+        }))
+    assert service.actions == []
+    assert not any(t.name.startswith("prepare_ticket_") for t in server._tool_manager.list_tools())
+
+
 def test_prepare_step_up_challenge_and_safe_fixed_errors(tools_server):
     server, service = tools_server
     service.failure = WriteAuthorizationRequired("secret grant detail")
-    result = run(server, "prepare_ticket_comment", {
+    result = run(server, "add_ticket_comment", {
         "action": {"kind": "comment", "ticket_id": 1, "comments": "x"},
     })
     assert isinstance(result, CallToolResult) and result.isError
     assert result.meta == {"mcp/www_authenticate": [
-        'Bearer error="insufficient_scope", error_description="Additional authorization is required for ticket write review.", '
+        'Bearer error="insufficient_scope", error_description="Additional authorization is required for ticket writes.", '
         'scope="tdx.read tdx.write", '
         'resource_metadata="https://connector.example/.well-known/oauth-protected-resource/mcp"'
     ]}
     assert "secret" not in json.dumps(result.model_dump(mode="json"))
 
     service.failure = WritesDisabled("secret flag detail")
-    disabled = run(server, "prepare_ticket_comment", {
+    disabled = run(server, "add_ticket_comment", {
         "action": {"kind": "comment", "ticket_id": 1, "comments": "x"},
     })
     assert disabled.isError and disabled.meta is None
@@ -228,7 +238,7 @@ def test_prepare_step_up_challenge_and_safe_fixed_errors(tools_server):
     assert "secret" not in disabled.content[0].text
 
     service.failure = TicketPreparationRejected("secret upstream detail")
-    rejected = run(server, "prepare_ticket_comment", {
+    rejected = run(server, "add_ticket_comment", {
         "action": {"kind": "comment", "ticket_id": 1, "comments": "x"},
     })
     assert rejected.isError and "secret" not in rejected.content[0].text
@@ -237,7 +247,7 @@ def test_prepare_step_up_challenge_and_safe_fixed_errors(tools_server):
 def test_malformed_service_outputs_are_safely_collapsed(tools_server):
     server, service = tools_server
     service.malformed = True
-    prepared = run(server, "prepare_ticket_comment", {
+    prepared = run(server, "add_ticket_comment", {
         "action": {"kind": "comment", "ticket_id": 1, "comments": "x"},
     })
     assert prepared.isError
@@ -250,7 +260,7 @@ def test_malformed_service_outputs_are_safely_collapsed(tools_server):
 def test_hosted_write_service_runs_off_event_loop_in_bounded_worker(tools_server):
     server, service = tools_server
     caller_thread = threading.get_ident()
-    run(server, "prepare_ticket_comment", {
+    run(server, "add_ticket_comment", {
         "action": {"kind": "comment", "ticket_id": 1, "comments": "x"},
     })
     assert service.thread_ids == [service.thread_ids[0]]
@@ -304,7 +314,7 @@ def test_real_http_call_serializes_success_challenge_and_redacted_validation_err
     def body(arguments):
         return {
             "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-            "params": {"name": "prepare_ticket_comment", "arguments": arguments},
+            "params": {"name": "add_ticket_comment", "arguments": {"request_id": "request-1", **arguments}},
         }
 
     headers = {"Accept": "application/json, text/event-stream"}
@@ -312,8 +322,8 @@ def test_real_http_call_serializes_success_challenge_and_redacted_validation_err
         success = http.post("/mcp", json=body({
             "action": {"kind": "comment", "ticket_id": 1, "comments": "x"},
         }), headers=headers).json()["result"]
-        assert success["structuredContent"]["not_saved"] is True
-        assert success["structuredContent"]["message"].startswith("NOT SAVED")
+        assert success["structuredContent"]["outcome"] == "applied"
+        assert "review_url" not in success["structuredContent"]
 
         service.failure = WriteAuthorizationRequired("private grant detail")
         challenge = http.post("/mcp", json=body({
@@ -355,8 +365,8 @@ def test_real_http_rejects_json_encoded_action_string_without_calling_service():
     request = {
         "jsonrpc": "2.0", "id": 1, "method": "tools/call",
         "params": {
-            "name": "prepare_ticket_comment",
-            "arguments": {"action": json.dumps({
+            "name": "add_ticket_comment",
+            "arguments": {"request_id": "request-1", "action": json.dumps({
                 "kind": "comment", "ticket_id": 1, "comments": "x",
             })},
         },

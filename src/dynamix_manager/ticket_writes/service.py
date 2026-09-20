@@ -1,8 +1,8 @@
-"""Explicit-review orchestration for personal TeamDynamix ticket writes.
+"""Direct and legacy-review orchestration for personal TeamDynamix ticket writes.
 
-Preparation performs only authenticated reads and persists the exact immutable
-change that was shown to the user.  Commit durably claims the operation before
-refreshing its baseline, then makes at most one mutation attempt.  The service
+Preparation performs only authenticated reads and persists an immutable change.
+Direct submissions and legacy commits durably claim their operations before
+refreshing the baseline, then make at most one mutation attempt.  The service
 does not claim external exactly-once delivery: an interrupted request remains an
 unknown outcome and is never automatically retried.
 """
@@ -26,7 +26,9 @@ from .models import (
     StatusAction,
     WriteResult,
 )
-from .store import GrantBinding, TicketLockedError, WriteStore, WriteStoreError
+from .store import (
+    DirectReplayResult, GrantBinding, TicketLockedError, WriteStore, WriteStoreError,
+)
 
 
 class TicketWriteServiceError(RuntimeError):
@@ -119,7 +121,10 @@ class TicketWriteService:
 
     def _validate_stored_binding(self, record):
         try:
-            return self.auth_provider.validate_write_grant(record.binding.as_json())
+            current = self.auth_provider.validate_write_grant(record.binding.as_json())
+            if GrantBinding.validate(current, float(self.store.clock())) != record.binding:
+                raise ValueError("Grant changed.")
+            return current
         except Exception:
             raise WriteAuthorizationRequired(_AUTH_MESSAGE) from None
 
@@ -233,6 +238,43 @@ class TicketWriteService:
         self._validate_stored_binding(record)
         return self.store.bind(capability, browser, csrf)
 
+    def submit(self, principal, action, request_id):
+        """Submit an explicitly requested change with durable request deduplication."""
+        if not isinstance(action, _ACTION_TYPES):
+            raise TypeError("A supported typed ticket action is required.")
+        binding = self._validate_binding(self._binding_for_principal(principal))
+        original = GrantBinding.validate(binding, float(self.store.clock()))
+        record = self.store.lookup_direct(binding, action, request_id)
+        if record is None:
+            with self._personal_adapter(original) as adapter:
+                try:
+                    prepared = adapter.validate(action)
+                except Exception:
+                    raise TicketPreparationRejected(_PREPARATION_MESSAGE) from None
+            self._require_enabled()
+            current = self._validate_binding(binding)
+            if GrantBinding.validate(current, float(self.store.clock())) != original:
+                raise WriteAuthorizationRequired(_AUTH_MESSAGE)
+            record = self.store.prepare_direct(current, prepared, request_id)
+        if isinstance(record, DirectReplayResult) or record.state != "pending":
+            return self._safe_status(record)
+        try:
+            claim = self.store.claim_direct(record.operation_id, binding)
+        except TicketLockedError:
+            return self._safe_status(
+                record, outcome="conflict",
+                message="Another write for this ticket is still unresolved.",
+            )
+        if not claim.claimed:
+            return self._safe_status(claim.record)
+
+        def check_current():
+            current = self.store.get_for_owner(claim.record.operation_id, binding)
+            if current.state != "sending" or float(self.store.clock()) >= current.expires_at:
+                raise WriteAuthorizationRequired(_AUTH_MESSAGE)
+
+        return self._dispatch_claim(claim, check_current)
+
     def commit(self, capability, browser, csrf):
         """Apply an approved immutable change at most once."""
         record = self.store.check(capability, browser, csrf)
@@ -251,6 +293,12 @@ class TicketWriteService:
         if not claim.claimed:
             return self._safe_status(claim.record)
 
+        return self._dispatch_claim(
+            claim, lambda: self.store.check(capability, browser, csrf)
+        )
+
+    def _dispatch_claim(self, claim, check_current):
+        """Shared preflight and sole mutation attempt for a durable claim."""
         dispatched = False
         try:
             with self._personal_adapter(claim.record.binding) as adapter:
@@ -270,12 +318,12 @@ class TicketWriteService:
                 try:
                     # The approval can expire, the flag can close, or its durable
                     # grant can be revoked while preflight reads are in progress.
-                    self.store.check(capability, browser, csrf)
+                    check_current()
                     self._require_enabled()
                     self._validate_stored_binding(claim.record)
                 except Exception:
                     finished = self.store.finish(
-                        claim, "rejected", "The change no longer has current approval."
+                        claim, "rejected", "The change no longer has current authorization."
                     )
                     return self._safe_status(finished)
 
@@ -360,8 +408,8 @@ class TicketWriteService:
 
     @staticmethod
     def _ticket_url(record):
-        prepared = record.prepared
-        parsed = urlsplit(prepared.base_url)
+        destination = record if isinstance(record, DirectReplayResult) else record.prepared
+        parsed = urlsplit(destination.base_url)
         if (
             parsed.scheme != "https"
             or not parsed.hostname
@@ -372,9 +420,9 @@ class TicketWriteService:
             or parsed.path.lower() != "/tdwebapi"
         ):
             raise TicketWriteServiceError("Stored ticket destination is invalid.")
-        ticket_id = prepared.action.ticket_id
+        ticket_id = record.ticket_id if isinstance(record, DirectReplayResult) else record.prepared.action.ticket_id
         return (
-            f"https://{parsed.netloc}/TDNext/Apps/{prepared.app_id}/Tickets/"
+            f"https://{parsed.netloc}/TDNext/Apps/{destination.app_id}/Tickets/"
             f"TicketDet.aspx?TicketID={ticket_id}"
         )
 
@@ -394,7 +442,7 @@ class TicketWriteService:
             operation_id=record.operation_id,
             outcome=effective,
             message=message,
-            ticket_id=record.prepared.action.ticket_id,
+            ticket_id=record.ticket_id if isinstance(record, DirectReplayResult) else record.prepared.action.ticket_id,
             ticket_url=self._ticket_url(record),
             status_code=stored_result.status_code if stored_result else None,
         )

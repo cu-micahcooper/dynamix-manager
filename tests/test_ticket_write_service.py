@@ -16,6 +16,193 @@ UID = "11111111-1111-4111-8111-111111111111"
 BASE = "https://tenant.example/TDWebApi"
 
 
+@pytest.mark.parametrize("payload", [
+    dict(kind="comment", ticket_id=1001, comments="Hello"),
+    dict(kind="status", ticket_id=1001, comments="Ordered", status_id=5),
+    dict(kind="assign", ticket_id=1001, responsible_group_id=4),
+    dict(kind="edit", ticket_id=1001, title="After", priority_id=7),
+])
+def test_direct_all_actions_and_replay_before_metadata_reads(setup, payload):
+    action = parse_action(payload)
+    result = setup.service.submit("principal", action, "request-1")
+    assert result.outcome == "applied"
+    assert result.ticket_id == 1001
+    assert not hasattr(result, "review_url")
+    connections = len(setup.connections)
+    setup.upstream.records.clear()
+    assert setup.service.submit("principal", action, "request-1") == result
+    assert len(setup.connections) == connections
+    assert setup.upstream.apply_count == 1
+
+
+@pytest.mark.parametrize("failure", ["missing", "read", "revoked", "expired", "disabled", "identity", "metadata"])
+def test_direct_rejects_invalid_authority_and_metadata(setup, failure):
+    principal = "principal"
+    if failure == "missing":
+        principal = None
+    elif failure == "read":
+        setup.provider.binding["scopes"] = ["tdx.read"]
+    elif failure == "revoked":
+        setup.provider.revoked = True
+    elif failure == "expired":
+        setup.provider.binding["grant_expiry"] = 999.0
+    elif failure == "disabled":
+        setup.runtime.enabled = False
+    elif failure == "identity":
+        setup.identity[0] = "other-person"
+    else:
+        setup.upstream.records.clear()
+    with pytest.raises(Exception) as error:
+        setup.service.submit(principal, parse_action(dict(kind="comment", ticket_id=1001, comments="Hello")), "request-1")
+    assert not isinstance(error.value, AttributeError)
+    assert setup.upstream.apply_count == 0
+
+
+@pytest.mark.parametrize("change", ["baseline", "metadata", "revoked", "disabled", "expired", "grant"])
+def test_direct_preflight_rechecks_baseline_and_current_authority(setup, change):
+    factory = setup.service.adapter_factory
+    count = [0]
+
+    def changing_factory(connection):
+        adapter = factory(connection)
+        validate = adapter.validate
+
+        def changing_validate(action):
+            count[0] += 1
+            if count[0] == 2 and change == "baseline":
+                setup.upstream.records["/api/42/tickets/1001"]["ModifiedDate"] = "version-2"
+            if count[0] == 2 and change == "metadata":
+                setup.upstream.records["/api/42/tickets/priorities"][0]["Name"] = "Renamed"
+            result = validate(action)
+            if count[0] == 2:
+                if change == "revoked":
+                    setup.provider.revoked = True
+                elif change == "disabled":
+                    setup.runtime.enabled = False
+                elif change == "expired":
+                    setup.clock[0] += 301
+                elif change == "grant":
+                    setup.provider.binding["family"] = "replacement"
+            return result
+
+        adapter.validate = changing_validate
+        return adapter
+
+    setup.service.adapter_factory = changing_factory
+    result = setup.service.submit("principal", parse_action(dict(kind="edit", ticket_id=1001, priority_id=7)), "request-1")
+    assert result.outcome == ("conflict" if change in {"baseline", "metadata"} else "rejected")
+    assert setup.upstream.apply_count == 0
+
+
+def test_direct_unknown_restart_changed_arguments_and_retained_lock(setup):
+    from dynamix_manager.ticket_writes.service import TicketWriteService
+    from dynamix_manager.ticket_writes.store import WriteStore
+
+    action = parse_action(dict(kind="comment", ticket_id=1001, comments="Hello"))
+    setup.upstream.apply_error = TimeoutError("secret upstream body")
+    result = setup.service.submit("principal", action, "request-1")
+    assert result.outcome == "unknown" and "secret" not in repr(result)
+    restarted = TicketWriteService(setup.settings, setup.vault, setup.provider, setup.runtime,
+        store=WriteStore(setup.vault, clock=lambda: setup.clock[0]),
+        connection_factory=setup.service.connection_factory, adapter_factory=setup.service.adapter_factory)
+    assert restarted.submit("principal", action, "request-1") == result
+    from dynamix_manager.ticket_writes.store import EquivalentWriteBlocked
+    with pytest.raises(EquivalentWriteBlocked, match="unresolved"):
+        restarted.submit("principal", action, "different-request")
+    changed = parse_action(dict(kind="comment", ticket_id=1001, comments="Different"))
+    with pytest.raises(Exception, match="different arguments"):
+        restarted.submit("principal", changed, "request-1")
+    assert restarted.submit("principal", changed, "request-2").outcome == "conflict"
+    assert setup.upstream.apply_count == 1
+
+
+def test_direct_concurrent_requests_dispatch_once(setup):
+    action = parse_action(dict(kind="comment", ticket_id=1001, comments="Hello"))
+    setup.upstream.gate = threading.Event()
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(setup.service.submit, "principal", action, "request-1")
+        deadline = time.monotonic() + 5
+        while not setup.upstream.apply_count and time.monotonic() < deadline and not first.done():
+            time.sleep(0.001)
+        try:
+            second = pool.submit(setup.service.submit, "principal", action, "request-1").result(timeout=5)
+        finally:
+            setup.upstream.gate.set()
+        assert first.result(timeout=5).outcome == "applied"
+    assert second.outcome == "unknown"
+    assert setup.upstream.apply_count == 1
+
+
+def test_direct_expired_result_tombstone_does_not_dispatch(setup):
+    action = parse_action(dict(kind="comment", ticket_id=1001, comments="Hello"))
+    first = setup.service.submit("principal", action, "request-1")
+    setup.clock[0] += setup.store.RESULT_RETENTION + 1
+    setup.upstream.records.clear()
+    replay = setup.service.submit("principal", action, "request-1")
+    assert replay.operation_id == first.operation_id
+    assert replay.outcome == "expired"
+    assert replay.ticket_url == first.ticket_url
+    assert setup.upstream.apply_count == 1
+
+
+@pytest.mark.parametrize("change", ["revoked", "disabled", "expired"])
+def test_direct_replay_requires_current_authority(setup, change):
+    action = parse_action(dict(kind="comment", ticket_id=1001, comments="Hello"))
+    setup.service.submit("principal", action, "request-1")
+    if change == "revoked":
+        setup.provider.revoked = True
+    elif change == "disabled":
+        setup.runtime.enabled = False
+    else:
+        setup.clock[0] = setup.provider.binding["grant_expiry"] + 1
+    with pytest.raises(Exception):
+        setup.service.submit("principal", action, "request-1")
+    assert setup.upstream.apply_count == 1
+
+
+def test_direct_result_owner_isolation(setup):
+    action = parse_action(dict(kind="comment", ticket_id=1001, comments="Hello"))
+    first = setup.service.submit("principal", action, "request-1")
+    setup.provider.binding["family"] = "different-grant"
+    with pytest.raises(Exception, match="another grant"):
+        setup.service.result("principal", first.operation_id)
+    second = setup.service.submit("principal", action, "request-1")
+    assert second.operation_id != first.operation_id
+    assert setup.upstream.apply_count == 2
+
+
+def test_direct_racing_initial_validation_creates_one_operation(setup):
+    factory = setup.service.adapter_factory
+    barrier = threading.Barrier(2)
+    count = [0]
+    lock = threading.Lock()
+
+    def racing_factory(connection):
+        adapter = factory(connection)
+        validate = adapter.validate
+
+        def racing_validate(action):
+            value = validate(action)
+            with lock:
+                count[0] += 1
+                initial = count[0] <= 2
+            if initial:
+                barrier.wait(timeout=5)
+            return value
+
+        adapter.validate = racing_validate
+        return adapter
+
+    setup.service.adapter_factory = racing_factory
+    action = parse_action(dict(kind="comment", ticket_id=1001, comments="Hello"))
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(setup.service.submit, "principal", action, "request-1") for _ in range(2)]
+        results = [future.result(timeout=10) for future in futures]
+    assert results[0].operation_id == results[1].operation_id
+    assert "applied" in {result.outcome for result in results}
+    assert setup.upstream.apply_count == 1
+
+
 def capability(prepared):
     return urlsplit(prepared.review_url).fragment
 
