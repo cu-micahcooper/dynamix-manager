@@ -243,6 +243,16 @@ checks above do not prove production SSO or real ChatGPT integration.
 
 ## Ticket-write increment
 
+Direct-write rollout verified 2026-09-20: source commit `e877166`, Railway
+deployment `25ab57df-4912-4a0d-b12d-82029c0911c8` reported SUCCESS. Live health
+returned 200/ok, the retired review endpoint returned 410, and unauthenticated
+MCP returned 401. ChatGPT's Refresh action replaced all four prepare tools with
+the four direct-write tools and their required request IDs/write scopes. No
+live ticket mutation was made to verify this deployment. Verification: 601
+Python tests, 14 frontend tests, focused Ruff and diff checks; independent
+spec and security reviews passed. A discovered pending-conflict retry issue was
+fixed with a failing-then-passing regression before release.
+
 The user subsequently completed the ChatGPT connection and reported that ticket
 drilldown worked. The connected pilot also returned a successful authenticated
 read-only connection status during write-development checks. This establishes
