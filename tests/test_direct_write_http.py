@@ -19,7 +19,7 @@ setup = service_fixtures.setup
 ])
 def test_direct_mcp_http_dispatches_once_without_browser(setup, monkeypatch, name, action):
     monkeypatch.setattr('dynamix_manager.ticket_writes.tools.get_access_token', lambda: 'principal')
-    server = create_server('/unused', write_service=setup.service, connection_provider=lambda: None,
+    server = create_server(write_service=setup.service, connection_provider=lambda: None,
                            fastmcp_class=HostedFastMCP, stateless_http=True,
                            json_response=True)
     request = {'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call', 'params': {
@@ -38,7 +38,7 @@ def test_direct_mcp_http_dispatches_once_without_browser(setup, monkeypatch, nam
 
 def test_direct_mcp_http_cannot_submit_without_current_write_grant(setup, monkeypatch):
     monkeypatch.setattr('dynamix_manager.ticket_writes.tools.get_access_token', lambda: None)
-    server = create_server('/unused', write_service=setup.service, connection_provider=lambda: None,
+    server = create_server(write_service=setup.service, connection_provider=lambda: None,
                            fastmcp_class=HostedFastMCP, stateless_http=True,
                            json_response=True)
     with TestClient(server.streamable_http_app(), base_url='http://127.0.0.1:8000') as client:

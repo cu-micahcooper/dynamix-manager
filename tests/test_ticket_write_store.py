@@ -52,14 +52,6 @@ def store_setup(tmp_path):
     return WriteStore(vault, clock=lambda: clock[0]), path, key, clock
 
 
-def bind(store, issued, *, browser="browser-secret", csrf="csrf-secret"):
-    return store.bind(issued.capability, browser, csrf)
-
-
-def claim(store, issued, *, browser="browser-secret", csrf="csrf-secret"):
-    return store.claim(issued.capability, browser, csrf)
-
-
 def test_direct_replay_is_durable_and_results_expire_without_resubmission(store_setup):
     from dynamix_manager.ticket_writes.store import WriteStore, DirectReplayResult, WriteBindingError
     store, path, key, clock = store_setup
@@ -94,16 +86,13 @@ def test_direct_concurrent_prepare_and_claim_fenced_once(store_setup):
     assert sum(r.claimed for r in results) == 1
 
 
-def test_direct_owner_browser_isolation_and_uncertain_locks(store_setup):
+def test_direct_owner_isolation_and_uncertain_locks(store_setup):
     from dynamix_manager.ticket_writes.store import WriteBindingError, EquivalentWriteBlocked
     store, _, _, _ = store_setup
     record = store.prepare_direct(binding(), prepared(), "request-1")
     with pytest.raises(WriteBindingError):
         store.claim_direct(record.operation_id, binding(subject="other"))
     assert store.lookup_direct(binding(subject="other"), prepared().action, "request-1") is None
-    browser = store.prepare(binding(), prepared())
-    with pytest.raises(WriteBindingError):
-        store.claim_direct(browser.operation_id, binding())
     claimed = store.claim_direct(record.operation_id, binding())
     store.finish(claimed, "unknown", "Unknown.")
     assert not store.claim_direct(record.operation_id, binding()).claimed
@@ -195,107 +184,103 @@ def test_direct_processes_prepare_and_dispatch_once(store_setup):
     assert sum(result[1] for result in results) == 1
 
 
-def test_prepare_encrypts_immutable_record_and_stores_only_capability_hash(store_setup):
+def test_owner_lookups_survive_grant_renewal_but_not_a_different_owner(store_setup):
+    from dynamix_manager.ticket_writes.store import WriteBindingError
+
+    store, _, _, _ = store_setup
+    record = store.prepare_direct(binding(), prepared(), "request-1")
+    assert not hasattr(record, "capability")
+    renewed = binding(family="family-2", grant_expiry=20_000.0)
+    assert store.get_for_owner(record.operation_id, renewed).operation_id == record.operation_id
+    replay = store.lookup_direct(renewed, prepared().action, "request-1")
+    assert replay.operation_id == record.operation_id
+
+    for field, replacement in (
+        ("subject", "other-user"),
+        ("client_id", "other-client"),
+        ("resource", "https://other.example/mcp"),
+    ):
+        other = binding(**{field: replacement})
+        with pytest.raises(WriteBindingError):
+            store.get_for_owner(record.operation_id, other)
+        assert store.lookup_direct(other, prepared().action, "request-1") is None
+
+
+def test_claim_under_renewed_grant_rebinds_pending_operation(store_setup):
+    from dynamix_manager.ticket_writes.store import WriteBindingError
+
+    store, _, _, _ = store_setup
+    record = store.prepare_direct(binding(), prepared(), "request-1")
+    renewed = binding(family="family-2", grant_expiry=20_000.0)
+    with pytest.raises(WriteBindingError):
+        store.claim_direct(record.operation_id, binding(client_id="other-client"))
+    claim = store.claim_direct(record.operation_id, renewed)
+    assert claim.claimed
+    assert claim.record.binding.family == "family-2"
+    assert store.get_for_owner(record.operation_id, renewed).binding.family == "family-2"
+    finished = store.finish(claim, "applied", "Applied.")
+    assert finished.binding.family == "family-2"
+
+
+def submit(store, change, request_id, owner=None):
+    owner = owner or binding()
+    record = store.prepare_direct(owner, change, request_id)
+    return record, store.claim_direct(record.operation_id, owner)
+
+
+def test_prepare_direct_encrypts_immutable_record_and_stores_no_secrets(store_setup):
     store, path, _, _ = store_setup
     original = prepared()
-    issued = store.prepare(binding(), original)
-    assert issued.operation_id and issued.capability and issued.expires_at == 1_300.0
-
-    record = bind(store, issued)
+    record = store.prepare_direct(binding(), original, "request-1")
+    assert record.operation_id and record.expires_at == 1_300.0
     assert record.prepared == original
     assert record.prepared.action.model_fields_set == original.action.model_fields_set
     assert record.binding.subject == "user-1"
     assert record.binding.scopes == frozenset({"tdx.read", "tdx.write"})
     assert record.state == "pending"
-
     raw = path.read_bytes()
-    assert issued.capability.encode() not in raw
-    assert b"secret ticket text" not in raw
-    assert b"Sensitive title" not in raw
-    assert b"family-1" not in raw
+    for secret in (b"secret ticket text", b"Sensitive title", b"family-1", b"request-1"):
+        assert secret not in raw
     with sqlite3.connect(path) as db:
-        stored = db.execute(
-            "SELECT capability_hash FROM ticket_write_operations WHERE id=?",
-            (issued.operation_id,),
-        ).fetchone()[0]
-    assert len(stored) == 64 and stored != issued.capability
+        stored = db.execute("SELECT capability_hash FROM ticket_write_operations WHERE id=?",
+                            (record.operation_id,)).fetchone()[0]
+    assert len(stored) == 64
 
 
-def test_binding_is_idempotent_for_same_browser_and_rejects_stolen_link(store_setup):
-    from dynamix_manager.ticket_writes.store import WriteBindingError
-
-    store, _, _, _ = store_setup
-    issued = store.prepare(binding(), prepared())
-    first = bind(store, issued)
-    assert bind(store, issued) == first
-    assert store.get(issued.capability, "browser-secret") == first
-    assert store.check(issued.capability, "browser-secret", "csrf-secret") == first
-    with pytest.raises(WriteBindingError):
-        store.bind(issued.capability, "thief-browser", "thief-csrf")
-    with pytest.raises(WriteBindingError):
-        store.get(issued.capability, "thief-browser")
-    with pytest.raises(WriteBindingError):
-        store.check(issued.capability, "browser-secret", "wrong-csrf")
-
-
-@pytest.mark.parametrize("csrf", [None, ""])
-def test_check_and_claim_require_nonempty_csrf_but_get_remains_read_only(store_setup, csrf):
-    from dynamix_manager.ticket_writes.store import WriteBindingError
-
-    store, _, _, _ = store_setup
-    issued = store.prepare(binding(), prepared())
-    bind(store, issued)
-    assert store.get(issued.capability, "browser-secret").state == "pending"
-    with pytest.raises(WriteBindingError):
-        store.check(issued.capability, "browser-secret", csrf)
-    with pytest.raises(WriteBindingError):
-        store.claim(issued.capability, "browser-secret", csrf)
-    assert store.get(issued.capability, "browser-secret").state == "pending"
-
-
-def test_expired_approval_cannot_bind_or_claim_and_is_retained_briefly(store_setup):
-    from dynamix_manager.ticket_writes.store import WriteExpiredError
-
-    store, _, _, clock = store_setup
-    issued = store.prepare(binding(), prepared())
-    bind(store, issued)
-    clock[0] = issued.expires_at
-    with pytest.raises(WriteExpiredError):
-        store.check(issued.capability, "browser-secret", "csrf-secret")
-    duplicate = claim(store, issued)
-    assert duplicate.claimed is False
-    assert duplicate.record.state == "expired"
-
-
-def test_abandoned_full_pool_recovers_after_expiry_retention_without_prior_access(store_setup, monkeypatch):
+def test_expired_pending_operation_is_terminal_on_claim_and_retained_briefly(store_setup):
     from dynamix_manager.ticket_writes.store import WriteNotFoundError
+    store, _, _, clock = store_setup
+    record = store.prepare_direct(binding(), prepared(), "request-1")
+    clock[0] = record.expires_at
+    expired = store.claim_direct(record.operation_id, binding())
+    assert expired.claimed is False and expired.record.state == "expired"
+    assert store.get_for_owner(record.operation_id, binding()).state == "expired"
+    clock[0] = record.expires_at + store.RESULT_RETENTION
+    with pytest.raises(WriteNotFoundError):
+        store.get_for_owner(record.operation_id, binding())
 
+
+def test_abandoned_full_pool_recovers_after_expiry_retention(store_setup, monkeypatch):
+    from dynamix_manager.ticket_writes.store import WriteCapacityError
     store, _, _, clock = store_setup
     monkeypatch.setattr(store, "MAX_NORMAL", 1)
-    abandoned = store.prepare(binding(), prepared(ticket_id=1))
+    abandoned = store.prepare_direct(binding(), prepared(ticket_id=1), "one")
+    with pytest.raises(WriteCapacityError):
+        store.prepare_direct(binding(), prepared(ticket_id=2), "two")
     clock[0] = abandoned.expires_at + store.RESULT_RETENTION
-
-    replacement = store.prepare(
-        binding(grant_expiry=20_000.0), prepared(ticket_id=2)
-    )
+    replacement = store.prepare_direct(binding(grant_expiry=20_000.0), prepared(ticket_id=2), "two")
     assert replacement.operation_id != abandoned.operation_id
-    with pytest.raises(WriteNotFoundError):
-        store.get(abandoned.capability)
 
 
 def test_claim_is_exactly_once_and_known_terminal_duplicate_keeps_result(store_setup):
     store, _, _, _ = store_setup
-    issued = store.prepare(binding(), prepared())
-    bind(store, issued)
-    first = claim(store, issued)
+    record, first = submit(store, prepared(), "request-1")
     assert first.claimed is True and first.record.state == "sending"
-    duplicate = claim(store, issued)
+    duplicate = store.claim_direct(record.operation_id, binding())
     assert duplicate.claimed is False and duplicate.record.state == "sending"
-
     applied = store.finish(first, "applied", "TeamDynamix accepted the change.", status_code=200)
-    assert applied.state == "applied"
-    assert applied.result.outcome == "applied"
-    duplicate = claim(store, issued)
+    assert applied.state == "applied" and applied.result.outcome == "applied"
+    duplicate = store.claim_direct(record.operation_id, binding())
     assert duplicate.claimed is False
     assert duplicate.record.state == "applied"
     assert duplicate.record.result == applied.result
@@ -303,64 +288,47 @@ def test_claim_is_exactly_once_and_known_terminal_duplicate_keeps_result(store_s
 
 def test_claim_fence_cannot_overwrite_unknown_or_be_forged(store_setup):
     from dynamix_manager.ticket_writes.store import ClaimResult, WriteBindingError
-
     store, _, _, _ = store_setup
-    issued = store.prepare(binding(), prepared())
-    bind(store, issued)
-    first = claim(store, issued)
+    _, first = submit(store, prepared(), "request-1")
     forged = ClaimResult(True, first.record, "forged-claim-secret")
     with pytest.raises(WriteBindingError):
         store.finish(forged, "applied", "Forged.")
-
     unknown = store.finish(first, "unknown", "The outcome is unknown.")
     repeated = store.finish(first, "applied", "Late overwrite attempt.", status_code=200)
     assert unknown.state == repeated.state == "unknown"
     assert repeated.result.message == "The outcome is unknown."
 
 
-def test_capability_and_claim_secrets_are_redacted_from_representations(store_setup):
+def test_claim_secrets_and_payloads_are_redacted_from_representations(store_setup):
     store, _, _, _ = store_setup
-    issued = store.prepare(binding(), prepared())
-    assert issued.capability not in repr(issued)
-    record = bind(store, issued)
+    record, claimed = submit(store, prepared(), "request-1")
     assert "secret ticket text" not in repr(record)
-    claimed = claim(store, issued)
     assert claimed.claim_token not in repr(claimed)
     assert "secret ticket text" not in repr(claimed)
 
 
 def test_same_ticket_lock_precedes_preflight_and_known_outcome_releases_it(store_setup):
-    from dynamix_manager.ticket_writes.store import TicketLockedError
-
     store, _, _, _ = store_setup
-    first = store.prepare(binding(), prepared(comments="first"))
-    second = store.prepare(binding(), prepared(comments="second"))
-    bind(store, first, browser="first-browser", csrf="first-csrf")
-    bind(store, second, browser="second-browser", csrf="second-csrf")
-    first_claim = claim(store, first, browser="first-browser", csrf="first-csrf")
-    with pytest.raises(TicketLockedError):
-        claim(store, second, browser="second-browser", csrf="second-csrf")
+    _, first_claim = submit(store, prepared(comments="first"), "first")
+    _, blocked = submit(store, prepared(comments="second"), "second")
+    assert blocked.claimed is False and blocked.record.state == "conflict"
     store.finish(first_claim, "conflict", "The ticket changed before dispatch.")
-    assert claim(store, second, browser="second-browser", csrf="second-csrf").claimed is True
+    _, third = submit(store, prepared(comments="third"), "third")
+    assert third.claimed is True
 
 
 def test_unknown_and_crash_left_sending_survive_expiry_cleanup_and_restart(store_setup):
-    from dynamix_manager.ticket_writes.store import TicketLockedError, WriteStore
-
+    from dynamix_manager.ticket_writes.store import WriteStore
     store, path, key, clock = store_setup
-    uncertain = store.prepare(binding(), prepared(comments="uncertain"))
-    bind(store, uncertain, browser="u-browser", csrf="u-csrf")
-    claim(store, uncertain, browser="u-browser", csrf="u-csrf")
+    uncertain, _ = submit(store, prepared(comments="uncertain"), "uncertain")
     clock[0] = 100_000.0
-
     reopened = WriteStore(CredentialVault(path, key), clock=lambda: clock[0])
-    status = reopened.claim(uncertain.capability, "u-browser", "u-csrf")
+    owner = binding(grant_expiry=200_000.0)
+    status = reopened.claim_direct(uncertain.operation_id, owner)
     assert status.claimed is False and status.record.state == "sending"
     assert status.record.effective_state == "unknown"
-    other = reopened.prepare(binding(grant_expiry=200_000.0), prepared(comments="other"))
-    bind(reopened, other, browser="o-browser", csrf="o-csrf")
-    with pytest.raises(TicketLockedError):
-        reopened.claim(other.capability, "o-browser", "o-csrf")
+    _, other = submit(reopened, prepared(comments="other"), "other", owner)
+    assert other.claimed is False and other.record.state == "conflict"
     with sqlite3.connect(path) as db:
         assert db.execute("SELECT COUNT(*) FROM ticket_write_markers").fetchone()[0] == 1
         assert db.execute("SELECT COUNT(*) FROM ticket_write_locks").fetchone()[0] == 1
@@ -368,118 +336,65 @@ def test_unknown_and_crash_left_sending_survive_expiry_cleanup_and_restart(store
 
 def test_unknown_finish_retains_marker_and_blocks_equivalent_prepare(store_setup):
     from dynamix_manager.ticket_writes.store import EquivalentWriteBlocked
-
     store, _, _, _ = store_setup
     change = prepared()
-    issued = store.prepare(binding(), change)
-    bind(store, issued)
-    unknown = store.finish(claim(store, issued), "unknown", "Outcome cannot be determined.")
-    assert unknown.state == "unknown"
+    _, claimed = submit(store, change, "request-1")
+    assert store.finish(claimed, "unknown", "Outcome cannot be determined.").state == "unknown"
     with pytest.raises(EquivalentWriteBlocked):
-        store.prepare(binding(), change)
+        store.prepare_direct(binding(), change, "request-2")
 
 
-def test_two_preexisting_equivalent_previews_allow_only_one_claim(store_setup):
+def test_two_pending_equivalent_operations_allow_only_one_claim(store_setup):
+    from dynamix_manager.ticket_writes.store import WriteStore
     store, path, key, clock = store_setup
-    first = store.prepare(binding(), prepared())
-    second = store.prepare(binding(), prepared())
-    bind(store, first, browser="first-browser", csrf="first-csrf")
-    bind(store, second, browser="second-browser", csrf="second-csrf")
+    first = store.prepare_direct(binding(), prepared(), "first")
+    second = store.prepare_direct(binding(), prepared(), "second")
 
-    def attempt(args):
-        issued, browser, csrf = args
-        from dynamix_manager.ticket_writes.store import WriteStore
+    def attempt(record):
         local = WriteStore(CredentialVault(path, key), clock=lambda: clock[0])
-        result = local.claim(issued.capability, browser, csrf)
+        result = local.claim_direct(record.operation_id, binding())
         return result.claimed, result.record.state
 
     with ThreadPoolExecutor(max_workers=2) as pool:
-        results = list(pool.map(attempt, [
-            (first, "first-browser", "first-csrf"),
-            (second, "second-browser", "second-csrf"),
-        ]))
+        results = list(pool.map(attempt, [first, second]))
     assert sorted(results) == [(False, "conflict"), (True, "sending")]
 
 
-def test_applied_claim_supersedes_equivalent_preexisting_preview(store_setup):
+def test_applied_claim_supersedes_equivalent_pending_operation(store_setup):
     store, _, _, _ = store_setup
-    first = store.prepare(binding(), prepared())
-    second = store.prepare(binding(), prepared())
-    bind(store, first, browser="first-browser", csrf="first-csrf")
-    bind(store, second, browser="second-browser", csrf="second-csrf")
-
-    first_claim = claim(store, first, browser="first-browser", csrf="first-csrf")
-    store.finish(first_claim, "applied", "Applied.", status_code=200)
-    stale = claim(store, second, browser="second-browser", csrf="second-csrf")
-    assert stale.claimed is False
-    assert stale.record.state == "conflict"
-    assert store.prepare(binding(), prepared()).operation_id != second.operation_id
-
-
-def _process_claim(path, key, now, capability, browser, csrf, start, output):
-    from dynamix_manager.hosted_vault import CredentialVault
-    from dynamix_manager.ticket_writes.store import WriteStore
-
-    local = WriteStore(CredentialVault(path, key), clock=lambda: now)
-    start.wait(10)
-    result = local.claim(capability, browser, csrf)
-    output.put((result.claimed, result.record.state))
-
-
-def test_claim_is_atomic_across_process_connections(store_setup):
-    store, path, key, clock = store_setup
-    issued = store.prepare(binding(), prepared())
-    bind(store, issued)
-    context = multiprocessing.get_context("spawn")
-    start = context.Event()
-    output = context.Queue()
-    processes = [context.Process(
-        target=_process_claim,
-        args=(str(path), key, clock[0], issued.capability, "browser-secret", "csrf-secret", start, output),
-    ) for _ in range(2)]
-    for process in processes:
-        process.start()
-    start.set()
-    results = [output.get(timeout=15) for _ in processes]
-    for process in processes:
-        process.join(15)
-        assert process.exitcode == 0
-    assert sorted(results) == [(False, "sending"), (True, "sending")]
+    first = store.prepare_direct(binding(), prepared(), "first")
+    second = store.prepare_direct(binding(), prepared(), "second")
+    store.finish(store.claim_direct(first.operation_id, binding()), "applied", "Applied.", status_code=200)
+    stale = store.claim_direct(second.operation_id, binding())
+    assert stale.claimed is False and stale.record.state == "conflict"
+    assert store.prepare_direct(binding(), prepared(), "third").operation_id != second.operation_id
 
 
 def test_normal_and_unresolved_capacity_fail_closed_without_eviction(store_setup, monkeypatch):
     from dynamix_manager.ticket_writes.store import WriteCapacityError
-
     store, _, _, _ = store_setup
     monkeypatch.setattr(store, "MAX_NORMAL", 2)
-    one = store.prepare(binding(), prepared(ticket_id=1))
-    two = store.prepare(binding(), prepared(ticket_id=2))
+    one = store.prepare_direct(binding(), prepared(ticket_id=1), "one")
+    two = store.prepare_direct(binding(), prepared(ticket_id=2), "two")
     with pytest.raises(WriteCapacityError):
-        store.prepare(binding(), prepared(ticket_id=3))
-    assert store.get(one.capability).state == "pending"
-    assert store.get(two.capability).state == "pending"
-
+        store.prepare_direct(binding(), prepared(ticket_id=3), "three")
+    assert store.get_for_owner(one.operation_id, binding()).state == "pending"
+    assert store.get_for_owner(two.operation_id, binding()).state == "pending"
     monkeypatch.setattr(store, "MAX_UNRESOLVED", 1)
-    bind(store, one, browser="one", csrf="one-csrf")
-    store.claim(one.capability, "one", "one-csrf")
-    bind(store, two, browser="two", csrf="two-csrf")
+    store.claim_direct(one.operation_id, binding())
     with pytest.raises(WriteCapacityError):
-        store.claim(two.capability, "two", "two-csrf")
-    assert store.claim(one.capability, "one", "one-csrf").record.state == "sending"
+        store.claim_direct(two.operation_id, binding())
+    assert store.claim_direct(one.operation_id, binding()).record.state == "sending"
 
 
 def test_claim_reserves_total_capacity_through_known_finish(store_setup, monkeypatch):
     from dynamix_manager.ticket_writes.store import WriteCapacityError
-
     store, path, _, _ = store_setup
     monkeypatch.setattr(store, "MAX_NORMAL", 2)
-    claimed = store.prepare(binding(), prepared(ticket_id=1))
-    bind(store, claimed, browser="claimed", csrf="claimed-csrf")
-    fence = store.claim(claimed.capability, "claimed", "claimed-csrf")
-    store.prepare(binding(), prepared(ticket_id=2))
+    _, fence = submit(store, prepared(ticket_id=1), "one")
+    store.prepare_direct(binding(), prepared(ticket_id=2), "two")
     with pytest.raises(WriteCapacityError):
-        store.prepare(binding(), prepared(ticket_id=3))
-
+        store.prepare_direct(binding(), prepared(ticket_id=3), "three")
     store.finish(fence, "applied", "Applied.", status_code=200)
     with sqlite3.connect(path) as db:
         assert db.execute("SELECT COUNT(*) FROM ticket_write_operations").fetchone()[0] == 2
@@ -488,21 +403,15 @@ def test_claim_reserves_total_capacity_through_known_finish(store_setup, monkeyp
 
 def test_unknown_reserves_total_capacity_through_reconciliation(store_setup, monkeypatch):
     from dynamix_manager.ticket_writes.store import AuthoritativeAppliedEvidence, WriteCapacityError
-
     store, path, _, _ = store_setup
     monkeypatch.setattr(store, "MAX_NORMAL", 2)
-    uncertain = store.prepare(binding(), prepared(ticket_id=1))
-    bind(store, uncertain)
-    fence = claim(store, uncertain)
+    uncertain, fence = submit(store, prepared(ticket_id=1), "one")
     store.finish(fence, "unknown", "Unknown.")
-    store.prepare(binding(), prepared(ticket_id=2))
+    store.prepare_direct(binding(), prepared(ticket_id=2), "two")
     with pytest.raises(WriteCapacityError):
-        store.prepare(binding(), prepared(ticket_id=3))
-
+        store.prepare_direct(binding(), prepared(ticket_id=3), "three")
     store.reconcile_authoritative(
-        uncertain.operation_id,
-        AuthoritativeAppliedEvidence(evidence_id="tdx-event", observed_at=1_001.0),
-    )
+        uncertain.operation_id, AuthoritativeAppliedEvidence(evidence_id="tdx-event", observed_at=1_001.0))
     with sqlite3.connect(path) as db:
         assert db.execute("SELECT COUNT(*) FROM ticket_write_operations").fetchone()[0] == 2
         assert db.execute("SELECT COUNT(*) FROM ticket_write_operations WHERE unresolved=1").fetchone()[0] == 0
@@ -510,62 +419,45 @@ def test_unknown_reserves_total_capacity_through_reconciliation(store_setup, mon
 
 def test_full_unresolved_pool_blocks_prepare_not_only_claim(store_setup, monkeypatch):
     from dynamix_manager.ticket_writes.store import WriteCapacityError
-
     store, _, _, _ = store_setup
     monkeypatch.setattr(store, "MAX_UNRESOLVED", 1)
-    uncertain = store.prepare(binding(), prepared(ticket_id=1))
-    bind(store, uncertain)
-    claim(store, uncertain)
+    submit(store, prepared(ticket_id=1), "one")
     with pytest.raises(WriteCapacityError):
-        store.prepare(binding(), prepared(ticket_id=2))
+        store.prepare_direct(binding(), prepared(ticket_id=2), "two")
 
 
 def test_reconciliation_requires_typed_authoritative_evidence(store_setup):
-    from dynamix_manager.ticket_writes.store import (
-        AuthoritativeAppliedEvidence,
-        InvalidReconciliationEvidence,
-    )
-
+    from dynamix_manager.ticket_writes.store import AuthoritativeAppliedEvidence, InvalidReconciliationEvidence
     store, _, _, _ = store_setup
-    issued = store.prepare(binding(), prepared())
-    bind(store, issued)
-    store.finish(claim(store, issued), "unknown", "No reliable response.")
+    record, fence = submit(store, prepared(), "request-1")
+    store.finish(fence, "unknown", "No reliable response.")
     with pytest.raises(InvalidReconciliationEvidence):
-        store.reconcile_authoritative(issued.operation_id, {"outcome": "rejected", "reason": "not in feed"})
-
+        store.reconcile_authoritative(record.operation_id, {"outcome": "rejected", "reason": "not in feed"})
     resolved = store.reconcile_authoritative(
-        issued.operation_id,
-        AuthoritativeAppliedEvidence(evidence_id="tdx-event-123", observed_at=1_001.0),
-    )
+        record.operation_id, AuthoritativeAppliedEvidence(evidence_id="tdx-event-123", observed_at=1_001.0))
     assert resolved.state == "applied"
-    assert store.prepare(binding(), prepared()).operation_id != issued.operation_id
+    assert store.prepare_direct(binding(), prepared(), "request-2").operation_id != record.operation_id
 
 
 def test_ciphertext_record_swapping_is_detected(store_setup):
     from dynamix_manager.ticket_writes.store import WriteIntegrityError
-
     store, path, _, _ = store_setup
-    first = store.prepare(binding(), prepared(ticket_id=1))
-    second = store.prepare(binding(), prepared(ticket_id=2))
+    first = store.prepare_direct(binding(), prepared(ticket_id=1), "one")
+    second = store.prepare_direct(binding(), prepared(ticket_id=2), "two")
     with sqlite3.connect(path) as db:
-        rows = db.execute(
-            "SELECT id,value FROM ticket_write_operations WHERE id IN (?,?) ORDER BY id",
-            (first.operation_id, second.operation_id),
-        ).fetchall()
+        rows = db.execute("SELECT id,value FROM ticket_write_operations WHERE id IN (?,?) ORDER BY id",
+                          (first.operation_id, second.operation_id)).fetchall()
         db.execute("UPDATE ticket_write_operations SET value=? WHERE id=?", (rows[1][1], rows[0][0]))
         db.execute("UPDATE ticket_write_operations SET value=? WHERE id=?", (rows[0][1], rows[1][0]))
     with pytest.raises(WriteIntegrityError):
-        store.get(first.capability)
+        store.get_for_owner(first.operation_id, binding())
 
 
 def test_audit_contains_only_encrypted_safe_fields(store_setup):
     store, path, _, _ = store_setup
-    issued = store.prepare(binding(), prepared(comments="payload-secret"))
-    bind(store, issued)
-    store.finish(claim(store, issued), "rejected", "safe summary", status_code=403)
-    raw = path.read_bytes()
-    assert b"payload-secret" not in raw
-    assert issued.capability.encode() not in raw
+    _, fence = submit(store, prepared(comments="payload-secret"), "request-1")
+    store.finish(fence, "rejected", "safe summary", status_code=403)
+    assert b"payload-secret" not in path.read_bytes()
     with sqlite3.connect(path) as db:
         columns = {row[1] for row in db.execute("PRAGMA table_info(ticket_write_audit)")}
         assert columns == {"id", "created", "value"}
@@ -579,27 +471,7 @@ def test_audit_contains_only_encrypted_safe_fields(store_setup):
     binding(resource=""),
     binding(family=""),
 ])
-def test_prepare_rejects_incomplete_or_non_write_binding(store_setup, bad):
+def test_prepare_direct_rejects_incomplete_or_non_write_binding(store_setup, bad):
     store, _, _, _ = store_setup
     with pytest.raises(ValueError):
-        store.prepare(bad, prepared())
-
-
-def test_operation_id_lookup_requires_exact_current_owner_binding(store_setup):
-    from dynamix_manager.ticket_writes.store import WriteBindingError
-
-    store, _, _, _ = store_setup
-    owner = binding()
-    issued = store.prepare(owner, prepared())
-    record = store.get_for_owner(issued.operation_id, owner)
-    assert record.operation_id == issued.operation_id
-    assert not hasattr(record, "capability")
-
-    for field, replacement in (
-        ("subject", "other-user"),
-        ("client_id", "other-client"),
-        ("resource", "https://other.example/mcp"),
-        ("family", "other-family"),
-    ):
-        with pytest.raises(WriteBindingError):
-            store.get_for_owner(issued.operation_id, binding(**{field: replacement}))
+        store.prepare_direct(bad, prepared(), "request-1")

@@ -1,17 +1,15 @@
-"""Direct and legacy-review orchestration for personal TeamDynamix ticket writes.
+"""Direct orchestration for personal TeamDynamix ticket writes.
 
-Preparation performs only authenticated reads and persists an immutable change.
-Direct submissions and legacy commits durably claim their operations before
-refreshing the baseline, then make at most one mutation attempt.  The service
-does not claim external exactly-once delivery: an interrupted request remains an
-unknown outcome and is never automatically retried.
+A submission durably claims its operation before refreshing the baseline, then makes at
+most one mutation attempt.  The service does not claim external exactly-once delivery:
+an interrupted request remains an unknown outcome and is never automatically retried.
 """
 
 from __future__ import annotations
 
 import json
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Literal
 from urllib.parse import urlsplit
 
@@ -20,15 +18,12 @@ from dynamix_manager.plugin import Connection
 from .adapter import WriteAdapter, canonical_json
 from .models import (
     AssignAction,
-    ChangePreview,
     CommentAction,
     EditAction,
     StatusAction,
     WriteResult,
 )
-from .store import (
-    DirectReplayResult, GrantBinding, TicketLockedError, WriteStore, WriteStoreError,
-)
+from .store import DirectReplayResult, GrantBinding, WriteStore
 
 
 class TicketWriteServiceError(RuntimeError):
@@ -48,15 +43,7 @@ class LinkedIdentityMismatch(TicketWriteServiceError):
 
 
 class TicketPreparationRejected(TicketWriteServiceError):
-    """A dependency could not produce a safe, complete immutable preview."""
-
-
-@dataclass(frozen=True)
-class PreparedOperation:
-    operation_id: str
-    preview: ChangePreview = field(repr=False)
-    review_url: str = field(repr=False)
-    expires_at: float
+    """A dependency could not produce a safe, complete validated change."""
 
 
 @dataclass(frozen=True)
@@ -73,15 +60,22 @@ class TicketWriteStatus:
 
 _ACTION_TYPES = (CommentAction, StatusAction, AssignAction, EditAction)
 _UNKNOWN_MESSAGE = "The upstream outcome is unknown; do not retry."
-_PENDING_MESSAGE = "The change is awaiting explicit review and Save."
+_PENDING_MESSAGE = ("The change was recorded but not yet sent to TeamDynamix; "
+                    "resubmit it with the same request ID and arguments.")
 _CONFLICT_MESSAGE = "The ticket or selected metadata changed after approval."
+_REJECTED_MESSAGES = {
+    401: "TeamDynamix denied permission for the change; nothing was changed.",
+    403: "TeamDynamix denied permission for the change; nothing was changed.",
+    429: "TeamDynamix rate limit reached; nothing was changed. Try again later with a new request ID.",
+}
+_REJECTED_MESSAGE = "TeamDynamix rejected the change."
 _AUTH_MESSAGE = "Current write authorization is required."
 _DISABLED_MESSAGE = "Hosted ticket writes are disabled."
 _PREPARATION_MESSAGE = "The ticket change could not be safely prepared."
 
 
 class TicketWriteService:
-    """Coordinate immutable previews and one-attempt personal ticket writes."""
+    """Coordinate validated, one-attempt personal ticket writes with durable deduplication."""
 
     def __init__(
         self,
@@ -103,7 +97,7 @@ class TicketWriteService:
         self.adapter_factory = adapter_factory or WriteAdapter.from_connection
 
     def _default_connection(self, values):
-        return Connection("/unused", values=values)
+        return Connection(values)
 
     def _require_enabled(self):
         try:
@@ -116,6 +110,12 @@ class TicketWriteService:
             self._require_enabled()
         try:
             return self.auth_provider.write_grant_binding(principal)
+        except Exception:
+            raise WriteAuthorizationRequired(_AUTH_MESSAGE) from None
+
+    def _validate_binding(self, binding):
+        try:
+            return self.auth_provider.validate_write_grant(binding)
         except Exception:
             raise WriteAuthorizationRequired(_AUTH_MESSAGE) from None
 
@@ -173,76 +173,13 @@ class TicketWriteService:
                 except Exception:
                     pass
 
-    def prepare(self, principal, action):
-        """Validate a typed action using live reads and issue a review capability."""
-        if not isinstance(action, _ACTION_TYPES):
-            raise TypeError("A supported typed ticket action is required.")
-        binding = self._binding_for_principal(principal)
-        # Store validation is an independent final shape/scope/expiry check.
-        try:
-            with self._personal_adapter_binding(binding) as (normalized, adapter):
-                try:
-                    prepared = adapter.validate(action)
-                except Exception:
-                    raise TicketPreparationRejected(_PREPARATION_MESSAGE) from None
-                # Live reads may take long enough for the dynamic gate or durable
-                # grant to change. Recheck both immediately before persistence so
-                # no stale approval capability is issued.
-                self._require_enabled()
-                current = self._validate_binding(normalized)
-                original_grant = GrantBinding.validate(
-                    normalized, float(self.store.clock())
-                )
-                current_grant = GrantBinding.validate(
-                    current, float(self.store.clock())
-                )
-                if current_grant != original_grant:
-                    raise WriteAuthorizationRequired(_AUTH_MESSAGE)
-                issued = self.store.prepare(current, prepared)
-        except (TicketWriteServiceError, WriteStoreError):
-            raise
-        except Exception:
-            raise TicketPreparationRejected(_PREPARATION_MESSAGE) from None
-        review_url = (
-            self.settings.public_url
-            + "/writes/review#"
-            + issued.capability
-        )
-        return PreparedOperation(
-            operation_id=issued.operation_id,
-            preview=prepared.preview,
-            review_url=review_url,
-            expires_at=issued.expires_at,
-        )
-
-    @contextmanager
-    def _personal_adapter_binding(self, binding):
-        """Normalize a freshly loaded binding and open its personal connection."""
-        normalized = self._validate_binding(binding)
-        # Use the store's strict binding normalization before any operation is
-        # persisted; its prepare() repeats this check at the actual write point.
-        grant = GrantBinding.validate(normalized, float(self.store.clock()))
-        with self._personal_adapter(grant) as adapter:
-            yield normalized, adapter
-
-    def _validate_binding(self, binding):
-        try:
-            return self.auth_provider.validate_write_grant(binding)
-        except Exception:
-            raise WriteAuthorizationRequired(_AUTH_MESSAGE) from None
-
-    def open_review(self, capability, browser, csrf):
-        """Validate current authority, then bind a preview to one browser/CSRF pair."""
-        record = self.store.get(capability, browser)
-        self._require_enabled()
-        self._validate_stored_binding(record)
-        return self.store.bind(capability, browser, csrf)
-
     def submit(self, principal, action, request_id):
         """Submit an explicitly requested change with durable request deduplication."""
         if not isinstance(action, _ACTION_TYPES):
             raise TypeError("A supported typed ticket action is required.")
-        binding = self._validate_binding(self._binding_for_principal(principal))
+        # write_grant_binding already re-validates the durable grant; the store repeats
+        # its own strict shape check at every persistence point.
+        binding = self._binding_for_principal(principal)
         original = GrantBinding.validate(binding, float(self.store.clock()))
         record = self.store.lookup_direct(binding, action, request_id)
         if record is None:
@@ -251,6 +188,7 @@ class TicketWriteService:
                     prepared = adapter.validate(action)
                 except Exception:
                     raise TicketPreparationRejected(_PREPARATION_MESSAGE) from None
+            # Live reads may take long enough for the gate or grant to change.
             self._require_enabled()
             current = self._validate_binding(binding)
             if GrantBinding.validate(current, float(self.store.clock())) != original:
@@ -258,13 +196,7 @@ class TicketWriteService:
             record = self.store.prepare_direct(current, prepared, request_id)
         if isinstance(record, DirectReplayResult) or record.state != "pending":
             return self._safe_status(record)
-        try:
-            claim = self.store.claim_direct(record.operation_id, binding)
-        except TicketLockedError:
-            return self._safe_status(
-                record, outcome="conflict",
-                message="Another write for this ticket is still unresolved.",
-            )
+        claim = self.store.claim_direct(record.operation_id, binding)
         if not claim.claimed:
             return self._safe_status(claim.record)
 
@@ -274,28 +206,6 @@ class TicketWriteService:
                 raise WriteAuthorizationRequired(_AUTH_MESSAGE)
 
         return self._dispatch_claim(claim, check_current)
-
-    def commit(self, capability, browser, csrf):
-        """Apply an approved immutable change at most once."""
-        record = self.store.check(capability, browser, csrf)
-        self._require_enabled()
-        self._validate_stored_binding(record)
-        if record.state != "pending":
-            return self._safe_status(record)
-        try:
-            claim = self.store.claim(capability, browser, csrf)
-        except TicketLockedError:
-            return self._safe_status(
-                record,
-                outcome="conflict",
-                message="Another write for this ticket is still unresolved.",
-            )
-        if not claim.claimed:
-            return self._safe_status(claim.record)
-
-        return self._dispatch_claim(
-            claim, lambda: self.store.check(capability, browser, csrf)
-        )
 
     def _dispatch_claim(self, claim, check_current):
         """Shared preflight and sole mutation attempt for a durable claim."""
@@ -316,7 +226,7 @@ class TicketWriteService:
                     return self._safe_status(finished)
 
                 try:
-                    # The approval can expire, the flag can close, or its durable
+                    # The claim can expire, the flag can close, or its durable
                     # grant can be revoked while preflight reads are in progress.
                     check_current()
                     self._require_enabled()
@@ -340,12 +250,10 @@ class TicketWriteService:
                     )
                     return self._safe_status(finished)
 
-                # The accepted/rejected/unknown dispatch result is durable before
-                # any optional read-back. A read failure cannot make an accepted
-                # mutation retryable.
+                # Only fixed, safe messages are persisted; adapter text never escapes.
                 safe_message = {
                     "applied": "TeamDynamix accepted the change.",
-                    "rejected": "TeamDynamix rejected the change.",
+                    "rejected": _REJECTED_MESSAGES.get(result.status_code, _REJECTED_MESSAGE),
                     "unknown": _UNKNOWN_MESSAGE,
                 }[result.outcome]
                 finished = self.store.finish(
@@ -354,11 +262,6 @@ class TicketWriteService:
                     safe_message,
                     status_code=result.status_code,
                 )
-                if result.outcome == "applied":
-                    try:
-                        adapter.snapshot(claim.record.prepared.action.ticket_id)
-                    except Exception:
-                        pass
                 return self._safe_status(finished)
         except (WriteAuthorizationRequired, LinkedIdentityMismatch, WritesDisabled):
             finished = self.store.finish(
@@ -381,10 +284,6 @@ class TicketWriteService:
         """Return a safe status for the exact current grant owner; never dispatch."""
         binding = self._binding_for_principal(principal, require_enabled=False)
         record = self.store.get_for_owner(operation_id, binding)
-        return self._safe_status(record)
-
-    def status_for_record(self, record):
-        """Project a record returned by validated ``open_review`` into safe UI data."""
         return self._safe_status(record)
 
     @staticmethod
@@ -458,7 +357,7 @@ def create_ticket_write_service(
     connection_factory=None,
     adapter_factory=None,
 ):
-    """Production composition point for forthcoming hosted routes and tools."""
+    """Production composition point for the hosted write tools."""
     return TicketWriteService(
         settings,
         vault,

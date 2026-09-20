@@ -24,8 +24,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-plugin = ["mcp>=1.26,<2"]
 hosted = ["mcp>=1.30,<2", "PyJWT[crypto]>=2.12,<3", "cryptography>=46,<48", "httpx>=0.27,<1", "uvicorn>=0.30,<1"]
+web = ["bleach>=6.4,<7", "fastapi>=0.115,<1", "uvicorn>=0.30,<1", "httpx>=0.27,<1", "openai>=2,<4"]
 dev = [
     "nbclient",
     "pytest",
@@ -41,3 +41,4 @@ include = ["dynamix_manager*"]
 
 [tool.setuptools.package-data]
 "dynamix_manager" = ["plugin_app.html"]
+"dynamix_manager.workbench" = ["static/*.html", "static/*.css", "static/*.js"]

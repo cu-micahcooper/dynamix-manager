@@ -92,6 +92,71 @@ def test_signed_oauth_tokens_are_strictly_validated():
     assert asyncio.run(verifier.verify_token(forged)) is None
 
 
+def test_jwks_refetches_unknown_kid_once_and_keeps_cached_keys_when_refresh_fails(monkeypatch):
+    import httpx
+    import dynamix_manager.hosted as hosted
+    from dynamix_manager.hosted import OAuthVerifier
+    keys = {}
+    for name in ('a', 'b'):
+        private = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        jwk = jwt.algorithms.RSAAlgorithm.to_jwk(private.public_key(), as_dict=True)
+        jwk['kid'] = name
+        keys[name] = (private, jwk)
+    published = {'keys': [keys['a'][1]]}
+    calls, failing = [], [False]
+    now = [1_000.0]
+    monkeypatch.setattr(hosted.time, 'monotonic', lambda: now[0])
+
+    async def loader():
+        calls.append(1)
+        if failing[0]:
+            raise httpx.HTTPError('identity provider is down')
+        return published
+
+    verifier = OAuthVerifier('https://identity.test', 'https://connector.test/mcp',
+                             'https://identity.test/keys', keys_loader=loader)
+
+    def verify(kid):
+        claims = dict(iss='https://identity.test', aud='https://connector.test/mcp', sub='alice',
+                      exp=int(time.time()) + 60, iat=int(time.time()), scope='tdx.read', client_id='chatgpt')
+        token = jwt.encode(claims, keys[kid][0], algorithm='RS256', headers={'kid': kid})
+        return asyncio.run(verifier.verify_token(token))
+
+    assert verify('a').subject == 'alice'
+    assert verify('a').subject == 'alice'
+    assert len(calls) == 1
+    # Key rotation: a token with a freshly published kid triggers one refetch.
+    published = {'keys': [keys['a'][1], keys['b'][1]]}
+    now[0] += 60
+    assert verify('b').subject == 'alice'
+    assert len(calls) == 2
+    # Repeated unknown kids do not refetch inside the minimum refresh interval.
+    published = {'keys': [keys['a'][1]]}
+    keys['c'] = keys['b']
+    assert verify('c') is None
+    assert len(calls) == 2
+    # After the cache TTL, a failing refresh keeps serving the last good key set.
+    now[0] += 3600
+    failing[0] = True
+    assert verify('a').subject == 'alice'
+    assert verify('b').subject == 'alice'
+    assert len(calls) == 3
+
+
+def test_jwks_first_fetch_failure_denies_access():
+    import httpx
+    from dynamix_manager.hosted import OAuthVerifier
+
+    async def loader():
+        raise httpx.HTTPError('down')
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    token = jwt.encode({'sub': 'alice'}, key, algorithm='RS256', headers={'kid': 'test'})
+    verifier = OAuthVerifier('https://identity.test', 'https://connector.test/mcp',
+                             'https://identity.test/keys', keys_loader=loader)
+    assert asyncio.run(verifier.verify_token(token)) is None
+
+
 @pytest.mark.parametrize('payload', [None, {}, {'keys': None}, {'keys': ['invalid']}, {'keys': []}])
 def test_jwks_malformed_responses_fail_closed(payload):
     from dynamix_manager.hosted import OAuthVerifier
@@ -141,7 +206,7 @@ def test_hosted_http_isolation_and_authentication(tmp_path, monkeypatch):
             return {'ID': 1, 'Title': personal}
         client.get_ticket.side_effect = get_ticket
         clients.append(client)
-        return Connection('/unused', values=values, client=client)
+        return Connection(values, client=client)
 
     from mcp.server.auth.provider import AccessToken
 
@@ -438,9 +503,13 @@ def test_external_identity_provider_cannot_enable_writes(tmp_path, monkeypatch):
         monkeypatch.setenv(key, value)
     with pytest.raises(ValueError, match='personal authorization'):
         from_environment()
+    # Without an explicit flag, external mode simply stays read-only.
+    monkeypatch.delenv('TDX_HOSTED_WRITES_ENABLED')
+    with pytest.raises(RuntimeError, match='disabled'):
+        from_environment().write_runtime.require_enabled()
 
 
-def test_personal_environment_defaults_writes_off_and_can_enable(tmp_path, monkeypatch):
+def test_personal_environment_defaults_writes_on_and_can_disable(tmp_path, monkeypatch):
     from dynamix_manager.hosted import from_environment
     values = {
         'TDX_HOSTED_AUTH_MODE': 'personal',
@@ -452,9 +521,10 @@ def test_personal_environment_defaults_writes_off_and_can_enable(tmp_path, monke
     }
     for key, value in values.items():
         monkeypatch.setenv(key, value)
-    app = from_environment()
+    monkeypatch.delenv('TDX_HOSTED_WRITES_ENABLED', raising=False)
+    from_environment().write_runtime.require_enabled()
+    monkeypatch.setenv('TDX_HOSTED_WRITES_ENABLED', 'false')
     with pytest.raises(RuntimeError, match='disabled'):
-        app.write_runtime.require_enabled()
+        from_environment().write_runtime.require_enabled()
     monkeypatch.setenv('TDX_HOSTED_WRITES_ENABLED', 'true')
-    enabled = from_environment()
-    enabled.write_runtime.require_enabled()
+    from_environment().write_runtime.require_enabled()

@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from .adapter import WriteAdapter
 from .models import AssignAction, CommentAction, EditAction, StatusAction
 from .service import WriteAuthorizationRequired, WritesDisabled
+from .store import EquivalentWriteBlocked, WriteBindingError
 
 
 WRITE_SCHEMES = [{"type": "oauth2", "scopes": ["tdx.read", "tdx.write"]}]
@@ -106,6 +107,16 @@ def _submit(service, action, request_id):
         )
     except WritesDisabled:
         return _error("Hosted ticket writes are disabled.")
+    except WriteBindingError:
+        return _error(
+            "This request ID was already used for a different change or by another grant. "
+            "Nothing was submitted; use a new request ID for a new change."
+        )
+    except EquivalentWriteBlocked:
+        return _error(
+            "An equivalent change for this ticket has an unresolved outcome. Nothing was "
+            "submitted; check ticket_write_result for the earlier operation before retrying."
+        )
     except Exception:
         return _error(
             "The ticket change result is unavailable. Do not create a new request ID "
@@ -215,7 +226,11 @@ def register_ticket_write_tools(server, tool, service, connection_provider):
         search: METADATA_SEARCH | None = None,
         limit: METADATA_LIMIT = 10,
     ) -> MetadataOutput:
-        """Read a bounded set of active options used to prepare ticket changes."""
+        """Read a bounded set of active options used to prepare ticket changes.
+
+        People results are technicians eligible in the ticket application; search by full
+        name where possible, since common surnames return many ineligible customers.
+        """
         try:
             adapter = WriteAdapter.from_connection(connection_provider())
             return MetadataOutput.model_validate(

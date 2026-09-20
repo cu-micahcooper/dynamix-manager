@@ -43,7 +43,7 @@ class FakeService:
         return TicketWriteStatus(
             operation_id="privatevalue" if self.malformed else operation_id,
             outcome="pending",
-            message="The change is awaiting explicit review and Save.",
+            message="The change was recorded but not yet sent to TeamDynamix.",
             ticket_id=1001,
             ticket_url="https://tenant.example/TDNext/Apps/42/Tickets/TicketDet.aspx?TicketID=1001",
         )
@@ -79,7 +79,6 @@ def tools_server():
     service = FakeService()
     connection = FakeConnection()
     server = create_server(
-        "/unused",
         connection_provider=lambda: connection,
         write_service=service,
     )
@@ -151,7 +150,7 @@ def test_result_returns_only_safe_owner_checked_projection(tools_server):
     assert result == {
         "operation_id": "b" * 32,
         "outcome": "pending",
-        "message": "The change is awaiting explicit review and Save.",
+        "message": "The change was recorded but not yet sent to TeamDynamix.",
         "ticket_id": 1001,
         "ticket_url": "https://tenant.example/TDNext/Apps/42/Tickets/TicketDet.aspx?TicketID=1001",
         "status_code": None,
@@ -273,7 +272,6 @@ def test_real_http_tools_list_mirrors_hosted_security_schemes_at_top_level():
 
     service = FakeService()
     server = create_server(
-        "/unused",
         connection_provider=lambda: FakeConnection(),
         write_service=service,
         fastmcp_class=HostedFastMCP,
@@ -302,7 +300,6 @@ def test_real_http_call_serializes_success_challenge_and_redacted_validation_err
 
     service = FakeService()
     server = create_server(
-        "/unused",
         connection_provider=lambda: FakeConnection(),
         write_service=service,
         fastmcp_class=HostedFastMCP,
@@ -354,7 +351,6 @@ def test_real_http_rejects_json_encoded_action_string_without_calling_service():
 
     service = FakeService()
     server = create_server(
-        "/unused",
         connection_provider=lambda: FakeConnection(),
         write_service=service,
         fastmcp_class=HostedFastMCP,
@@ -397,7 +393,6 @@ def test_real_http_preserves_literal_null_metadata_search(monkeypatch):
         classmethod(lambda cls, connection: Adapter()),
     )
     server = create_server(
-        "/unused",
         connection_provider=lambda: FakeConnection(),
         write_service=FakeService(),
         fastmcp_class=HostedFastMCP,
@@ -448,3 +443,20 @@ def test_metadata_tool_uses_read_scope_and_bounded_adapter(monkeypatch, tools_se
     })
     assert invalid.isError
     assert "unavailable" in invalid.content[0].text.lower()
+
+
+def test_request_id_reuse_and_unresolved_equivalent_get_specific_guidance(tools_server):
+    from dynamix_manager.ticket_writes.store import EquivalentWriteBlocked, WriteBindingError
+
+    server, service = tools_server
+    service.failure = WriteBindingError("The request ID was already used with different arguments.")
+    reused = run(server, "add_ticket_comment", {"action": {"kind": "comment", "ticket_id": 1, "comments": "x"}})
+    assert reused.isError and reused.meta is None
+    text = reused.content[0].text.lower()
+    assert "already used" in text and "new request id" in text
+    assert "do not create a new request id" not in text
+
+    service.failure = EquivalentWriteBlocked("An equivalent write has an unresolved outcome.")
+    blocked = run(server, "add_ticket_comment", {"action": {"kind": "comment", "ticket_id": 1, "comments": "x"}})
+    assert blocked.isError and "unresolved" in blocked.content[0].text.lower()
+    assert "ticket_write_result" in blocked.content[0].text

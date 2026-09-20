@@ -144,11 +144,17 @@ class WriteAdapter:
             "complete": False,
         }
 
+    PEOPLE_CANDIDATE_WINDOW = 50
+
     def _discover_people(self, search, limit):
-        query = urlencode({"searchText": search, "maxResults": limit})
+        # The lookup mixes customers and technicians and carries no application data, so
+        # scan a bounded window and verify each candidate until ``limit`` are eligible.
+        query = urlencode({"searchText": search, "maxResults": self.PEOPLE_CANDIDATE_WINDOW})
         candidates = self._metadata_request("GET", f"/api/people/lookup?{query}")
         results, seen = [], set()
-        for candidate in candidates[:limit]:
+        for candidate in candidates[:self.PEOPLE_CANDIDATE_WINDOW]:
+            if len(results) == limit:
+                break
             if not isinstance(candidate, dict):
                 continue
             try:

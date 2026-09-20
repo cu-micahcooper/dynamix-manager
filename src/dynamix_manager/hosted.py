@@ -41,24 +41,52 @@ class HostedFastMCP(FastMCP):
 class OAuthVerifier:
     """Accept only resource-specific, signed user access tokens from one issuer."""
 
+    CACHE_TTL = 300
+    MIN_REFRESH_INTERVAL = 30
+
     def __init__(self, issuer, resource, jwks_url, keys_loader=None):
         self.issuer, self.resource, self.jwks_url = issuer, resource, jwks_url
-        self.keys_loader = keys_loader
+        self.keys_loader = keys_loader or self._fetch_keys
         self._keys = None
-        self._loaded_at = 0
-        self._lock = asyncio.Lock()
+        self._loaded_at = None
+        self._attempted_at = None
+        self._lock = None
 
-    async def _load_keys(self):
-        if self.keys_loader:
-            return await self.keys_loader()
+    async def _fetch_keys(self):
+        async with httpx.AsyncClient(timeout=10, follow_redirects=False) as client:
+            response = await client.get(self.jwks_url)
+            response.raise_for_status()
+            return response.json()
+
+    async def _load_keys(self, *, refresh=False):
+        """Return the cached JWKS, refreshing on TTL expiry or an explicit unknown-kid request.
+
+        A failed refresh keeps serving the last good key set so an identity-provider outage
+        does not deny access to tokens signed with keys that are still valid.
+        """
+        # asyncio.Lock binds to the loop that first uses it; create it lazily.
+        self._lock = self._lock or asyncio.Lock()
         async with self._lock:
-            if self._keys is None or time.monotonic() - self._loaded_at > 300:
-                async with httpx.AsyncClient(timeout=10, follow_redirects=False) as client:
-                    response = await client.get(self.jwks_url)
-                    response.raise_for_status()
-                    self._keys = response.json()
-                    self._loaded_at = time.monotonic()
+            now = time.monotonic()
+            never = self._loaded_at is None
+            stale = never or now - self._loaded_at > self.CACHE_TTL
+            # Successful or not, do not hit the issuer more often than the minimum interval.
+            recently_tried = (self._attempted_at is not None
+                              and now - self._attempted_at < self.MIN_REFRESH_INTERVAL)
+            if (stale or refresh) and not recently_tried:
+                self._attempted_at = now
+                try:
+                    self._keys = await self.keys_loader()
+                    self._loaded_at = now
+                except (httpx.HTTPError, ValueError) as error:
+                    if never:
+                        raise error
             return self._keys
+
+    @staticmethod
+    def _candidates(keys, kid):
+        return [k for k in keys['keys'] if isinstance(k, dict) and k.get('kid') == kid
+                and k.get('use', 'sig') == 'sig' and k.get('alg', 'RS256') == 'RS256']
 
     async def verify_token(self, token):
         try:
@@ -67,9 +95,10 @@ class OAuthVerifier:
             header = jwt.get_unverified_header(token)
             if header.get('alg') != 'RS256' or not isinstance(header.get('kid'), str):
                 return None
-            keys = await self._load_keys()
-            candidates = [k for k in keys['keys'] if isinstance(k, dict) and k.get('kid') == header['kid']
-                          and k.get('use', 'sig') == 'sig' and k.get('alg', 'RS256') == 'RS256']
+            candidates = self._candidates(await self._load_keys(), header['kid'])
+            if not candidates:
+                # Key rotation: the issuer may have published a new kid since the last fetch.
+                candidates = self._candidates(await self._load_keys(refresh=True), header['kid'])
             if len(candidates) != 1:
                 return None
             key = jwt.PyJWK.from_dict(candidates[0], algorithm='RS256').key
@@ -168,8 +197,7 @@ def create_app(settings, vault, *, verifier=None, connection_factory=None, auth_
         credential = vault.get(settings.issuer, principal.subject)
         values = {'TDX_BASE_URL': settings.tdx_url, 'TDX_APP_ID': settings.tdx_client_id,
                   'WORKBENCH_PERSONAL_TOKEN': credential['token']}
-        c = (connection_factory(values) if connection_factory
-             else Connection('/unused', values=values))
+        c = connection_factory(values) if connection_factory else Connection(values)
         active.append(c.client.session)
         if c.identity() != credential['uid']:
             raise RuntimeError('Personal TeamDynamix identity did not match the linked account.')
@@ -204,7 +232,7 @@ def create_app(settings, vault, *, verifier=None, connection_factory=None, auth_
     )
 
     server = create_server(
-        '/unused', connection_provider=resolve, write_service=write_service,
+        connection_provider=resolve, write_service=write_service,
         instructions=instructions, capability_provider=capabilities,
         fastmcp_class=HostedFastMCP, token_verifier=verifier,
         auth_server_provider=auth_provider,
@@ -272,21 +300,22 @@ def create_app(settings, vault, *, verifier=None, connection_factory=None, auth_
     return application
 
 
-def _writes_enabled_from_environment():
+def _writes_enabled_from_environment(mode):
+    """Personal mode is read/write unless explicitly disabled; external mode is read-only."""
     value = os.environ.get('TDX_HOSTED_WRITES_ENABLED')
     if value is None:
-        return False
+        return mode == 'personal'
     if value not in {'true', 'false'}:
         raise ValueError('TDX_HOSTED_WRITES_ENABLED must be exactly true or false.')
+    if value == 'true' and mode != 'personal':
+        raise ValueError('Hosted ticket writes require personal authorization.')
     return value == 'true'
 
 
 def from_environment():
     """Uvicorn factory. Required configuration is injected by the hosting platform."""
     mode = os.environ.get('TDX_HOSTED_AUTH_MODE', 'external')
-    writes_enabled = _writes_enabled_from_environment()
-    if writes_enabled and mode != 'personal':
-        raise ValueError('Hosted ticket writes require personal authorization.')
+    writes_enabled = _writes_enabled_from_environment(mode)
     if mode == 'personal':
         from dynamix_manager.personal_auth import PersonalAuthProvider
         required = ['TDX_HOSTED_PUBLIC_URL', 'TDX_HOSTED_VAULT_PATH', 'TDX_HOSTED_VAULT_KEY',

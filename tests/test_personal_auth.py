@@ -215,7 +215,7 @@ def test_tdx_adapter_uses_explicit_credentials_and_closes(pilot, monkeypatch):
     factory = Mock(return_value=connection)
     monkeypatch.setattr('dynamix_manager.personal_auth.Connection', factory)
     assert provider._tdx_login('allowed', 'password') == (UID, token, expiry)
-    assert factory.call_args.kwargs['values'] == {'TDX_BASE_URL': provider.settings.tdx_url,
+    assert factory.call_args.args[0] == {'TDX_BASE_URL': provider.settings.tdx_url,
         'TDX_APP_ID': provider.settings.tdx_client_id, 'WORKBENCH_PERSONAL_USERNAME': 'allowed',
         'WORKBENCH_PERSONAL_PASSWORD': 'password'}
     assert connection.client.password == ''

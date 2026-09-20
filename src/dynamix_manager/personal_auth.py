@@ -63,7 +63,7 @@ class PersonalAuthProvider:
         self.routes = [Route('/personal/login', self.login_page, methods=['GET', 'POST'])]
 
     def _tdx_login(self, username, password):
-        connection = Connection('/unused', values={
+        connection = Connection({
             'TDX_BASE_URL': self.settings.tdx_url, 'TDX_APP_ID': self.settings.tdx_client_id,
             'WORKBENCH_PERSONAL_USERNAME': username, 'WORKBENCH_PERSONAL_PASSWORD': password})
         try:

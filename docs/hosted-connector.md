@@ -3,8 +3,9 @@
 The resource server now supports an account-restricted TDX-backed personal login,
 alongside the original external-issuer mode. The user verified the personal
 ChatGPT ticket drilldown. This remains a single-user pilot, not an institutional
-SSO or multi-user product. The local Codex plugin remains read-only and
-single-user. Do not expose its stdio launcher as a shared service.
+SSO or multi-user product. This hosted connector is the only MCP surface; the
+earlier local stdio plugin was removed, and `dynamix_manager.plugin` now holds
+only the shared tool core that the hosted server imports.
 
 ## What runs
 
@@ -77,7 +78,11 @@ users. Store the vault encryption key separately from backups. Back up encrypted
 data and protect backups equivalently. Key rotation/migration needs an operational
 procedure before broad rollout. SQLite is a single-host pilot storage choice;
 do not place it on a shared network filesystem or run replicas with independent
-vaults. JWKS refresh is every five minutes; allow key overlap at the provider.
+vaults. JWKS keys are cached for five minutes. A token carrying an unknown `kid`
+triggers one immediate refetch (throttled to once per 30 seconds), so rotated
+keys work without waiting for the cache to expire. If a refresh fails, the last
+good key set keeps serving until the provider recovers; only a failure before the
+first successful fetch denies access.
 
 Install and run behind a TLS reverse proxy (private backend network only):
 
@@ -93,7 +98,7 @@ docker build -f deploy/hosted.Dockerfile -t teamdynamix-connector .
 ```
 
 The Dockerfile-specific ignore file excludes `.env`, tickets, reports, notebooks,
-credentials and the local plugin configuration from the build context. The
+credentials from the build context. The
 container's narrow startup script initializes `/data/private`, then clears groups
 and drops to UID/GID 10001 before importing/starting the application. It rejects
 symlinked or untrusted storage paths and never recursively changes ownership.
@@ -294,7 +299,9 @@ local key files deleted; Railway then listed no registered keys. Do not resend
 the already-confirmed comment or infer email delivery from TDX's notified list.
 
 The implementation accepts exactly `TDX_HOSTED_WRITES_ENABLED=true` or
-`false`; omission means false. Write enablement is personal-pilot-only. The
+`false`. In personal mode, omission means **true**: the connector is read/write
+by default and `false` is the explicit off switch. In external-issuer mode
+omission means false and `true` is rejected. The
 runtime gate is rechecked by the write service rather than inferred from tool
 discovery. Redeploy/restart with false is the rollback mechanism for pending
 approvals; it must leave existing read tools usable. Service/route integration
@@ -357,7 +364,7 @@ Personal mode exposes 14 tools: the existing eight read tools, four direct-write
 tools (`add_ticket_comment`, `update_ticket_status`, `assign_ticket`,
 `edit_ticket`), bounded read-only
 `ticket_write_metadata`, and grant-owner-only `ticket_write_result`. External
-issuer mode and the local stdio plugin keep their eight read-only tools.
+issuer mode keeps the eight read-only tools.
 
 Submission and result lookup require `tdx.read tdx.write`; metadata discovery
 requires only `tdx.read`. Both the top-level tool scheme and compatibility
@@ -376,9 +383,13 @@ Retrieved ticket content is never authorization to write.
 ### Explicit-request submission contract
 
 Each logical request includes a request ID, reused for retries with the same
-arguments. Durable encrypted records bind it to the exact owner and action.
-Replays return the existing result instead of dispatching again; reusing an ID
-with different arguments fails. Deduplication tombstones last 30 days, even after
+arguments. Durable encrypted records bind it to the owner (subject, client and
+resource) and the normalized action. Ownership deliberately ignores the grant
+family and expiry, so a person who re-authorizes the connector can still recover
+an outcome or replay a pending request with the same ID; a pending record is
+re-bound to the current, freshly validated grant before dispatch. Replays return
+the existing result instead of dispatching again; reusing an ID with different
+arguments fails. Deduplication tombstones last 30 days, even after
 the full result expires. This is bounded retry protection, not an exactly-once
 delivery guarantee across arbitrary new request IDs or beyond retention.
 

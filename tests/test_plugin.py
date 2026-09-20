@@ -1,27 +1,30 @@
 import asyncio
 import json
-import sys
-from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
 import requests
-from mcp import ClientSession, StdioServerParameters
-from mcp.client.stdio import stdio_client
 
+import dynamix_manager.plugin as plugin
 from dynamix_manager.plugin import APP_URI, Connection, TenantSession, create_server, display_text
 
 
 VALUES = {"TDX_BASE_URL": "https://example.test/TDWebApi", "TDX_APP_ID": "2045",
-          "TDX_USERNAME": "user", "TDX_PASSWORD": "private-password"}
+          "WORKBENCH_PERSONAL_TOKEN": "private-token"}
+LOGIN_VALUES = {"TDX_BASE_URL": "https://example.test/TDWebApi", "TDX_APP_ID": "2045",
+                "WORKBENCH_PERSONAL_USERNAME": "user", "WORKBENCH_PERSONAL_PASSWORD": "private-password"}
 
 
 def connection(values=None):
     client = Mock()
-    client.authenticate.return_value = "private-token"
+    client.authenticate.return_value = "login-token"
     client.fetch_applications.return_value = [{"AppID": 634, "Name": "InfoTech Tickets", "AppClass": "TDTickets"}]
     client.list_ticketing_applications.side_effect = lambda apps: apps
-    return Connection("/unused", values=values or VALUES, client=client)
+    return Connection(values=values or VALUES, client=client)
+
+
+def server_for(c, **kwargs):
+    return create_server(connection_provider=lambda: c, **kwargs)
 
 
 def call(server, name, arguments=None):
@@ -29,31 +32,61 @@ def call(server, name, arguments=None):
     return result[1] if isinstance(result, tuple) else result
 
 
-def test_connection_discovers_ticket_app_separately_and_authenticates_once():
+def test_connection_uses_supplied_token_and_discovers_ticket_app_separately():
     c = connection()
-    server = create_server("/unused", c)
+    server = server_for(c)
     assert call(server, "connection_status")["ticket_app_id"] == 634
     assert call(server, "connection_status")["connected"]
     assert c.header_app_id == "2045"
-    c.client.authenticate.assert_called_once()
+    c.client.authenticate.assert_not_called()
     assert "private" not in json.dumps(call(server, "connection_status"))
 
 
-def test_explicit_hosted_instructions_and_capability_status_do_not_change_local_defaults():
-    local = create_server("/unused", connection())
+def test_ready_never_authenticates_without_a_personal_token():
+    c = connection(LOGIN_VALUES)
+    assert c.auth_mode == "user"
+    with pytest.raises(RuntimeError, match="token"):
+        c.ready()
+    c.client.authenticate.assert_not_called()
+    c.client.fetch_applications.assert_not_called()
+
+
+def test_application_discovery_is_cached_per_tenant_until_ttl(monkeypatch):
+    first, second = connection(), connection()
+    assert first.app_id == 634
+    assert second.app_id == 634
+    first.client.fetch_applications.assert_called_once()
+    second.client.fetch_applications.assert_not_called()
+
+    other = connection({**VALUES, "TDX_BASE_URL": "https://other.test/TDWebApi"})
+    assert other.app_id == 634
+    other.client.fetch_applications.assert_called_once()
+
+    monkeypatch.setattr(plugin.time, "monotonic", lambda: 10 ** 9)
+    stale = connection()
+    assert stale.app_id == 634
+    stale.client.fetch_applications.assert_called_once()
+
+
+def test_capability_provider_controls_read_only_status():
+    local = server_for(connection())
     assert local.instructions.startswith("Read-only")
     assert call(local, "connection_status")["read_only"] is True
 
-    hosted = create_server(
-        "/unused",
+    hosted = server_for(
         connection(),
-        instructions="Hosted personal connector. Preparation is not a save.",
+        instructions="Hosted personal connector.",
         capability_provider=lambda: {"read_only": False, "write_available": True},
     )
-    assert hosted.instructions == "Hosted personal connector. Preparation is not a save."
+    assert hosted.instructions == "Hosted personal connector."
     status = call(hosted, "connection_status")
     assert status["read_only"] is False
     assert status["write_available"] is True
+
+
+def test_server_requires_a_per_request_connection_provider():
+    with pytest.raises(TypeError):
+        create_server()
 
 
 @pytest.mark.parametrize("url", ["http://example.test/TDWebApi", "https://user:secret@example.test/TDWebApi",
@@ -63,26 +96,24 @@ def test_rejects_unsafe_tenant_config(url):
         connection({**VALUES, "TDX_BASE_URL": url})
 
 
-def test_personal_token_takes_precedence():
-    c = connection({**VALUES, "WORKBENCH_PERSONAL_TOKEN": "personal-token"})
-    c.ready()
-    c.client.authenticate.assert_not_called()
-    assert c.token == "personal-token"
-    assert c.auth_mode == "user"
+def test_missing_credentials_are_rejected_at_construction():
+    with pytest.raises(ValueError, match="credentials"):
+        connection({"TDX_BASE_URL": VALUES["TDX_BASE_URL"], "TDX_APP_ID": "2045"})
 
 
 def test_admin_my_queue_does_not_impersonate_a_user():
-    c = connection({**VALUES, "TDX_USERNAME": "00000000-0000-0000-0000-000000000001",
-                    "TDX_PASSWORD": "00000000-0000-0000-0000-000000000002"})
+    c = connection({**LOGIN_VALUES, "WORKBENCH_PERSONAL_USERNAME": "00000000-0000-0000-0000-000000000001",
+                    "WORKBENCH_PERSONAL_PASSWORD": "00000000-0000-0000-0000-000000000002"})
+    c.token = "admin-token"
     with pytest.raises(Exception, match="personal login"):
-        call(create_server("/unused", c), "my_queue")
+        call(server_for(c), "my_queue")
     c.client.search_tickets.assert_not_called()
 
 
 def test_search_limits_results_and_marks_incomplete():
     c = connection()
     c.client.search_tickets.return_value = [{"ID": i, "Title": "Test"} for i in range(5)]
-    result = call(create_server("/unused", c), "search_tickets", {"query": "wifi", "limit": 2, "status_ids": [1]})
+    result = call(server_for(c), "search_tickets", {"query": "wifi", "limit": 2, "status_ids": [1]})
     assert len(result["tickets"]) == 2
     assert result["complete"] is False
     assert "/Apps/634/" in result["tickets"][0]["url"]
@@ -94,8 +125,8 @@ def test_search_limits_results_and_marks_incomplete():
 def test_mcp_rejects_invalid_search_arguments_before_network(arguments):
     c = connection()
     with pytest.raises(Exception):
-        call(create_server("/unused", c), "search_tickets", arguments)
-    c.client.authenticate.assert_not_called()
+        call(server_for(c), "search_tickets", arguments)
+    c.client.fetch_applications.assert_not_called()
 
 
 def test_ambiguous_app_discovery_fails_closed():
@@ -124,39 +155,26 @@ def test_authenticated_requests_cannot_leave_tenant():
         TenantSession(VALUES["TDX_BASE_URL"]).get("https://other.test/api/applications")
 
 
-def test_full_stdio_protocol_and_ui_resource(tmp_path):
+def test_read_tools_and_ui_resource_without_credentials():
+    server = create_server(connection_provider=lambda: None)
+
     async def check():
-        # Empty project proves startup, discovery and UI resources do not need credentials.
-        params = StdioServerParameters(command=sys.executable, args=["-m", "dynamix_manager.plugin",
-                                                                   "--project-root", str(tmp_path)])
-        async with stdio_client(params) as (read, write):
-            async with ClientSession(read, write) as session:
-                await session.initialize()
-                tools = (await session.list_tools()).tools
-                assert len(tools) == 8
-                assert all(t.annotations.readOnlyHint for t in tools)
-                search = next(t for t in tools if t.name == "search_tickets")
-                assert search.meta["ui"]["resourceUri"] == APP_URI
-                resource = await session.read_resource(APP_URI)
-                assert resource.contents[0].mimeType == "text/html;profile=mcp-app"
-                assert "TeamDynamix" in resource.contents[0].text
-                invalid = await session.call_tool("get_ticket", {"ticket_id": -1})
-                assert invalid.isError
+        tools = await server.list_tools()
+        assert len(tools) == 8
+        assert all(t.annotations.readOnlyHint for t in tools)
+        search = next(t for t in tools if t.name == "search_tickets")
+        assert search.meta["ui"]["resourceUri"] == APP_URI
+        resource = await server.read_resource(APP_URI)
+        assert resource[0].mime_type == "text/html;profile=mcp-app"
+        assert "TeamDynamix" in resource[0].content
     asyncio.run(check())
-
-
-def test_manifest_launcher_targets_real_runtime():
-    manifest = json.loads(Path("plugins/teamdynamix/.mcp.json").read_text())
-    target = manifest["mcpServers"]["teamdynamix"]
-    assert Path(target["command"]).is_file()
-    assert target["args"][1] == "dynamix_manager.plugin"
 
 
 def test_detail_and_activity_provide_readable_text_and_ticket_identity():
     c = connection()
     c.client.get_ticket.return_value = {"ID": 42, "Description": "<p>Hello &amp; welcome</p><script>bad()</script>"}
     c.client.get_ticket_feed.return_value = [{"Body": "<p>Reply</p>", "IsPrivate": True}]
-    server = create_server("/unused", c)
+    server = server_for(c)
     assert call(server, "get_ticket", {"ticket_id": 42})["description_text"] == "Hello & welcome"
     feed = call(server, "ticket_feed", {"ticket_id": 42})
     assert feed["ticket_id"] == 42

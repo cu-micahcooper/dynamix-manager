@@ -278,7 +278,7 @@ def test_people_lookup_is_encoded_bounded_and_validates_org_application_membersh
     valid = "11111111-1111-4111-8111-111111111111"
     wrong_app = "22222222-2222-4222-8222-222222222222"
     inactive = "33333333-3333-4333-8333-333333333333"
-    query = urlencode({"searchText": "A&B Person", "maxResults": 3})
+    query = urlencode({"searchText": "A&B Person", "maxResults": 50})
     routes = {
         ("GET", "/api/people/lookup?" + query): [
             {"UID": valid, "FullName": "Untrusted lookup name"},
@@ -300,6 +300,10 @@ def test_people_lookup_is_encoded_bounded_and_validates_org_application_membersh
             "UID": inactive, "FullName": "Inactive", "IsActive": False,
             "OrgApplications": [{"ID": 42, "IsActive": True}],
         },
+        ("GET", "/api/people/44444444-4444-4444-8444-444444444444"): {
+            "UID": "44444444-4444-4444-8444-444444444444", "FullName": "Customer",
+            "IsActive": True, "OrgApplications": [],
+        },
     }
     adapter, calls = metadata_adapter(routes)
     result = adapter.discover_metadata("people", search="A&B Person", limit=3)
@@ -310,7 +314,7 @@ def test_people_lookup_is_encoded_bounded_and_validates_org_application_membersh
         "complete": False,
     }
     assert calls[0][0:2] == ("GET", "https://tenant.example/TDWebApi/api/people/lookup?" + query)
-    assert len(calls) == 4
+    assert len(calls) == 5
     assert "private@example.invalid" not in json.dumps(result)
 
 
@@ -362,3 +366,23 @@ def test_metadata_lookup_malformed_or_failed_response_is_safely_redacted(respons
         adapter.discover_metadata("statuses")
     assert "private" not in str(error.value)
     assert len(calls) == 1
+
+
+def test_people_lookup_scans_a_wide_candidate_window_and_stops_at_limit():
+    """Common surnames return many customers first; eligible technicians may sit past ``limit``."""
+    customers = [f"00000000-0000-4000-8000-{i:012d}" for i in range(1, 8)]
+    techs = [f"11111111-1111-4111-8111-{i:012d}" for i in range(1, 4)]
+    routes = {("GET", "/api/people/lookup?" + urlencode({"searchText": "Cooper", "maxResults": 50})):
+              [{"UID": uid} for uid in customers + techs]}
+    for uid in customers:
+        routes[("GET", f"/api/people/{uid}")] = {"UID": uid, "FullName": "Customer", "IsActive": True,
+                                                  "OrgApplications": []}
+    for index, uid in enumerate(techs):
+        routes[("GET", f"/api/people/{uid}")] = {"UID": uid, "FullName": f"Tech {index}", "IsActive": True,
+                                                  "OrgApplications": [{"ID": 42, "IsActive": True}]}
+    adapter, calls = metadata_adapter(routes)
+    result = adapter.discover_metadata("people", search="Cooper", limit=2)
+    assert [item["Name"] for item in result["results"]] == ["Tech 0", "Tech 1"]
+    assert result["returned"] == 2
+    # One lookup, seven customer detail reads, then exactly two technician reads: the third is never fetched.
+    assert len(calls) == 1 + len(customers) + 2
