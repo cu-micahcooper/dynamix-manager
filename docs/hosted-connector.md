@@ -358,6 +358,21 @@ client, resource, original scopes and upstream expiry. Refresh narrowing cannot
 be reversed through refresh. Re-login does not extend an older family's expiry.
 Revocation/replay preserves the binding while marking the family revoked.
 
+### Hosted-only deployment — 2026-09-20
+
+Commit `5d441c7` removed the local stdio plugin and made personal mode
+read/write by default. Verified locally first against the real tenant with a
+self-signed-TLS harness: full OAuth flow, all eight read tools, metadata
+discovery, one private test comment and one status change (New to Closed) on
+ticket 30848005, each applied once with replay deduplicated. Railway deployment
+`90f78dcf-379e-452d-99c9-4f29f8340432` (clean `git archive` bundle of
+`pyproject.toml`, `README.md`, `LICENSE`, `railway.toml`, `deploy/`, `src/`)
+succeeded; live checks: `/healthz` 200, both discovery documents 200 with
+`tdx.read tdx.write`, unauthenticated `/mcp` 401, `/writes/review` 410,
+unapproved callback registration 400. The service keeps its explicit
+`TDX_HOSTED_WRITES_ENABLED=true`, which now matches the default. Refresh the
+connector's tool definitions in ChatGPT after this deployment.
+
 ### ChatGPT tool surface
 
 Personal mode exposes 14 tools: the existing eight read tools, four direct-write
