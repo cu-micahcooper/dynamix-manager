@@ -200,6 +200,43 @@ References: [Railway configuration](https://docs.railway.com/config-as-code/refe
 [volume ownership](https://docs.railway.com/volumes),
 [health checks and PORT](https://docs.railway.com/deployments/healthchecks).
 
+## Production deployment (CU DevOps Playground) — 2026-09-21
+
+The production connector runs in the Cedarville Railway workspace **CU DevOps
+Playground**, separate from the personal-account pilot, which stays up until
+ChatGPT is cut over.
+
+- Project `teamdynamix-connector`: `7e6cec5a-9dba-4fcf-a528-52d192eca04d`.
+- Service `connector`: `39f4ffae-b110-40fb-a9db-95834cf7366e`.
+- Environment `production`: `085a1c95-0914-4f82-8b95-a2fde442b6ec`.
+- Volume `connector-volume`: `454dda37-ef2b-40f7-b0e1-476dc502f02a`, mounted at `/data`.
+- HTTPS origin: `https://connector-production-a492.up.railway.app`.
+- Variables: `PORT=8000`, `TDX_HOSTED_AUTH_MODE=personal`, `TDX_HOSTED_PUBLIC_URL`,
+  `TDX_HOSTED_VAULT_PATH=/data/private/credentials.sqlite`, a vault key generated
+  on the operator's machine and never printed, `TDX_HOSTED_REDIRECT_URIS` with the
+  existing ChatGPT callback plus the localhost test callback. **No
+  `TDX_HOSTED_ALLOWED_UID`**: this instance is multi-user, and
+  `TDX_HOSTED_WRITES_ENABLED` is unset so writes are on by default.
+- Service settings had to be set through Railway's GraphQL API because a CLI-created
+  service ignores `railway.toml` and its `Builder` enum has no Dockerfile value:
+  `dockerfilePath=deploy/hosted.Dockerfile` (which makes Railway build the
+  Dockerfile), `healthcheckPath=/healthz`, timeout 120, one replica, restart on
+  failure with 3 retries. The first two deployments failed instantly under Railpack.
+- Deployment `e4dabca1-617a-4c95-b98b-8ed84bf68441` (commit `0cdbbc5`) succeeded:
+  `/healthz` 200, both discovery documents 200 with `tdx.read tdx.write`,
+  unauthenticated `/mcp` 401, `/writes/review` 410, and a DCR + authorize round
+  trip rendered the multi-user login page with read-and-modify consent and "Keep
+  me connected" unchecked.
+
+Cutover checklist: (1) in ChatGPT, point the TeamDynamix connector at the new
+`/mcp` URL (or create a new connector) and note the callback URL it shows;
+(2) add that callback to `TDX_HOSTED_REDIRECT_URIS` if it differs; (3) each person
+signs in once on the login page; (4) share/publish the connector in the ChatGPT
+workspace so other staff can add it; (5) once verified, remove the pilot project
+and its volume from the personal Railway account. A custom `cedarville.edu`
+domain changes the OAuth issuer and audience, so set it before people connect or
+expect everyone to reconnect.
+
 ## Institutional account linking remains a separate gate
 
 Cedarville's live OpenAPI schema documents `/api/auth/loginsso`, which returns a

@@ -1,7 +1,7 @@
 """Persistent OAuth test client for the hosted TeamDynamix connector.
 
-State (client id, refresh/access tokens) lives in .local/connector-test-client.json, which is
-git-ignored. Never prints secrets. Usage:
+State (client id, refresh/access tokens) lives in .local/connector-test-client-<host>.json, which
+is git-ignored. Never prints secrets. Set CONNECTOR_URL to target another instance. Usage:
 
   python scripts/connector_client.py start            # register (once) and print the login URL
   python scripts/connector_client.py exchange <cb-url> # finish the sign-in with the callback URL
@@ -17,9 +17,13 @@ from pathlib import Path
 
 import httpx
 
-BASE = "https://connector-production-3f83.up.railway.app"
+import os
+
+# Production (CU DevOps Playground) by default; CONNECTOR_URL selects another instance, e.g. the pilot.
+BASE = os.environ.get("CONNECTOR_URL", "https://connector-production-a492.up.railway.app").rstrip("/")
 CALLBACK = "https://localhost:8443/callback"
-STATE = Path(__file__).resolve().parents[1] / ".local" / "connector-test-client.json"
+STATE = (Path(__file__).resolve().parents[1] / ".local"
+         / f"connector-test-client-{BASE.removeprefix('https://').split('.')[0]}.json")
 http = httpx.Client(base_url=BASE, follow_redirects=False, timeout=60)
 
 
