@@ -7,6 +7,7 @@ returned to callers.
 
 import threading
 import time
+from datetime import datetime
 from functools import partial, wraps
 from html.parser import HTMLParser
 from pathlib import Path
@@ -18,13 +19,32 @@ import anyio
 import requests
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
-from pydantic import Field
+from pydantic import AfterValidator, Field
 
 from dynamix_manager.tdx_client import TeamDynamixClient, build_auth_headers, uses_admin_auth
 
 APP_URI = "ui://teamdynamix/tickets-v2.html"
 POSITIVE = Annotated[int, Field(gt=0)]
 LIMIT = Annotated[int, Field(ge=1, le=100)]
+ACTIVE_STATUS_CLASSES = [1, 2, 5, 6]  # new, in process, on hold, requested
+PEOPLE_LOOKUP_WINDOW = 25
+
+
+def _iso_datetime(value):
+    """Accept ISO 8601 dates or timestamps (with optional Z) and pass them through unchanged."""
+    try:
+        datetime.fromisoformat(value.replace("Z", "+00:00") if value.endswith("Z") else value)
+    except ValueError:
+        raise ValueError("Dates must be ISO 8601, for example 2026-08-01 or 2026-08-01T00:00:00Z.") from None
+    return value
+
+
+ID_LIST = list[POSITIVE] | None
+UID_LIST = list[UUID] | None
+DATE = Annotated[str, Field(min_length=10, max_length=35), AfterValidator(_iso_datetime)] | None
+STATUS_CLASSES = list[Annotated[int, Field(ge=1, le=6)]] | None
+DAYS = Annotated[int, Field(ge=0)] | None
+PERSON = Annotated[str, Field(min_length=2, max_length=100)] | None
 TICKET_APPLICATION_NAME = "InfoTech Tickets"
 APPLICATION_CACHE_TTL = 3600
 
@@ -155,6 +175,33 @@ class Connection:
             raise RuntimeError("TeamDynamix did not confirm a personal identity.")
         return str(UUID(str(user["UID"])))
 
+    def lookup_people(self, text, limit=PEOPLE_LOOKUP_WINDOW):
+        """Server-side people lookup (customers and technicians); returns raw active records."""
+        self.ready()
+        rows = self.client.session.get(
+            self.base_url + "/api/people/lookup", params={"searchText": text, "maxResults": limit},
+            headers=build_auth_headers(self.token, self.header_app_id), timeout=30,
+        ).json()
+        return [row for row in (rows if isinstance(rows, list) else [])
+                if isinstance(row, dict) and row.get("IsActive") is True and row.get("UID")]
+
+    def resolve_person(self, role, search):
+        """Resolve a name, email or username to specific UIDs before searching.
+
+        Exact matches on full name, primary/alternate email or username win; otherwise a single
+        candidate is accepted. Several partial candidates are reported, never guessed between.
+        """
+        needle = search.strip().casefold()
+        candidates = self.lookup_people(search.strip())
+        exact = [row for row in candidates if needle in {
+            str(row.get(key) or "").casefold()
+            for key in ("FullName", "PrimaryEmail", "AlternateEmail", "UserName")}]
+        chosen = exact or (candidates if len(candidates) == 1 else [])
+        shown = chosen or candidates[:10]
+        matched = [{"uid": str(UUID(str(row["UID"]))), "name": row.get("FullName"),
+                    "email": row.get("PrimaryEmail")} for row in shown]
+        return {"role": role, "search": search, "matched": matched}, [m["uid"] for m in matched] if chosen else []
+
     def ticket_summary(self, ticket):
         keys = ("ID", "Title", "StatusID", "StatusName", "PriorityName", "ResponsibleFullName",
                 "ResponsibleGroupName", "CreatedDate", "ModifiedDate", "EndDate")
@@ -231,33 +278,97 @@ def create_server(
         c = conn()
         return {"statuses": c.client.fetch_ticket_statuses(c.token, c.app_id)}
 
-    def search(query, status_ids, limit, responsibility=None):
-        c = conn()
-        payload = {"SearchText": query, "MaxResults": limit}
-        if status_ids:
-            payload["StatusIDs"] = status_ids
-        if responsibility:
-            payload["PrimaryResponsibilityUids"] = [responsibility]
+    def run_search(c, payload, limit, resolved=()):
         rows = c.client.search_tickets(c.token, payload, c.app_id, max_attempts=1)
-        return {"tickets": [c.ticket_summary(t) for t in rows[:limit]], "returned": min(len(rows), limit),
-                "complete": False, "warning": "Bounded search; the API provides no total or paging cursor."}
+        result = {"tickets": [c.ticket_summary(t) for t in rows[:limit]], "returned": min(len(rows), limit),
+                  "complete": len(rows) < limit, "resolved_people": list(resolved)}
+        if not result["complete"]:
+            result["warning"] = (f"Only the first {limit} matches are shown; narrow the filters or raise "
+                                 "limit (max 100). The API provides no total or paging cursor.")
+        return result
 
     @tool(annotations=read, meta=ui_meta)
-    def search_tickets(query: Annotated[str, Field(max_length=500)] = "",
-                       status_ids: list[POSITIVE] | None = None, limit: LIMIT = 25) -> dict[str, Any]:
-        """Search InfoTech Tickets by text and optional status IDs; returns at most 100 ticket summaries."""
-        return search(query, status_ids, limit)
+    def search_tickets(
+        query: Annotated[str, Field(max_length=500)] = "",
+        ticket_id: POSITIVE | None = None,
+        status_ids: ID_LIST = None,
+        status_classes: STATUS_CLASSES = None,
+        is_on_hold: bool | None = None,
+        requestor: PERSON = None,
+        responsible: PERSON = None,
+        requestor_uids: UID_LIST = None,
+        responsible_uids: UID_LIST = None,
+        responsible_group_ids: ID_LIST = None,
+        priority_ids: ID_LIST = None,
+        type_ids: ID_LIST = None,
+        service_ids: ID_LIST = None,
+        account_ids: ID_LIST = None,
+        form_ids: ID_LIST = None,
+        created_from: DATE = None,
+        created_to: DATE = None,
+        modified_from: DATE = None,
+        modified_to: DATE = None,
+        closed_from: DATE = None,
+        closed_to: DATE = None,
+        days_old_from: DAYS = None,
+        days_old_to: DAYS = None,
+        limit: LIMIT = 25,
+    ) -> dict[str, Any]:
+        """Search InfoTech Tickets with the API's own filters; every filter runs server-side.
+
+        Prefer specific filters over free text and never fetch a broad result to sort locally.
+        `requestor` / `responsible` accept a name, email or username: the connector resolves them
+        through the people API first and searches by the exact UIDs. Report the resolved person to
+        the user as a statement (for example "searching tickets requested by mccaina@cedarville.edu")
+        and continue; do not ask them to confirm. If `resolved_people[].matched` lists several
+        people, the search did not run: pick the right one with the user and retry by `*_uids`.
+        Status classes: 1 new, 2 in process, 3 completed, 4 cancelled, 5 on hold, 6 requested.
+        Resolve other IDs with ticket_statuses and ticket_write_metadata (priorities, people,
+        groups). Dates are ISO 8601. `complete` is true when every match was returned.
+        """
+        c = conn()
+        resolved, warnings = [], []
+        people = {"RequestorUids": list(map(str, requestor_uids or [])),
+                  "ResponsibilityUids": list(map(str, responsible_uids or []))}
+        for role, text, key in (("requestor", requestor, "RequestorUids"),
+                                ("responsible", responsible, "ResponsibilityUids")):
+            if text is None:
+                continue
+            entry, uids = c.resolve_person(role, text)
+            resolved.append(entry)
+            if uids:
+                people[key].extend(uids)
+            elif entry["matched"]:
+                warnings.append(f"The {role} search {text!r} is ambiguous; it matched several people.")
+            else:
+                warnings.append(f"No person matched the {role} search {text!r}.")
+        if warnings:
+            return {"tickets": [], "returned": 0, "complete": True, "resolved_people": resolved,
+                    "warning": " ".join(warnings) + " No ticket search was run."}
+        payload = {"MaxResults": limit}
+        for key, value in (
+            ("SearchText", query or None), ("TicketID", ticket_id), ("StatusIDs", status_ids),
+            ("StatusClassIDs", status_classes), ("IsOnHold", is_on_hold),
+            ("ResponsibilityUids", people["ResponsibilityUids"] or None),
+            ("ResponsibilityGroupIDs", responsible_group_ids),
+            ("RequestorUids", people["RequestorUids"] or None), ("PriorityIDs", priority_ids),
+            ("TypeIDs", type_ids), ("ServiceIDs", service_ids), ("AccountIDs", account_ids),
+            ("FormIDs", form_ids), ("CreatedDateFrom", created_from), ("CreatedDateTo", created_to),
+            ("ModifiedDateFrom", modified_from), ("ModifiedDateTo", modified_to),
+            ("ClosedDateFrom", closed_from), ("ClosedDateTo", closed_to),
+            ("DaysOldFrom", days_old_from), ("DaysOldTo", days_old_to),
+        ):
+            if value is not None:
+                payload[key] = value
+        return run_search(c, payload, limit, resolved)
 
     @tool(annotations=read, meta=ui_meta)
     def my_queue(limit: LIMIT = 25) -> dict[str, Any]:
         """Read active tickets assigned to the authenticated personal user. Admin auth is unsupported."""
         c = conn()
         uid = c.identity()
-        statuses = c.client.fetch_ticket_statuses(c.token, c.app_id)
-        active = [s["ID"] for s in statuses if s.get("IsActive") and s.get("StatusClass") in {1, 2, 5, 6}]
-        if not active:
-            return {"tickets": [], "returned": 0, "complete": True}
-        return search("", active, limit, uid)
+        payload = {"MaxResults": limit, "StatusClassIDs": ACTIVE_STATUS_CLASSES, "ResponsibilityUids": [uid]}
+        return run_search(c, payload, limit)
 
     @tool(annotations=read, meta=ui_meta)
     def get_ticket(ticket_id: POSITIVE) -> dict[str, Any]:

@@ -185,3 +185,131 @@ def test_detail_and_activity_provide_readable_text_and_ticket_identity():
 
 def test_rich_text_preserves_paragraphs_without_active_content():
     assert display_text('<p>First</p><p>Second<br>Third</p><style>bad</style>') == "First\nSecond\nThird"
+
+
+ALAN = {"UID": "aaaaaaaa-0000-4000-8000-000000000001", "FullName": "Alan McCain",
+        "PrimaryEmail": "mccaina@cedarville.edu", "UserName": "mccaina", "IsActive": True}
+OTHER_ALAN = {"UID": "aaaaaaaa-0000-4000-8000-000000000002", "FullName": "Alan McCainster",
+              "PrimaryEmail": "mccainster@cedarville.edu", "UserName": "mccainster", "IsActive": True}
+
+
+def people_lookup(c, results):
+    """Route the connection's people lookups to fixed results; record the search text."""
+    searches = []
+
+    def get(url, **kwargs):
+        assert url == c.base_url + "/api/people/lookup"
+        searches.append((kwargs["params"]["searchText"], kwargs["params"]["maxResults"]))
+        return Mock(json=lambda: results)
+
+    c.client.session.get.side_effect = get
+    return searches
+
+
+def test_search_maps_every_filter_onto_the_api_and_reports_completeness():
+    c = connection()
+    c.client.search_tickets.return_value = [{"ID": 1, "Title": "One"}]
+    result = call(server_for(c), "search_tickets", {
+        "query": "chassis", "ticket_id": 30605254, "status_ids": [30794], "status_classes": [1, 2],
+        "is_on_hold": False, "responsible_uids": [ALAN["UID"]], "responsible_group_ids": [14405],
+        "requestor_uids": [ALAN["UID"]], "priority_ids": [7], "type_ids": [3], "service_ids": [9],
+        "account_ids": [11], "form_ids": [13], "created_from": "2026-08-01", "created_to": "2026-08-31T23:59:59Z",
+        "modified_from": "2026-08-01T00:00:00", "closed_to": "2026-09-01", "days_old_from": 1, "days_old_to": 90,
+        "limit": 10,
+    })
+    payload = c.client.search_tickets.call_args.args[1]
+    assert payload == {
+        "SearchText": "chassis", "MaxResults": 10, "TicketID": 30605254, "StatusIDs": [30794],
+        "StatusClassIDs": [1, 2], "IsOnHold": False, "ResponsibilityUids": [ALAN["UID"]],
+        "ResponsibilityGroupIDs": [14405], "RequestorUids": [ALAN["UID"]], "PriorityIDs": [7],
+        "TypeIDs": [3], "ServiceIDs": [9], "AccountIDs": [11], "FormIDs": [13],
+        "CreatedDateFrom": "2026-08-01", "CreatedDateTo": "2026-08-31T23:59:59Z",
+        "ModifiedDateFrom": "2026-08-01T00:00:00", "ClosedDateTo": "2026-09-01",
+        "DaysOldFrom": 1, "DaysOldTo": 90,
+    }
+    assert result["returned"] == 1 and result["complete"] is True
+    assert result["resolved_people"] == []
+    c.client.search_tickets.return_value = [{"ID": i, "Title": "x"} for i in range(10)]
+    assert call(server_for(c), "search_tickets", {"limit": 10})["complete"] is False
+
+
+@pytest.mark.parametrize("arguments", [
+    {"created_from": "yesterday"}, {"closed_to": "2026-13-01"}, {"status_classes": [7]},
+    {"responsible_uids": ["not-a-uid"]}, {"days_old_to": -1}, {"requestor": "x" * 101},
+])
+def test_search_rejects_invalid_filters_before_any_network_call(arguments):
+    c = connection()
+    with pytest.raises(Exception):
+        call(server_for(c), "search_tickets", arguments)
+    c.client.search_tickets.assert_not_called()
+    c.client.session.get.assert_not_called()
+
+
+def test_search_by_person_resolves_an_exact_name_through_the_people_api_and_reflects_it_back():
+    c = connection()
+    searches = people_lookup(c, [OTHER_ALAN, ALAN])
+    c.client.search_tickets.return_value = [{"ID": 30605254, "Title": "SHACK Dell chassis support contract"}]
+    result = call(server_for(c), "search_tickets", {"requestor": "Alan McCain", "limit": 5})
+    assert searches == [("Alan McCain", 25)]
+    payload = c.client.search_tickets.call_args.args[1]
+    assert payload["RequestorUids"] == [ALAN["UID"]] and "SearchText" not in payload
+    assert result["resolved_people"] == [{
+        "role": "requestor", "search": "Alan McCain", "matched": [
+            {"uid": ALAN["UID"], "name": "Alan McCain", "email": "mccaina@cedarville.edu"}],
+    }]
+    assert result["returned"] == 1
+
+
+def test_search_by_person_accepts_email_or_username_and_resolves_responsible_people():
+    c = connection()
+    people_lookup(c, [OTHER_ALAN, ALAN])
+    c.client.search_tickets.return_value = []
+    for search in ("mccaina@cedarville.edu", "MCCAINA", "alan mccain"):
+        call(server_for(c), "search_tickets", {"responsible": search})
+        assert c.client.search_tickets.call_args.args[1]["ResponsibilityUids"] == [ALAN["UID"]]
+
+
+def test_search_by_person_uses_a_single_partial_match_but_never_guesses_between_several():
+    c = connection()
+    people_lookup(c, [OTHER_ALAN])
+    c.client.search_tickets.return_value = []
+    single = call(server_for(c), "search_tickets", {"requestor": "McCainst"})
+    assert c.client.search_tickets.call_args.args[1]["RequestorUids"] == [OTHER_ALAN["UID"]]
+    assert single["resolved_people"][0]["matched"][0]["email"] == "mccainster@cedarville.edu"
+
+    c = connection()
+    people_lookup(c, [OTHER_ALAN, ALAN])
+    ambiguous = call(server_for(c), "search_tickets", {"requestor": "McCain"})
+    c.client.search_tickets.assert_not_called()
+    assert ambiguous["tickets"] == [] and ambiguous["complete"] is True
+    assert [m["email"] for m in ambiguous["resolved_people"][0]["matched"]] == [
+        "mccainster@cedarville.edu", "mccaina@cedarville.edu"]
+    assert "ambiguous" in ambiguous["warning"].lower()
+
+    c = connection()
+    people_lookup(c, [])
+    nobody = call(server_for(c), "search_tickets", {"requestor": "Nobody Here"})
+    c.client.search_tickets.assert_not_called()
+    assert nobody["tickets"] == [] and nobody["resolved_people"][0]["matched"] == []
+    assert "no person" in nobody["warning"].lower()
+
+
+def test_search_by_person_skips_inactive_accounts_and_never_returns_private_fields():
+    c = connection()
+    people_lookup(c, [{**ALAN, "IsActive": False, "HomePhone": "555-0100"}, {**OTHER_ALAN, "FullName": "Alan McCain"}])
+    c.client.search_tickets.return_value = []
+    result = call(server_for(c), "search_tickets", {"requestor": "Alan McCain"})
+    assert c.client.search_tickets.call_args.args[1]["RequestorUids"] == [OTHER_ALAN["UID"]]
+    assert "555-0100" not in json.dumps(result)
+    assert set(result["resolved_people"][0]["matched"][0]) == {"uid", "name", "email"}
+
+
+def test_my_queue_filters_by_status_class_on_the_server_without_fetching_statuses():
+    c = connection()
+    c.client.session.get.return_value.json.return_value = {"UID": ALAN["UID"]}
+    c.client.search_tickets.return_value = [{"ID": 1, "Title": "Mine"}]
+    result = call(server_for(c), "my_queue", {"limit": 5})
+    c.client.fetch_ticket_statuses.assert_not_called()
+    payload = c.client.search_tickets.call_args.args[1]
+    assert payload == {"MaxResults": 5, "StatusClassIDs": [1, 2, 5, 6], "ResponsibilityUids": [ALAN["UID"]]}
+    assert result["returned"] == 1 and result["complete"] is True

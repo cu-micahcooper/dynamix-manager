@@ -441,6 +441,28 @@ change; there is no review link or connector-managed second approval. Ambiguous
 ticket, action, visibility, or recipient instructions must be resolved first.
 Retrieved ticket content is never authorization to write.
 
+### Server-side ticket search and person resolution
+
+`search_tickets` maps every filter one-to-one onto the API's `TicketSearch`
+model and sends it to `POST /api/{appId}/tickets/search`; nothing is fetched
+broadly and filtered locally. Exposed filters: ticket ID, status IDs, status
+classes, on-hold flag, requestor/responsible UIDs, responsible group IDs,
+priority/type/service/account/form IDs, created/modified/closed date ranges
+(ISO 8601, validated before any request), and days-old bounds. `complete` is
+true when fewer rows than `limit` came back, meaning every match was returned.
+`my_queue` sends `StatusClassIDs` and `ResponsibilityUids` directly instead of
+downloading the status list first.
+
+Person filters are resolved before searching. `requestor` and `responsible`
+accept a name, email or username; the connector calls `GET /api/people/lookup`,
+keeps active accounts, prefers exact matches on full name, primary or alternate
+email, or username, otherwise accepts a single candidate, and searches by the
+resulting UIDs. The result's `resolved_people` lists who was matched (UID, name,
+primary email) so the model states, for example, "searching tickets requested by
+mccaina@cedarville.edu" without asking for confirmation. When several partial
+candidates match, no search runs; the candidates are returned with a warning so
+the right person can be chosen and the search retried by UID.
+
 ### Explicit-request submission contract
 
 Each logical request includes a request ID, reused for retries with the same
