@@ -424,6 +424,16 @@ email local part, since live lookups omit `UserName`, and switched
 responsibility filters to the ticket's primary responsibility. Refresh the
 connector's tool definitions in ChatGPT to pick up the new filters.
 
+### Ticket creation deployment — 2026-09-21
+
+Commit `c89c86e` added `create_ticket` and `ticket_create_metadata`; Railway
+deployment `cbbdc9f7-b90e-4fdb-b6cf-07d6d3c1bd39` succeeded and the persistent
+test client listed 18 tools. Live read checks: types, forms and sources list
+correctly and the account search returns "Information Technology" (56883). No
+live creation has been performed yet; the first one must be a deliberately
+labelled test ticket whose applied status, priority, form and responsibility
+are read back and recorded here, then closed.
+
 ### ChatGPT tool surface
 
 Personal mode exposes 18 tools: the existing eight read tools, six direct-write
