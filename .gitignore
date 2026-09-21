@@ -213,3 +213,10 @@ reports/
 .claude/
 note.txt
 scripts/fix_remote_auth.sh
+
+# Personal ticket workbench runtime
+.venv-workbench/
+.workbench/
+
+# Local-only state (persistent connector test client tokens)
+.local/
