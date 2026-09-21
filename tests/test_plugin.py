@@ -220,8 +220,8 @@ def test_search_maps_every_filter_onto_the_api_and_reports_completeness():
     payload = c.client.search_tickets.call_args.args[1]
     assert payload == {
         "SearchText": "chassis", "MaxResults": 10, "TicketID": 30605254, "StatusIDs": [30794],
-        "StatusClassIDs": [1, 2], "IsOnHold": False, "ResponsibilityUids": [ALAN["UID"]],
-        "ResponsibilityGroupIDs": [14405], "RequestorUids": [ALAN["UID"]], "PriorityIDs": [7],
+        "StatusClassIDs": [1, 2], "IsOnHold": False, "PrimaryResponsibilityUids": [ALAN["UID"]],
+        "PrimaryResponsibilityGroupIDs": [14405], "RequestorUids": [ALAN["UID"]], "PriorityIDs": [7],
         "TypeIDs": [3], "ServiceIDs": [9], "AccountIDs": [11], "FormIDs": [13],
         "CreatedDateFrom": "2026-08-01", "CreatedDateTo": "2026-08-31T23:59:59Z",
         "ModifiedDateFrom": "2026-08-01T00:00:00", "ClosedDateTo": "2026-09-01",
@@ -266,7 +266,7 @@ def test_search_by_person_accepts_email_or_username_and_resolves_responsible_peo
     c.client.search_tickets.return_value = []
     for search in ("mccaina@cedarville.edu", "MCCAINA", "alan mccain"):
         call(server_for(c), "search_tickets", {"responsible": search})
-        assert c.client.search_tickets.call_args.args[1]["ResponsibilityUids"] == [ALAN["UID"]]
+        assert c.client.search_tickets.call_args.args[1]["PrimaryResponsibilityUids"] == [ALAN["UID"]]
 
 
 def test_search_by_person_uses_a_single_partial_match_but_never_guesses_between_several():
@@ -311,5 +311,17 @@ def test_my_queue_filters_by_status_class_on_the_server_without_fetching_statuse
     result = call(server_for(c), "my_queue", {"limit": 5})
     c.client.fetch_ticket_statuses.assert_not_called()
     payload = c.client.search_tickets.call_args.args[1]
-    assert payload == {"MaxResults": 5, "StatusClassIDs": [1, 2, 5, 6], "ResponsibilityUids": [ALAN["UID"]]}
+    assert payload == {"MaxResults": 5, "StatusClassIDs": [1, 2, 5, 6], "PrimaryResponsibilityUids": [ALAN["UID"]]}
     assert result["returned"] == 1 and result["complete"] is True
+
+
+def test_search_by_username_matches_the_email_local_part_when_tdx_omits_usernames():
+    """Live lookups return an empty UserName, so 'mccaina' must resolve via mccaina@cedarville.edu."""
+    alise = {"UID": "aaaaaaaa-0000-4000-8000-000000000003", "FullName": "Alise McCain",
+             "PrimaryEmail": "mccainaa@cedarville.edu", "UserName": "", "IsActive": True}
+    c = connection()
+    people_lookup(c, [alise, {**ALAN, "UserName": ""}])
+    c.client.search_tickets.return_value = []
+    result = call(server_for(c), "search_tickets", {"requestor": "mccaina"})
+    assert c.client.search_tickets.call_args.args[1]["RequestorUids"] == [ALAN["UID"]]
+    assert [m["email"] for m in result["resolved_people"][0]["matched"]] == ["mccaina@cedarville.edu"]

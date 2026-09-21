@@ -193,9 +193,16 @@ class Connection:
         """
         needle = search.strip().casefold()
         candidates = self.lookup_people(search.strip())
-        exact = [row for row in candidates if needle in {
-            str(row.get(key) or "").casefold()
-            for key in ("FullName", "PrimaryEmail", "AlternateEmail", "UserName")}]
+
+        def identifiers(row):
+            values = {str(row.get(key) or "").casefold()
+                      for key in ("FullName", "PrimaryEmail", "AlternateEmail", "UserName")}
+            # Live lookups omit UserName; the primary email's local part is the username.
+            values.add(str(row.get("PrimaryEmail") or "").casefold().split("@")[0])
+            values.discard("")
+            return values
+
+        exact = [row for row in candidates if needle in identifiers(row)]
         chosen = exact or (candidates if len(candidates) == 1 else [])
         shown = chosen or candidates[:10]
         matched = [{"uid": str(UUID(str(row["UID"]))), "name": row.get("FullName"),
@@ -318,7 +325,8 @@ def create_server(
 
         Prefer specific filters over free text and never fetch a broad result to sort locally.
         `requestor` / `responsible` accept a name, email or username: the connector resolves them
-        through the people API first and searches by the exact UIDs. Report the resolved person to
+        through the people API first and searches by the exact UIDs (`responsible` means the ticket's
+        primary responsible person or group, not task assignees). Report the resolved person to
         the user as a statement (for example "searching tickets requested by mccaina@cedarville.edu")
         and continue; do not ask them to confirm. If `resolved_people[].matched` lists several
         people, the search did not run: pick the right one with the user and retry by `*_uids`.
@@ -329,9 +337,9 @@ def create_server(
         c = conn()
         resolved, warnings = [], []
         people = {"RequestorUids": list(map(str, requestor_uids or [])),
-                  "ResponsibilityUids": list(map(str, responsible_uids or []))}
+                  "PrimaryResponsibilityUids": list(map(str, responsible_uids or []))}
         for role, text, key in (("requestor", requestor, "RequestorUids"),
-                                ("responsible", responsible, "ResponsibilityUids")):
+                                ("responsible", responsible, "PrimaryResponsibilityUids")):
             if text is None:
                 continue
             entry, uids = c.resolve_person(role, text)
@@ -349,8 +357,8 @@ def create_server(
         for key, value in (
             ("SearchText", query or None), ("TicketID", ticket_id), ("StatusIDs", status_ids),
             ("StatusClassIDs", status_classes), ("IsOnHold", is_on_hold),
-            ("ResponsibilityUids", people["ResponsibilityUids"] or None),
-            ("ResponsibilityGroupIDs", responsible_group_ids),
+            ("PrimaryResponsibilityUids", people["PrimaryResponsibilityUids"] or None),
+            ("PrimaryResponsibilityGroupIDs", responsible_group_ids),
             ("RequestorUids", people["RequestorUids"] or None), ("PriorityIDs", priority_ids),
             ("TypeIDs", type_ids), ("ServiceIDs", service_ids), ("AccountIDs", account_ids),
             ("FormIDs", form_ids), ("CreatedDateFrom", created_from), ("CreatedDateTo", created_to),
@@ -367,7 +375,7 @@ def create_server(
         """Read active tickets assigned to the authenticated personal user. Admin auth is unsupported."""
         c = conn()
         uid = c.identity()
-        payload = {"MaxResults": limit, "StatusClassIDs": ACTIVE_STATUS_CLASSES, "ResponsibilityUids": [uid]}
+        payload = {"MaxResults": limit, "StatusClassIDs": ACTIVE_STATUS_CLASSES, "PrimaryResponsibilityUids": [uid]}
         return run_search(c, payload, limit)
 
     @tool(annotations=read, meta=ui_meta)
