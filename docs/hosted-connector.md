@@ -1,11 +1,13 @@
 # Hosted connector: implementation and launch gates
 
-The resource server now supports an account-restricted TDX-backed personal login,
-alongside the original external-issuer mode. The user verified the personal
-ChatGPT ticket drilldown. This remains a single-user pilot, not an institutional
-SSO or multi-user product. This hosted connector is the only MCP surface; the
-earlier local stdio plugin was removed, and `dynamix_manager.plugin` now holds
-only the shared tool core that the hosted server imports.
+The resource server supports a TDX-backed personal login alongside the original
+external-issuer mode. Since 2026-09-21 the personal login runs **multi-user** when
+`TDX_HOSTED_ALLOWED_UID` is omitted: anyone who authenticates to TeamDynamix with
+their own credentials becomes their own OAuth subject, and TDX's permissions
+govern what each person can read or change. Setting `TDX_HOSTED_ALLOWED_UID`
+pins the connector to one person, as the original pilot did. This hosted
+connector is the only MCP surface; the earlier local stdio plugin was removed,
+and `dynamix_manager.plugin` holds only the shared tool core.
 
 ## What runs
 
@@ -38,8 +40,10 @@ using two real users before release.
 ## Personal-pilot configuration
 
 Set `TDX_HOSTED_AUTH_MODE=personal`, `TDX_HOSTED_PUBLIC_URL`,
-`TDX_HOSTED_VAULT_PATH`, `TDX_HOSTED_VAULT_KEY`, `TDX_HOSTED_ALLOWED_UID` and
-`TDX_HOSTED_REDIRECT_URIS` (JSON array of exact approved ChatGPT callback URLs).
+`TDX_HOSTED_VAULT_PATH`, `TDX_HOSTED_VAULT_KEY` and `TDX_HOSTED_REDIRECT_URIS`
+(JSON array of exact approved ChatGPT callback URLs). `TDX_HOSTED_ALLOWED_UID`
+is optional: set it to restrict the connector to one person, omit it to admit
+every authenticated TeamDynamix user.
 An empty callback array permits the process to run but denies all client
 registration and authorization. Obtain the callback from ChatGPT configuration;
 never substitute a guessed callback or wildcard.
@@ -52,9 +56,18 @@ within ten minutes, with single-use rotating refresh tokens. Replaying a used
 refresh token revokes its entire grant family. This is an OAuth bridge, not native
 TDX OAuth or SSO.
 
+**Per-user isolation.** Vault records, OAuth grant families, write-grant
+bindings, request-ID deduplication and audit rows are all keyed by the person's
+TDX UID (the OAuth subject). Tests prove one person's tokens resolve only their
+own TDX credential, a result lookup by another subject is refused, and a replay
+of another person's request ID becomes a new operation. Rotated refresh tokens
+are retained for 24 hours to detect replay rather than for the whole 90-day
+grant, and store capacities were raised for campus-scale use.
+
 **Staying connected.** TDX bearer tokens last about 24 hours and cannot be
 refreshed, so by default the connector would need a new sign-in every day. The
-login form's "Keep me connected" box (checked by default) stores the username and
+login form's "Keep me connected" box (unchecked by default in production, so each
+person opts in knowingly) stores the username and
 password, encrypted in the same vault envelope as the token under the external
 Fernet key. When a request finds the stored token within one hour of expiry, the
 connector logs in to TDX again, verifies the returned UID still matches, replaces

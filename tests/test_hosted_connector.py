@@ -599,3 +599,22 @@ def test_personal_app_renews_expiring_tdx_token_before_serving_a_request(tmp_pat
         assert tokens_seen[-1] == 'tdx-token-2' and len(logins) == 2
         assert logins[-1] == ('allowed', 'private-password')
         assert vault.get(settings.issuer, flow.UID)['token'] == 'tdx-token-2'
+
+
+def test_personal_environment_without_allowed_uid_runs_in_multi_user_mode(tmp_path, monkeypatch):
+    from dynamix_manager.hosted import from_environment
+    values = {
+        'TDX_HOSTED_AUTH_MODE': 'personal',
+        'TDX_HOSTED_PUBLIC_URL': 'https://connector.test',
+        'TDX_HOSTED_VAULT_PATH': str(tmp_path / 'vault.sqlite'),
+        'TDX_HOSTED_VAULT_KEY': Fernet.generate_key().decode(),
+        'TDX_HOSTED_REDIRECT_URIS': '[]',
+    }
+    for key, value in values.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.delenv('TDX_HOSTED_ALLOWED_UID', raising=False)
+    app = from_environment()
+    app.write_runtime.require_enabled()
+    assert app.write_service.auth_provider.allowed_uid is None
+    monkeypatch.setenv('TDX_HOSTED_ALLOWED_UID', '00000000-0000-0000-0000-000000000001')
+    assert from_environment().write_service.auth_provider.allowed_uid == '00000000-0000-0000-0000-000000000001'

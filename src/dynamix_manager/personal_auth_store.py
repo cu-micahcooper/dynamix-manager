@@ -11,8 +11,10 @@ class StateCapacityError(Exception):
 
 
 class OAuthStore:
-    CAPACITY = {'client': 128, 'transaction': 128, 'code': 128,
-                'access': 2048, 'refresh': 4096, 'family': 1024, 'rate': 8}
+    # Bounded state for a campus-scale personal connector; expired rows are purged on every transaction.
+    CAPACITY = {'client': 256, 'transaction': 1024, 'code': 1024,
+                'access': 16384, 'refresh': 16384, 'family': 8192, 'rate': 8}
+    TOTAL_CAPACITY = 65536
 
     def __init__(self, vault):
         self.vault = vault
@@ -47,7 +49,7 @@ class OAuthStore:
     def put(self, db, kind, key, data):
         index = self.index(kind, key)
         exists = db.execute('SELECT 1 FROM personal_oauth WHERE id=?', (index,)).fetchone()
-        if not exists and db.execute('SELECT COUNT(*) FROM personal_oauth').fetchone()[0] >= 8192:
+        if not exists and db.execute('SELECT COUNT(*) FROM personal_oauth').fetchone()[0] >= self.TOTAL_CAPACITY:
             raise StateCapacityError('OAuth state capacity reached.')
         if not exists and db.execute('SELECT COUNT(*) FROM personal_oauth WHERE kind=?', (kind,)).fetchone()[0] >= self.CAPACITY.get(kind, 128):
             raise StateCapacityError('OAuth state capacity reached.')

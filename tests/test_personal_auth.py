@@ -595,3 +595,120 @@ def test_personal_credential_wipes_credentials_that_renew_as_another_identity(pi
         provider.personal_credential(UID)
     with pytest.raises(RuntimeError, match='linked'):
         vault.get(provider.settings.issuer, UID, allow_expired=True)
+
+
+UID_B = '00000000-0000-0000-0000-00000000000b'
+
+
+@pytest.fixture
+def open_pilot(tmp_path):
+    """Multi-user mode: no allowed UID; anyone TDX authenticates becomes their own subject."""
+    from unittest.mock import Mock
+    from dynamix_manager.hosted import HostedSettings, create_app
+    from dynamix_manager.hosted_vault import CredentialVault
+    from dynamix_manager.personal_auth import PersonalAuthProvider
+    from dynamix_manager.plugin import Connection
+    settings = HostedSettings('https://connector.test', 'https://connector.test', 'https://connector.test/unused')
+    vault = CredentialVault(tmp_path / 'vault.sqlite', Fernet.generate_key())
+    people = {'allowed': UID, 'bob': UID_B}
+    tokens_seen = []
+
+    def login(username, password):
+        if username not in people:
+            raise RuntimeError('bad credentials')
+        return people[username], f'tdx-{username}', int(time.time()) + 86400
+
+    def make_connection(values):
+        tokens_seen.append(values['WORKBENCH_PERSONAL_TOKEN'])
+        client = Mock()
+        client.list_ticketing_applications.side_effect = lambda x: x
+        client.fetch_applications.return_value = [{'AppID': 634, 'Name': 'InfoTech Tickets'}]
+        uid = {'tdx-allowed': UID, 'tdx-bob': UID_B}[values['WORKBENCH_PERSONAL_TOKEN']]
+        client.session.get.return_value.json.return_value = {'UID': uid}
+        client.get_ticket.return_value = {'ID': 1, 'Title': 'for ' + uid}
+        return Connection(values, client=client)
+
+    provider = PersonalAuthProvider(settings, vault, None, [CALLBACK], login=login)
+    with TestClient(create_app(settings, vault, auth_provider=provider, connection_factory=make_connection),
+                    base_url=settings.public_url) as http:
+        yield http, provider, vault, tokens_seen
+
+
+def sign_in(http, client, username, scope='tdx.read tdx.write'):
+    form = login_form(http, client, scope)
+    response = http.post('/personal/login', data={**form, 'username': username, 'password': 'pw', 'consent': 'yes'},
+                         headers={'Origin': 'https://connector.test'}, follow_redirects=False)
+    assert response.status_code == 200, response.text
+    target = html.unescape(re.search(r'href="([^"]+)"', response.text)[1])
+    return exchange(http, client, parse_qs(urlsplit(target).query)['code'][0]).json()
+
+
+def test_multi_user_mode_isolates_each_persons_credentials_and_grants(open_pilot):
+    http, provider, vault, tokens_seen = open_pilot
+    assert provider.allowed_uid is None
+    client = register(http).json()['client_id']
+    alice = sign_in(http, client, 'allowed')
+    bob = sign_in(http, client, 'bob')
+    assert asyncio.run(provider.load_access_token(alice['access_token'])).subject == UID
+    assert asyncio.run(provider.load_access_token(bob['access_token'])).subject == UID_B
+    assert vault.get(provider.settings.issuer, UID)['token'] == 'tdx-allowed'
+    assert vault.get(provider.settings.issuer, UID_B)['token'] == 'tdx-bob'
+
+    call = {'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call', 'params': {'name': 'get_ticket', 'arguments': {'ticket_id': 1}}}
+    for tokens, uid, tdx in ((alice, UID, 'tdx-allowed'), (bob, UID_B, 'tdx-bob')):
+        headers = {'Authorization': 'Bearer ' + tokens['access_token'], 'Accept': 'application/json, text/event-stream'}
+        result = http.post('/mcp', json=call, headers=headers).json()['result']['structuredContent']
+        assert result['detail']['Title'] == 'for ' + uid
+        assert tokens_seen[-1] == tdx
+
+    for tokens, uid in ((alice, UID), (bob, UID_B)):
+        binding = provider.write_grant_binding(asyncio.run(provider.load_access_token(tokens['access_token'])))
+        assert binding['subject'] == uid
+
+    # An unknown TDX login is refused; nothing is linked for it.
+    form = login_form(http, client)
+    denied = http.post('/personal/login', data={**form, 'username': 'stranger', 'password': 'pw', 'consent': 'yes'},
+                       headers={'Origin': 'https://connector.test'})
+    assert denied.status_code == 400
+    with pytest.raises(RuntimeError, match='linked'):
+        vault.get(provider.settings.issuer, 'stranger')
+
+
+def test_multi_user_credential_renewal_stays_bound_to_the_same_subject(open_pilot):
+    http, provider, vault, _ = open_pilot
+    now = time.time()
+    vault.put(provider.settings.issuer, UID_B, UID_B, 'stale', now + 60, username='bob', password='pw')
+    renewed = provider.personal_credential(UID_B)
+    assert renewed['token'] == 'tdx-bob' and renewed['uid'] == UID_B
+    # Credentials that renew as a different person are wiped, even without an allowlist.
+    vault.put(provider.settings.issuer, UID, UID, 'stale', now + 60, username='bob', password='pw')
+    with pytest.raises(RuntimeError, match='relinked'):
+        provider.personal_credential(UID)
+
+
+def test_keep_me_connected_defaults_off_in_production(pilot):
+    http, provider, calls, vault = pilot
+    client = register(http).json()['client_id']
+    page = []
+    login_form(http, client, page=page)
+    assert 'name="remember"' in page[0]
+    assert re.search(r'name="remember"[^>]*checked', page[0]) is None
+
+
+def test_rotated_refresh_tokens_are_retained_only_for_a_short_replay_window(pilot):
+    http, provider, calls, vault = pilot
+    client = register(http).json()['client_id']
+    code = obtain_code(http, client, remember=True)
+    tokens = exchange(http, client, code).json()
+    form = {'grant_type': 'refresh_token', 'client_id': client, 'refresh_token': tokens['refresh_token'],
+            'resource': provider.settings.resource}
+    rotated = http.post('/token', data=form).json()
+    with provider.store.transaction() as db:
+        used = provider.store.get(db, 'refresh', tokens['refresh_token'])
+        fresh = provider.store.get(db, 'refresh', rotated['refresh_token'])
+    assert used['used'] is True
+    assert used['expires_at'] <= time.time() + provider.REFRESH_REPLAY_WINDOW + 5
+    assert fresh['expires_at'] > time.time() + 80 * 86400
+    # Replay inside the window still revokes the family.
+    assert http.post('/token', data=form).status_code == 400
+    assert http.post('/token', data={**form, 'refresh_token': rotated['refresh_token']}).status_code == 400

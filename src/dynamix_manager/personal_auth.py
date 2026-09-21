@@ -52,11 +52,14 @@ class PersonalAuthProvider:
     RENEW_MARGIN = 3600
     # Connector grants for a remembered login outlive the 24-hour TDX token.
     GRANT_LIFETIME = 90 * 24 * 60 * 60
+    # A rotated (used) refresh token is kept only long enough to detect replay.
+    REFRESH_REPLAY_WINDOW = 24 * 60 * 60
 
     def __init__(self, settings, vault, allowed_uid, redirect_uris, *, login=None):
+        """``allowed_uid`` restricts the connector to one person; ``None`` admits anyone TDX authenticates."""
         self.settings, self.vault = settings, vault
         self._renewal_lock = threading.Lock()
-        self.allowed_uid = str(UUID(allowed_uid))
+        self.allowed_uid = str(UUID(allowed_uid)) if allowed_uid else None
         if not isinstance(redirect_uris, list) or any(not isinstance(x, str) for x in redirect_uris):
             raise ValueError('Redirect allowlist must be a JSON list of exact HTTPS URLs.')
         for uri in redirect_uris:
@@ -117,7 +120,7 @@ class PersonalAuthProvider:
                 if expired:
                     raise RuntimeError('Personal TeamDynamix access must be relinked.') from None
                 return record
-            if uid != record['uid'] or uid != self.allowed_uid:
+            if uid != record['uid'] or uid != subject or (self.allowed_uid and uid != self.allowed_uid):
                 logger.warning('personal_renewal_identity_mismatch')
                 self.vault.revoke(issuer, subject)
                 raise RuntimeError('Personal TeamDynamix access must be relinked.')
@@ -197,7 +200,7 @@ Only the approved personal account can connect.</p><p>Callback destination: {cal
 <p><label>Username <input name="username" autocomplete="username" required maxlength="254"></label></p>
 <p><label>Password <input name="password" type="password" autocomplete="current-password" required maxlength="1024"></label></p>
 <p><label><input type="checkbox" name="consent" value="yes" required> {consent_label}</label></p>
-<p><label><input type="checkbox" name="remember" value="yes" checked> Keep me connected: store my
+<p><label><input type="checkbox" name="remember" value="yes"> Keep me connected: store my
 username and password encrypted so the connector can renew TeamDynamix access itself instead of
 asking me to sign in every day. Leave unchecked to reconnect manually when TeamDynamix access expires.</label></p>
 <button type="submit">Connect</button></form></html>''', headers=HEADERS)
@@ -225,11 +228,13 @@ asking me to sign in every day. Leave unchecked to reconnect manually when TeamD
         remember = form.get('remember') == 'yes'
         try:
             uid, upstream, expiry = await run_in_threadpool(self.login, username, password)
-            if (str(UUID(uid)) != self.allowed_uid or isinstance(expiry, bool)
+            uid = str(UUID(str(uid)))
+            if ((self.allowed_uid and uid != self.allowed_uid) or isinstance(expiry, bool)
                     or not isinstance(expiry, (int, float)) or not math.isfinite(expiry)
                     or expiry <= time.time() or not upstream):
                 return denied('account_or_expiry')
-            self.vault.put(self.settings.issuer, self.allowed_uid, self.allowed_uid, upstream, expiry,
+            # Each authenticated person is their own OAuth subject; TDX permissions govern what they can do.
+            self.vault.put(self.settings.issuer, uid, uid, upstream, expiry,
                            username=username if remember else None,
                            password=password if remember else None)
         except Exception:
@@ -246,7 +251,7 @@ asking me to sign in every day. Leave unchecked to reconnect manually when TeamD
         try:
             with self.store.transaction() as db:
                 self.store.put(db, 'code', code, {**params, 'client_id': value['client'],
-                    'expires_at': min(time.time() + 120, grant_expiry), 'subject': self.allowed_uid,
+                    'expires_at': min(time.time() + 120, grant_expiry), 'subject': uid,
                     'upstream_expiry': grant_expiry})
         except StateCapacityError:
             return denied()
@@ -307,8 +312,12 @@ asking me to sign in every day. Leave unchecked to reconnect manually when TeamD
             return self._issue(db, {**{k: value[k] for k in (
                 'client_id', 'subject', 'resource', 'upstream_expiry')}, 'scopes': scopes}, family)
 
+    def _subject_allowed(self, subject):
+        return isinstance(subject, str) and bool(subject) and (self.allowed_uid is None or subject == self.allowed_uid)
+
     def _valid(self, db, value):
-        if not value or value['expires_at'] <= time.time() or value['subject'] != self.allowed_uid or value['resource'] != self.settings.resource:
+        if (not value or value['expires_at'] <= time.time() or not self._subject_allowed(value.get('subject'))
+                or value['resource'] != self.settings.resource):
             return False
         family = self.store.get(db, 'family', value['family'])
         return family and not family['revoked'] and family['expires_at'] > time.time()
@@ -337,8 +346,10 @@ asking me to sign in every day. Leave unchecked to reconnect manually when TeamD
                 if value['used']:
                     self.store.revoke_family(db, value['family'], value['upstream_expiry'])
                 elif self._valid(db, value) and set(scopes).issubset(value['scopes']):
-                    value['used'] = True
-                    self.store.put(db, 'refresh', refresh_token.token, value)
+                    # Keep the spent token just long enough to detect replay, not for the whole grant.
+                    used = {**value, 'used': True,
+                            'expires_at': min(value['expires_at'], int(time.time()) + self.REFRESH_REPLAY_WINDOW)}
+                    self.store.put(db, 'refresh', refresh_token.token, used)
                     result = self._issue(db, {**value, 'scopes': scopes}, value['family'])
         if result is None:
             raise TokenError('invalid_grant')
@@ -365,7 +376,7 @@ asking me to sign in every day. Leave unchecked to reconnect manually when TeamD
         expiry, scopes = binding.get('grant_expiry'), binding.get('scopes')
         if (any(not isinstance(value, str) or not value for value in
                 (subject, client_id, resource, family))
-                or subject != self.allowed_uid or resource != self.settings.resource
+                or not self._subject_allowed(subject) or resource != self.settings.resource
                 or isinstance(expiry, bool) or not isinstance(expiry, (int, float))
                 or not math.isfinite(expiry) or expiry <= time.time()):
             raise denied
@@ -399,7 +410,7 @@ asking me to sign in every day. Leave unchecked to reconnect manually when TeamD
         if (claims.get('iss') != self.settings.issuer or not isinstance(family, str)
                 or set(access_token.scopes) != WRITE_SCOPES
                 or access_token.resource != self.settings.resource
-                or access_token.subject != self.allowed_uid
+                or not self._subject_allowed(access_token.subject)
                 or not isinstance(access_token.client_id, str) or not access_token.client_id):
             raise denied
         with self.store.transaction() as db:

@@ -327,13 +327,14 @@ def from_environment():
     if mode == 'personal':
         from dynamix_manager.personal_auth import PersonalAuthProvider
         required = ['TDX_HOSTED_PUBLIC_URL', 'TDX_HOSTED_VAULT_PATH', 'TDX_HOSTED_VAULT_KEY',
-                    'TDX_HOSTED_ALLOWED_UID', 'TDX_HOSTED_REDIRECT_URIS']
+                    'TDX_HOSTED_REDIRECT_URIS']
         if any(not os.environ.get(name) for name in required):
             raise ValueError('Missing required TDX_HOSTED personal configuration.')
         public = os.environ['TDX_HOSTED_PUBLIC_URL']
         settings = HostedSettings(public, public, public + '/unused')
         vault = CredentialVault(os.environ['TDX_HOSTED_VAULT_PATH'], os.environ['TDX_HOSTED_VAULT_KEY'].encode())
-        provider = PersonalAuthProvider(settings, vault, os.environ['TDX_HOSTED_ALLOWED_UID'],
+        # TDX_HOSTED_ALLOWED_UID pins the connector to one person (pilot); omit it for multi-user.
+        provider = PersonalAuthProvider(settings, vault, os.environ.get('TDX_HOSTED_ALLOWED_UID') or None,
                                         json.loads(os.environ['TDX_HOSTED_REDIRECT_URIS']))
         return create_app(settings, vault, auth_provider=provider,
                           writes_enabled_provider=lambda: writes_enabled)

@@ -576,3 +576,18 @@ def test_create_ticket_rejection_has_no_ticket_and_points_at_the_app(setup):
     assert result.outcome == "rejected" and result.ticket_id == 0 and result.detail is None
     assert result.ticket_url == "https://tenant.example/TDNext/Apps/42/Tickets/"
     assert "private detail" not in repr(result)
+
+
+def test_another_subject_cannot_see_or_replay_a_users_operation(setup):
+    action = parse_action(dict(kind="comment", ticket_id=1001, comments="Hello"))
+    first = setup.service.submit("principal", action, "request-1")
+    setup.provider.binding["subject"] = "22222222-2222-4222-8222-222222222222"
+    setup.vault.put("https://issuer.example", setup.provider.binding["subject"], setup.provider.binding["subject"],
+                    "other-secret", time.time() + 3600)
+    with pytest.raises(Exception, match="another grant"):
+        setup.service.result("principal", first.operation_id)
+    setup.identity[0] = setup.provider.binding["subject"]
+    second = setup.service.submit("principal", action, "request-1")
+    assert second.operation_id != first.operation_id
+    assert setup.upstream.apply_count == 2
+    assert setup.connections[-1].values["WORKBENCH_PERSONAL_TOKEN"] == "other-secret"
