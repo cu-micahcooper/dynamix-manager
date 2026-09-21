@@ -416,9 +416,13 @@ definitions in ChatGPT to see the new tools.
 Commit `16c9773` (server-side search filters, people resolution before person
 searches, `my_queue` by status class). Railway deployment
 `892be1b9-81c5-44ab-981e-4fc30a3b5a58` succeeded; `/healthz` 200, unauthenticated
-`/mcp` 401. Not yet exercised live: a person search such as "Alan McCain" should
-report `mccaina@cedarville.edu` in `resolved_people` and search by that UID.
-Refresh the connector's tool definitions in ChatGPT to pick up the new filters.
+`/mcp` 401. Exercised live the same day: "Alan McCain",
+`mccaina@cedarville.edu` and `mccaina` all resolve to Alan McCain and return
+his tickets by UID; "McCain" alone lists seven candidates and runs no search.
+Follow-up commit `9c33b56` (deployment `02b41da3-8c8f-49fb-8bf4-a4c62451718e`) matched usernames by
+email local part, since live lookups omit `UserName`, and switched
+responsibility filters to the ticket's primary responsibility. Refresh the
+connector's tool definitions in ChatGPT to pick up the new filters.
 
 ### ChatGPT tool surface
 
