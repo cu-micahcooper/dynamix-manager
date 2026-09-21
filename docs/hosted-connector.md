@@ -411,6 +411,15 @@ reports an incomplete task's `CompletedDate` as `0001-01-01T00:00:00`, which the
 preflight had treated as already complete. Refresh the connector's tool
 definitions in ChatGPT to see the new tools.
 
+### Search filters deployment — 2026-09-21
+
+Commit `16c9773` (server-side search filters, people resolution before person
+searches, `my_queue` by status class). Railway deployment
+`892be1b9-81c5-44ab-981e-4fc30a3b5a58` succeeded; `/healthz` 200, unauthenticated
+`/mcp` 401. Not yet exercised live: a person search such as "Alan McCain" should
+report `mccaina@cedarville.edu` in `resolved_people` and search by that UID.
+Refresh the connector's tool definitions in ChatGPT to pick up the new filters.
+
 ### ChatGPT tool surface
 
 Personal mode exposes 16 tools: the existing eight read tools, five direct-write
