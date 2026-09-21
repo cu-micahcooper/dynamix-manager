@@ -406,7 +406,7 @@ deployment `72337f64-b8f2-4e09-a265-9435eeedab03` succeeded; `/healthz` 200 and
 unauthenticated `/mcp` 401. Live confirmation on ticket 30605254 the same day:
 six task completions each returned 201 and read back with `PercentComplete` 100
 and a real `CompletedDate`; each completion activated the next task in the
-template chain. This surfaced one bug, fixed in the following deployment: TDX
+template chain. This surfaced one bug, fixed in deployment `0189ced2-7e3f-4111-a305-c83824a19b5a` (commit `0e8f518`): TDX
 reports an incomplete task's `CompletedDate` as `0001-01-01T00:00:00`, which the
 preflight had treated as already complete. Refresh the connector's tool
 definitions in ChatGPT to see the new tools.
