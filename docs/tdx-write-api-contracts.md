@@ -188,8 +188,12 @@ Source: `https://demotemplate.teamdynamix.com/TDWebApi/swagger/v1/openapi.json`
   used as a completion fallback. Documented success is 200 returning the generated feed
   entry; Cedarville returns 201 for the analogous ticket feed, so treat 200 and 201 as
   accepted and everything else as documented for ticket feed writes.
-- Not stated in the document: that `PercentComplete = 100` sets `CompletedDate` and
-  clears `IsActive`, and whether TDX notifies the responsible party on completion. The
-  first live use must confirm completion by reading the task back (`CompletedDate` set)
-  before the tool's applied outcome is trusted as "task completed" rather than "update
-  accepted". Rate limit: 60 requests per 60 seconds per IP for these operations.
+- Not stated in the document but **confirmed live on 2026-09-20** (ticket 30605254, six
+  template tasks): posting `PercentComplete: 100` to the task feed returns HTTP 201,
+  sets `PercentComplete` to 100 and `CompletedDate` to the real completion time, and
+  activates the task's successor (`IsActive` flipped from false to true on the next task
+  in the chain). `IsActive` stays true on a completed task, so it signals predecessor
+  gating, not completion; completion is `PercentComplete == 100` / `CompletedDate` set.
+  An incomplete task reports `CompletedDate` as `0001-01-01T00:00:00` (the .NET minimum
+  date), not null; the adapter treats that sentinel as unset. Whether TDX notified the
+  responsible party was not observed. Rate limit: 60 requests per 60 seconds per IP.

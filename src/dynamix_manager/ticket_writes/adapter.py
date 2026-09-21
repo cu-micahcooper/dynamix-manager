@@ -244,6 +244,14 @@ class WriteAdapter:
     TASK_KEYS = ("ID", "Title", "IsActive", "PercentComplete", "CompletedDate",
                  "ResponsibleFullName", "ResponsibleGroupName", "TypeID")
 
+    @staticmethod
+    def _completed_date(task):
+        """TDX serializes an unset completion date as the .NET minimum date, not null."""
+        value = task.get("CompletedDate")
+        if not isinstance(value, str) or not value or value.startswith("0001-01-01"):
+            return None
+        return value
+
     def list_tasks(self, ticket_id, *, limit=25):
         """Return a bounded, minimal projection of a ticket's tasks (no descriptions or emails)."""
         if type(ticket_id) is not int or ticket_id <= 0:
@@ -253,7 +261,8 @@ class WriteAdapter:
         rows = self._metadata_request("GET", f"/api/{self.app_id}/tickets/{ticket_id}/tasks")
         valid = [row for row in rows if isinstance(row, dict) and type(row.get("ID")) is int
                  and row["ID"] > 0 and isinstance(row.get("Title"), str)]
-        tasks = [{key: row.get(key) for key in self.TASK_KEYS} for row in valid[:limit]]
+        tasks = [{**{key: row.get(key) for key in self.TASK_KEYS}, "CompletedDate": self._completed_date(row)}
+                 for row in valid[:limit]]
         return {"ticket_id": ticket_id, "tasks": tasks, "returned": len(tasks),
                 "complete": len(valid) <= limit}
 
@@ -262,7 +271,7 @@ class WriteAdapter:
         percent = task.get("PercentComplete") if isinstance(task, dict) else None
         if (not isinstance(task, dict) or task.get("ID") != action.task_id
                 or task.get("TicketID") != action.ticket_id or task.get("IsActive") is not True
-                or type(percent) is not int or not 0 <= percent < 100 or task.get("CompletedDate")
+                or type(percent) is not int or not 0 <= percent < 100 or self._completed_date(task)
                 or not isinstance(task.get("Title"), str) or not task.get("ModifiedDate")):
             raise ValueError("The task is not an open, incomplete task on this ticket.")
         return task

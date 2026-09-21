@@ -403,11 +403,13 @@ once more through ChatGPT with the box checked to switch to renewal.
 
 Commit `26d8577` added `complete_ticket_task` and `list_ticket_tasks`. Railway
 deployment `72337f64-b8f2-4e09-a265-9435eeedab03` succeeded; `/healthz` 200 and
-unauthenticated `/mcp` 401. The task feed contract comes from the published
-OpenAPI document, not a live capture: the first real completion must be checked
-with `list_ticket_tasks` (or the TDX UI) to confirm `CompletedDate` is set and
-the task shows as complete, and that observation should be recorded here.
-Refresh the connector's tool definitions in ChatGPT to see the new tools.
+unauthenticated `/mcp` 401. Live confirmation on ticket 30605254 the same day:
+six task completions each returned 201 and read back with `PercentComplete` 100
+and a real `CompletedDate`; each completion activated the next task in the
+template chain. This surfaced one bug, fixed in the following deployment: TDX
+reports an incomplete task's `CompletedDate` as `0001-01-01T00:00:00`, which the
+preflight had treated as already complete. Refresh the connector's tool
+definitions in ChatGPT to see the new tools.
 
 ### ChatGPT tool surface
 

@@ -440,3 +440,14 @@ def test_list_tasks_returns_bounded_minimal_projection():
     assert calls[0][0:2] == ("GET", "https://tenant.example/TDWebApi/api/42/tickets/1001/tasks")
     with pytest.raises(ValueError):
         adapter.list_tasks(1001, limit=0)
+
+
+def test_task_completion_treats_tdx_min_date_as_not_completed():
+    """Live TDX reports an incomplete task's CompletedDate as 0001-01-01T00:00:00, not null."""
+    task = {**TASK, "CompletedDate": "0001-01-01T00:00:00"}
+    adapter, _, _ = setup_adapter(**{"/api/42/tickets/1001/tasks/77": task})
+    prepared = adapter.validate(parse_action(dict(kind="task", ticket_id=1001, task_id=77)))
+    assert json.loads(prepared.payload_json)["PercentComplete"] == 100
+    routes = {("GET", "/api/42/tickets/1001/tasks"): [task]}
+    listing, _ = metadata_adapter(routes)
+    assert listing.list_tasks(1001)["tasks"][0]["CompletedDate"] is None
