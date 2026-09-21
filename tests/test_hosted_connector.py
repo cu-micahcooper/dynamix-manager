@@ -486,10 +486,10 @@ def test_personal_hosted_server_registers_prepare_tools_and_preserves_per_tool_s
     )
     assert app.write_service is not None
     tools = {tool.name: tool for tool in captured['server']._tool_manager.list_tools()}
-    assert len(tools) == 14
+    assert len(tools) == 16
     assert tools['ticket_write_metadata'].meta['securitySchemes'][0]['scopes'] == ['tdx.read']
     for name in ('add_ticket_comment', 'update_ticket_status',
-                 'assign_ticket', 'edit_ticket',
+                 'assign_ticket', 'edit_ticket', 'complete_ticket_task',
                  'ticket_write_result'):
         assert tools[name].meta['securitySchemes'][0]['scopes'] == ['tdx.read', 'tdx.write']
     for name in ('connection_status', 'ticket_statuses', 'search_tickets', 'my_queue',

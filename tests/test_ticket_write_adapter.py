@@ -386,3 +386,57 @@ def test_people_lookup_scans_a_wide_candidate_window_and_stops_at_limit():
     assert result["returned"] == 2
     # One lookup, seven customer detail reads, then exactly two technician reads: the third is never fetched.
     assert len(calls) == 1 + len(customers) + 2
+
+
+TASK = dict(ID=77, TicketID=1001, Title="Approve payment", IsActive=True, PercentComplete=0,
+            CompletedDate=None, ResponsibleFullName="Micah Cooper", ModifiedDate="task-v1", TypeID=1)
+
+
+def test_task_completion_validates_open_task_and_posts_percent_complete_to_task_feed():
+    adapter, calls, records = setup_adapter(**{"/api/42/tickets/1001/tasks/77": TASK.copy()})
+    prepared = adapter.validate(parse_action(dict(kind="task", ticket_id=1001, task_id=77)))
+    assert json.loads(prepared.payload_json) == dict(IsPrivate=True, IsRichHtml=False, Notify=[], PercentComplete=100)
+    baseline = json.loads(prepared.baseline_json)
+    assert baseline["ticket"]["ID"] == 1001 and baseline["task"]["ModifiedDate"] == "task-v1"
+    assert prepared.preview.action == "task"
+    assert [(f.name, f.before, f.after) for f in prepared.preview.fields] == [
+        ("Task", "Approve payment", "Approve payment"), ("PercentComplete", "0", "100")]
+    adapter.request = lambda *args, **kwargs: (calls.append((args, kwargs)) or SimpleNamespace(status_code=201))
+    assert adapter.apply_once(prepared).outcome == "applied"
+    args, kwargs = calls[-1]
+    assert args == ("POST", "https://tenant.example/TDWebApi/api/42/tickets/1001/tasks/77/feed")
+    assert kwargs["json"] == dict(IsPrivate=True, IsRichHtml=False, Notify=[], PercentComplete=100)
+
+    with_comment = adapter.validate(parse_action(dict(kind="task", ticket_id=1001, task_id=77, comments="Approved")))
+    assert json.loads(with_comment.payload_json)["Comments"] == "Approved"
+
+
+@pytest.mark.parametrize("change", [
+    dict(IsActive=False), dict(PercentComplete=100), dict(CompletedDate="2026-09-20T00:00:00Z"),
+    dict(TicketID=1002), dict(ID=78),
+])
+def test_task_completion_rejects_completed_inactive_or_mismatched_tasks(change):
+    adapter, _, _ = setup_adapter(**{"/api/42/tickets/1001/tasks/77": {**TASK, **change}})
+    with pytest.raises(ValueError):
+        adapter.validate(parse_action(dict(kind="task", ticket_id=1001, task_id=77)))
+
+
+def test_list_tasks_returns_bounded_minimal_projection():
+    routes = {("GET", "/api/42/tickets/1001/tasks"): [
+        {**TASK, "Description": "private detail", "ResponsibleEmail": "person@example.invalid"},
+        {**TASK, "ID": 78, "Title": "Second", "IsActive": False, "PercentComplete": 100,
+         "CompletedDate": "2026-09-19T00:00:00Z"},
+        {"ID": "bad"},
+    ]}
+    adapter, calls = metadata_adapter(routes)
+    result = adapter.list_tasks(1001, limit=1)
+    assert result == {"ticket_id": 1001, "tasks": [
+        {"ID": 77, "Title": "Approve payment", "IsActive": True, "PercentComplete": 0, "CompletedDate": None,
+         "ResponsibleFullName": "Micah Cooper", "ResponsibleGroupName": None, "TypeID": 1},
+    ], "returned": 1, "complete": False}
+    assert "private detail" not in json.dumps(result) and "person@example.invalid" not in json.dumps(result)
+    full = adapter.list_tasks(1001, limit=10)
+    assert [t["ID"] for t in full["tasks"]] == [77, 78] and full["complete"] is True
+    assert calls[0][0:2] == ("GET", "https://tenant.example/TDWebApi/api/42/tickets/1001/tasks")
+    with pytest.raises(ValueError):
+        adapter.list_tasks(1001, limit=0)

@@ -63,7 +63,8 @@ class FakeConnection:
 
 
 def run(server, name, arguments):
-    if name in {"add_ticket_comment", "update_ticket_status", "assign_ticket", "edit_ticket"} and isinstance(arguments, dict):
+    if name in {"add_ticket_comment", "update_ticket_status", "assign_ticket", "edit_ticket",
+                "complete_ticket_task"} and isinstance(arguments, dict):
         arguments = {"request_id": "request-1", **arguments}
     return asyncio.run(server.call_tool(name, arguments))
 
@@ -92,12 +93,12 @@ def test_registers_only_four_direct_tools_and_two_bounded_read_tools(tools_serve
         "connection_status", "ticket_statuses", "search_tickets", "my_queue",
         "get_ticket", "ticket_feed", "survey_report", "days_off",
         "add_ticket_comment", "update_ticket_status",
-        "assign_ticket", "edit_ticket",
-        "ticket_write_metadata", "ticket_write_result",
+        "assign_ticket", "edit_ticket", "complete_ticket_task",
+        "ticket_write_metadata", "ticket_write_result", "list_ticket_tasks",
     }
     for name in (
         "add_ticket_comment", "update_ticket_status",
-        "assign_ticket", "edit_ticket",
+        "assign_ticket", "edit_ticket", "complete_ticket_task",
     ):
         tool = tools[name]
         assert tool.annotations.readOnlyHint is False
@@ -112,6 +113,9 @@ def test_registers_only_four_direct_tools_and_two_bounded_read_tools(tools_serve
     assert tools["ticket_write_result"].meta["securitySchemes"][0]["scopes"] == ["tdx.read", "tdx.write"]
     assert tools["ticket_write_metadata"].annotations.readOnlyHint is True
     assert tools["ticket_write_metadata"].meta["securitySchemes"][0]["scopes"] == ["tdx.read"]
+    assert tools["list_ticket_tasks"].annotations.readOnlyHint is True
+    assert tools["list_ticket_tasks"].meta["securitySchemes"][0]["scopes"] == ["tdx.read"]
+    assert tools["list_ticket_tasks"].parameters["additionalProperties"] is False
     assert not any(name.startswith(("create_", "commit_", "reconcile_")) for name in tools)
 
 
@@ -289,7 +293,7 @@ def test_real_http_tools_list_mirrors_hosted_security_schemes_at_top_level():
             "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {},
         }, headers={"Accept": "application/json, text/event-stream"})
     tools = response.json()["result"]["tools"]
-    assert len(tools) == 14
+    assert len(tools) == 16
     for tool in tools:
         assert tool["securitySchemes"] == tool["_meta"]["securitySchemes"]
 
@@ -460,3 +464,38 @@ def test_request_id_reuse_and_unresolved_equivalent_get_specific_guidance(tools_
     blocked = run(server, "add_ticket_comment", {"action": {"kind": "comment", "ticket_id": 1, "comments": "x"}})
     assert blocked.isError and "unresolved" in blocked.content[0].text.lower()
     assert "ticket_write_result" in blocked.content[0].text
+
+
+def test_complete_ticket_task_tool_submits_task_action(tools_server):
+    from dynamix_manager.ticket_writes.models import TaskAction
+
+    server, service = tools_server
+    result = structured(run(server, "complete_ticket_task", {"action": {"kind": "task", "ticket_id": 1001, "task_id": 77}}))
+    assert result["outcome"] == "applied" and result["ticket_id"] == 1001
+    assert isinstance(service.actions[-1], TaskAction) and service.actions[-1].task_id == 77
+    with pytest.raises(Exception):
+        run(server, "complete_ticket_task", {"action": {"kind": "comment", "ticket_id": 1001, "comments": "x"}})
+
+
+def test_list_ticket_tasks_uses_bounded_adapter_and_collapses_failures(monkeypatch, tools_server):
+    server, _ = tools_server
+    seen = []
+
+    class FakeAdapter:
+        def list_tasks(self, ticket_id, *, limit=25):
+            seen.append((ticket_id, limit))
+            if ticket_id == 9:
+                raise RuntimeError("private upstream body")
+            return {"ticket_id": ticket_id, "tasks": [{"ID": 77, "Title": "Approve", "IsActive": True,
+                    "PercentComplete": 0, "CompletedDate": None, "ResponsibleFullName": None,
+                    "ResponsibleGroupName": None, "TypeID": 1}], "returned": 1, "complete": True}
+
+    monkeypatch.setattr("dynamix_manager.ticket_writes.tools.WriteAdapter.from_connection",
+                        staticmethod(lambda connection: FakeAdapter()))
+    result = structured(run(server, "list_ticket_tasks", {"ticket_id": 1001, "limit": 5}))
+    assert result["tasks"][0]["ID"] == 77 and result["complete"] is True
+    assert seen == [(1001, 5)]
+    failure = run(server, "list_ticket_tasks", {"ticket_id": 9})
+    assert failure.isError and "private" not in failure.content[0].text
+    with pytest.raises(Exception):
+        run(server, "list_ticket_tasks", {"ticket_id": 1001, "limit": 0})

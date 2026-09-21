@@ -71,7 +71,25 @@ class EditAction(TicketAction):
         return self
 
 
-Action = Annotated[CommentAction | StatusAction | AssignAction | EditAction, Field(discriminator="kind")]
+class TaskAction(TicketAction):
+    """Mark one ticket task 100% complete through the task feed, optionally with a comment."""
+
+    kind: Literal["task"]
+    task_id: PositiveID
+    comments: Text | None = None
+    is_private: Annotated[bool, Field(strict=True)] = True
+    notify: Annotated[tuple[Email, ...], Field(max_length=50)] = ()
+
+    @field_validator("comments")
+    @classmethod
+    def nonblank(cls, value):
+        if value is not None and not value.strip():
+            raise ValueError("Comment must contain text.")
+        return value
+
+
+Action = Annotated[CommentAction | StatusAction | AssignAction | EditAction | TaskAction,
+                   Field(discriminator="kind")]
 _actions = TypeAdapter(Action)
 
 

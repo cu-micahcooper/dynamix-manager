@@ -321,6 +321,10 @@ class Upstream:
             ),
             "/api/groups/4": dict(ID=4, Name="Team", IsActive=True),
             "/api/groups/4/applications": [dict(AppID=42, GroupID=4)],
+            "/api/42/tickets/1001/tasks/77": dict(
+                ID=77, TicketID=1001, Title="Approve payment", IsActive=True,
+                PercentComplete=0, CompletedDate=None, ModifiedDate="task-v1", TypeID=1,
+            ),
         }
         self.apply_count = 0
         self.apply_result = SimpleNamespace(status_code=200, json=lambda: dict(ID=1001, AppID=42))
@@ -515,3 +519,32 @@ def test_service_uses_injected_credential_provider_for_personal_token(setup):
     assert result.outcome == "applied"
     assert served == [UID, UID]
     assert {c.token for c in setup.connections} == {"renewed-secret"}
+
+
+def test_task_completion_submits_once_and_conflicts_when_the_task_changes(setup):
+    action = parse_action(dict(kind="task", ticket_id=1001, task_id=77, comments="Approved"))
+    result = setup.service.submit("principal", action, "task-1")
+    assert result.outcome == "applied" and result.ticket_id == 1001
+    assert setup.service.submit("principal", action, "task-1") == result
+    assert setup.upstream.apply_count == 1
+
+    factory = setup.service.adapter_factory
+    count = [0]
+
+    def changing_factory(connection):
+        adapter = factory(connection)
+        validate = adapter.validate
+
+        def changing_validate(value):
+            count[0] += 1
+            if count[0] == 2:
+                setup.upstream.records["/api/42/tickets/1001/tasks/77"]["ModifiedDate"] = "task-v2"
+            return validate(value)
+
+        adapter.validate = changing_validate
+        return adapter
+
+    setup.service.adapter_factory = changing_factory
+    second = setup.service.submit("principal", parse_action(dict(kind="task", ticket_id=1001, task_id=77)), "task-2")
+    assert second.outcome == "conflict"
+    assert setup.upstream.apply_count == 1

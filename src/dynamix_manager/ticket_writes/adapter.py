@@ -9,8 +9,8 @@ from uuid import UUID
 
 import requests
 
-from .models import (AssignAction, ChangePreview, CommentAction, EditAction,
-                     PreparedChange, PreviewField, StatusAction, WriteResult, parse_action)
+from .models import (AssignAction, ChangePreview, CommentAction, EditAction, PreparedChange,
+                     PreviewField, StatusAction, TaskAction, WriteResult, parse_action)
 
 
 def canonical_json(value):
@@ -241,6 +241,42 @@ class WriteAdapter:
             raise ValueError("A matching application-bound ticket baseline is required.")
         return ticket
 
+    TASK_KEYS = ("ID", "Title", "IsActive", "PercentComplete", "CompletedDate",
+                 "ResponsibleFullName", "ResponsibleGroupName", "TypeID")
+
+    def list_tasks(self, ticket_id, *, limit=25):
+        """Return a bounded, minimal projection of a ticket's tasks (no descriptions or emails)."""
+        if type(ticket_id) is not int or ticket_id <= 0:
+            raise ValueError("Ticket ID must be positive.")
+        if type(limit) is not int or not 1 <= limit <= 100:
+            raise ValueError("Task limit must be between 1 and 100.")
+        rows = self._metadata_request("GET", f"/api/{self.app_id}/tickets/{ticket_id}/tasks")
+        valid = [row for row in rows if isinstance(row, dict) and type(row.get("ID")) is int
+                 and row["ID"] > 0 and isinstance(row.get("Title"), str)]
+        tasks = [{key: row.get(key) for key in self.TASK_KEYS} for row in valid[:limit]]
+        return {"ticket_id": ticket_id, "tasks": tasks, "returned": len(tasks),
+                "complete": len(valid) <= limit}
+
+    def _task_snapshot(self, action):
+        task = self._get(f"/api/{self.app_id}/tickets/{action.ticket_id}/tasks/{action.task_id}")
+        percent = task.get("PercentComplete") if isinstance(task, dict) else None
+        if (not isinstance(task, dict) or task.get("ID") != action.task_id
+                or task.get("TicketID") != action.ticket_id or task.get("IsActive") is not True
+                or type(percent) is not int or not 0 <= percent < 100 or task.get("CompletedDate")
+                or not isinstance(task.get("Title"), str) or not task.get("ModifiedDate")):
+            raise ValueError("The task is not an open, incomplete task on this ticket.")
+        return task
+
+    def _task_feed(self, action, task):
+        payload = dict(IsPrivate=action.is_private, IsRichHtml=False, Notify=list(action.notify),
+                       PercentComplete=100)
+        fields = [PreviewField(name="Task", before=task["Title"], after=task["Title"]),
+                  PreviewField(name="PercentComplete", before=str(task["PercentComplete"]), after="100")]
+        if action.comments is not None:
+            payload["Comments"] = action.comments
+            fields.append(PreviewField(name="Comment", before=None, after=action.comments))
+        return payload, fields
+
     def metadata(self, action):
         if isinstance(action, StatusAction):
             return self._active_option("statuses", action.status_id)
@@ -291,16 +327,22 @@ class WriteAdapter:
         if isinstance(action, StatusAction):
             if metadata.get("RequireGoesOffHold") is not False or metadata.get("StatusClass") not in range(1, 7):
                 raise ValueError("Status requirements are unsupported or unavailable.")
-        if isinstance(action, CommentAction):
+        baseline = ticket
+        if isinstance(action, TaskAction):
+            task = self._task_snapshot(action)
+            payload, fields = self._task_feed(action, task)
+            baseline = {"ticket": ticket, "task": task}
+        elif isinstance(action, CommentAction):
             payload, fields = self._feed(action, ticket, metadata)
         else:
             payload, fields = self._patch(action, ticket, metadata)
+        feed_like = isinstance(action, (CommentAction, TaskAction))
         preview = ChangePreview(application=self.application_name, ticket_id=action.ticket_id,
                                 ticket_title=ticket["Title"], action=action.kind, fields=tuple(fields),
-                                visibility=("private" if action.is_private else "public") if isinstance(action, CommentAction) else None,
-                                recipients=action.notify if isinstance(action, CommentAction) else (),
+                                visibility=("private" if action.is_private else "public") if feed_like else None,
+                                recipients=action.notify if feed_like else (),
                                 notices=self._notices(action))
-        return PreparedChange(action=action, base_url=self.base_url, app_id=self.app_id, baseline_json=canonical_json(ticket),
+        return PreparedChange(action=action, base_url=self.base_url, app_id=self.app_id, baseline_json=canonical_json(baseline),
                               payload_json=canonical_json(payload), preview=preview)
 
     @staticmethod
@@ -310,6 +352,8 @@ class WriteAdapter:
                   "Tenant automation rules have not been audited.")
         if isinstance(action, CommentAction):
             return common + ("Only the listed email recipients are requested through Notify. Private visibility does not prevent disclosure to email recipients.",)
+        if isinstance(action, TaskAction):
+            return common + ("TeamDynamix accepting the update is not proof the task shows as completed; confirm CompletedDate with list_ticket_tasks.",)
         return common + ("New-responsible notification is disabled.",)
 
     def _feed(self, action, ticket, metadata):
@@ -350,8 +394,11 @@ class WriteAdapter:
             return WriteResult(outcome="rejected", message="Tenant or application binding does not match.")
         action = prepared.action
         path = f"/api/{self.app_id}/tickets/{action.ticket_id}"
-        feed = isinstance(action, CommentAction)
-        path += "/feed" if feed else "?notifyNewResponsible=false"
+        feed = isinstance(action, (CommentAction, TaskAction))
+        if isinstance(action, TaskAction):
+            path += f"/tasks/{action.task_id}/feed"
+        else:
+            path += "/feed" if feed else "?notifyNewResponsible=false"
         try:
             response = self.request("POST" if feed else "PATCH", self.base_url + path,
                                     headers=self._headers, json=json.loads(prepared.payload_json),

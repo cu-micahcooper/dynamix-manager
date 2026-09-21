@@ -167,3 +167,29 @@ includes completed/cancelled statuses without required off-hold dates and severa
 on-hold statuses with `RequireGoesOffHold=true`. At least one on-hold-class status
 does not require the date: validation must inspect the flag, not infer the
 requirement solely from status class. No ticket content or writes were involved.
+
+## Ticket tasks (verified 2026-09-20 against the published OpenAPI document)
+
+Source: `https://demotemplate.teamdynamix.com/TDWebApi/swagger/v1/openapi.json`
+(TeamDynamix Web API v1, OpenAPI 3.0.0).
+
+- `GET /api/{appId}/tickets/{ticketId}/tasks` (`TicketTasks_GetTicketTasks`) returns
+  `TicketTask[]`. Relevant fields: `ID`, `TicketID`, `Title`, `IsActive` (read-only),
+  `PercentComplete` (read-only), `CompletedDate`/`CompletedUid`/`CompletedFullName`
+  (read-only), `ResponsibleUid`, `ResponsibleGroupID`, `ModifiedDate` (read-only),
+  `TypeID` (regular task vs. scheduled maintenance activity).
+- `POST /api/{appId}/tickets/{ticketId}/tasks/{id}/feed` (`TicketTasks_AddUpdate`) takes
+  `TicketTaskFeedEntry` = `FeedEntry` (`Comments`, `IsPrivate`, `IsRichHtml`, `Notify`,
+  `IsCommunication`) plus `PercentComplete` (nullable int32). The schema states a value
+  must be provided for either `PercentComplete` or `Comments`. Because
+  `TicketTask.PercentComplete` is read-only, **the task feed is the only documented way
+  to change completion**; `PUT .../tasks/{id}` (`TicketTasks_EditTicketTask`) is a full
+  `TicketTask` replacement for title/description/dates/responsibility and must not be
+  used as a completion fallback. Documented success is 200 returning the generated feed
+  entry; Cedarville returns 201 for the analogous ticket feed, so treat 200 and 201 as
+  accepted and everything else as documented for ticket feed writes.
+- Not stated in the document: that `PercentComplete = 100` sets `CompletedDate` and
+  clears `IsActive`, and whether TDX notifies the responsible party on completion. The
+  first live use must confirm completion by reading the task back (`CompletedDate` set)
+  before the tool's applied outcome is trusted as "task completed" rather than "update
+  accepted". Rate limit: 60 requests per 60 seconds per IP for these operations.

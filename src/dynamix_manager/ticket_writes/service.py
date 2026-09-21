@@ -21,6 +21,7 @@ from .models import (
     CommentAction,
     EditAction,
     StatusAction,
+    TaskAction,
     WriteResult,
 )
 from .store import DirectReplayResult, GrantBinding, WriteStore
@@ -58,7 +59,7 @@ class TicketWriteStatus:
     status_code: int | None = None
 
 
-_ACTION_TYPES = (CommentAction, StatusAction, AssignAction, EditAction)
+_ACTION_TYPES = (CommentAction, StatusAction, AssignAction, EditAction, TaskAction)
 _UNKNOWN_MESSAGE = "The upstream outcome is unknown; do not retry."
 _PENDING_MESSAGE = ("The change was recorded but not yet sent to TeamDynamix; "
                     "resubmit it with the same request ID and arguments.")

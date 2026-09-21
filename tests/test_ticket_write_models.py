@@ -53,3 +53,19 @@ def test_json_round_trip_preserves_explicit_fields(value):
 def test_comment_resource_bounds_and_strict_visibility(change):
     with pytest.raises(ValidationError):
         parse({"kind": "comment", "ticket_id": 1, "comments": "Hello", **change})
+
+
+def test_task_completion_action_is_private_by_default_and_requires_task_id():
+    from dynamix_manager.ticket_writes.models import TaskAction
+
+    action = parse(dict(kind="task", ticket_id=1001, task_id=77))
+    assert isinstance(action, TaskAction)
+    assert action.comments is None and action.is_private is True and action.notify == ()
+    with_comment = parse(dict(kind="task", ticket_id=1001, task_id=77, comments="Done",
+                                     is_private=False, notify=["ap@example.invalid"]))
+    assert with_comment.comments == "Done" and with_comment.notify == ("ap@example.invalid",)
+    for bad in (dict(kind="task", ticket_id=1001), dict(kind="task", ticket_id=1001, task_id=0),
+                dict(kind="task", ticket_id=1001, task_id=77, comments="   "),
+                dict(kind="task", ticket_id=1001, task_id=77, percent_complete=50)):
+        with pytest.raises(ValidationError):
+            parse(bad)

@@ -401,11 +401,19 @@ once more through ChatGPT with the box checked to switch to renewal.
 
 ### ChatGPT tool surface
 
-Personal mode exposes 14 tools: the existing eight read tools, four direct-write
+Personal mode exposes 16 tools: the existing eight read tools, five direct-write
 tools (`add_ticket_comment`, `update_ticket_status`, `assign_ticket`,
-`edit_ticket`), bounded read-only
-`ticket_write_metadata`, and grant-owner-only `ticket_write_result`. External
-issuer mode keeps the eight read-only tools.
+`edit_ticket`, `complete_ticket_task`), bounded read-only
+`ticket_write_metadata` and `list_ticket_tasks`, and grant-owner-only
+`ticket_write_result`. External issuer mode keeps the eight read-only tools.
+
+`complete_ticket_task` posts `PercentComplete: 100` (optionally with a comment) to
+the ticket task feed, the only documented way to change completion; see the task
+section of `docs/tdx-write-api-contracts.md`. Preflight requires the task to be
+active, incomplete and on the named ticket, and the stored baseline includes the
+task so a concurrent task change produces a conflict. An applied outcome means
+TDX accepted the update; the tool description tells the model to confirm
+`CompletedDate` through `list_ticket_tasks` before reporting the task as done.
 
 Submission and result lookup require `tdx.read tdx.write`; metadata discovery
 requires only `tdx.read`. Both the top-level tool scheme and compatibility
