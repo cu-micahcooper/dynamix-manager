@@ -426,11 +426,27 @@ connector's tool definitions in ChatGPT to pick up the new filters.
 
 ### ChatGPT tool surface
 
-Personal mode exposes 16 tools: the existing eight read tools, five direct-write
+Personal mode exposes 18 tools: the existing eight read tools, six direct-write
 tools (`add_ticket_comment`, `update_ticket_status`, `assign_ticket`,
-`edit_ticket`, `complete_ticket_task`), bounded read-only
-`ticket_write_metadata` and `list_ticket_tasks`, and grant-owner-only
-`ticket_write_result`. External issuer mode keeps the eight read-only tools.
+`edit_ticket`, `complete_ticket_task`, `create_ticket`), bounded read-only
+`ticket_write_metadata`, `list_ticket_tasks` and `ticket_create_metadata`, and
+grant-owner-only `ticket_write_result`. External issuer mode keeps the eight
+read-only tools.
+
+`create_ticket` posts a `Ticket` to `POST /api/{appId}/tickets` with fixed query
+flags: no requestor creation, no responsible or reviewer notification,
+`applyDefaults=true`, and requestor notification only when asked. Required inputs
+are title, `type_id`, `account_id` and a requestor (name/email resolved through
+the people API, or a UID); optional description, form, status, priority, service,
+source and a responsible person or group. Preflight verifies every ID as active
+in the tenant. Omitted status, priority and form use the tenant's defaults; the
+result's `detail` reports the new ticket ID and the applied status, priority,
+form, type, requestor, account and responsibility. If the created ticket is not
+assigned as intended, `assign_ticket` on the new ID is the second step. Custom
+attribute values and templates are not supported; a tenant rejection over a
+required attribute comes back as a `rejected` outcome with the HTTP status.
+`ticket_create_metadata` lists active types, forms and sources and searches
+accounts server-side (`POST /api/accounts/search`).
 
 `complete_ticket_task` posts `PercentComplete: 100` (optionally with a comment) to
 the ticket task feed, the only documented way to change completion; see the task

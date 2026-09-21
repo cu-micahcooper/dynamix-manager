@@ -18,7 +18,8 @@ No credentials in URLs, logs, source bundles, tool arguments or chat responses.
 The browser sees a consent/login page naming the connector, read-only scope and
 exact callback destination. Require a browser-bound, short-lived, single-use
 transaction and CSRF nonce, exact same-origin POST, no third-party resources,
-frame denial, no-store and no-referrer headers. No durable signed-in browser
+frame denial, no-store and same-origin referrer headers (no cross-site referrer
+disclosure; preserves Origin on native form POSTs). No durable signed-in browser
 session is necessary. Apply bounded request sizes and login attempt rate limits.
 
 Allow OAuth clients only with exact operator-configured ChatGPT callback URLs.

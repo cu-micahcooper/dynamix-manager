@@ -69,3 +69,29 @@ def test_task_completion_action_is_private_by_default_and_requires_task_id():
                 dict(kind="task", ticket_id=1001, task_id=77, percent_complete=50)):
         with pytest.raises(ValidationError):
             parse(bad)
+
+
+REQUESTOR = "aaaaaaaa-0000-4000-8000-000000000001"
+
+
+def test_create_action_requires_core_fields_and_has_no_ticket_yet():
+    from dynamix_manager.ticket_writes.models import CreateAction
+
+    action = parse(dict(kind="create", title="Replace projector", type_id=3, account_id=11, requestor_uid=REQUESTOR))
+    assert isinstance(action, CreateAction) and action.ticket_id == 0
+    assert action.description is None and action.notify_requestor is False
+    assert action.model_dump(mode="json") == {"kind": "create", "title": "Replace projector", "type_id": 3,
+                                              "account_id": 11, "requestor_uid": REQUESTOR}
+    full = parse(dict(kind="create", title="T", description="Body", type_id=3, account_id=11, requestor_uid=REQUESTOR,
+                      form_id=2, status_id=30793, priority_id=7, service_id=9, source_id=4,
+                      responsible_uid=REQUESTOR, responsible_group_id=14405, notify_requestor=True))
+    assert full.responsible_group_id == 14405 and full.notify_requestor is True
+    assert type(full).model_validate_json(full.model_dump_json()) == full
+    for bad in (dict(kind="create", title="T", type_id=3, account_id=11),
+                dict(kind="create", title="   ", type_id=3, account_id=11, requestor_uid=REQUESTOR),
+                dict(kind="create", title="T", type_id=0, account_id=11, requestor_uid=REQUESTOR),
+                dict(kind="create", title="T", type_id=3, account_id=11, requestor_uid="not-a-uid"),
+                dict(kind="create", title="T", type_id=3, account_id=11, requestor_uid=REQUESTOR, ticket_id=5),
+                dict(kind="create", title="x" * 301, type_id=3, account_id=11, requestor_uid=REQUESTOR)):
+        with pytest.raises(ValidationError):
+            parse(bad)

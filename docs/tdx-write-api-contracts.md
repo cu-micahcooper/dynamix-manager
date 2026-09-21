@@ -65,6 +65,13 @@ The PATCH guide documents case-insensitive property names and custom-attribute a
 
 ## Creation and required metadata
 
+**Status 2026-09-21:** `create_ticket` is implemented on the contract below with
+explicit safety flags (`AllowRequestorCreation=false`, `NotifyResponsible=false`,
+`EnableNotifyReviewer=false`, `applyDefaults=true`, `NotifyRequestor` per request)
+and without custom attributes or templates. The form-requirements gap described
+here still stands: a tenant rejection caused by a required attribute surfaces as a
+`rejected` outcome, and attribute support needs a verified form contract first.
+
 `Tickets_CreateTicket` takes `Ticket` and returns HTTP 201 with the created `Ticket`. The `Ticket` schema marks `TypeID`, `Title`, `AccountID`, `StatusID`, `PriorityID`, and `RequestorUid` required. Endpoint prose also allows at least one of `RequestorEmail`, `RequestorUid`, or `AccountID`; `RequestorEmail` is marked read-only in the shared schema. This mismatch means an email-only minimal request is not a verified fixture. Supplying an existing verified `RequestorUid` and every schema-required field avoids relying on that alternative, but does not resolve form requirements.
 
 Query parameters:

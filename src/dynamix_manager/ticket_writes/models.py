@@ -88,7 +88,42 @@ class TaskAction(TicketAction):
         return value
 
 
-Action = Annotated[CommentAction | StatusAction | AssignAction | EditAction | TaskAction,
+class CreateAction(ImmutableModel):
+    """Create a ticket; omitted status/priority/form fall back to the tenant's defaults."""
+
+    kind: Literal["create"]
+    title: Annotated[str, Field(strict=True, min_length=1, max_length=300)]
+    description: Annotated[str, Field(strict=True, max_length=20000)] | None = None
+    type_id: PositiveID
+    account_id: PositiveID
+    requestor_uid: UUID
+    form_id: PositiveID | None = None
+    status_id: PositiveID | None = None
+    priority_id: PositiveID | None = None
+    service_id: PositiveID | None = None
+    source_id: PositiveID | None = None
+    responsible_uid: UUID | None = None
+    responsible_group_id: PositiveID | None = None
+    notify_requestor: Annotated[bool, Field(strict=True)] = False
+
+    @property
+    def ticket_id(self):
+        """No ticket exists until TeamDynamix creates it."""
+        return 0
+
+    @field_validator("title")
+    @classmethod
+    def nonblank(cls, value):
+        if not value.strip():
+            raise ValueError("Title must contain text.")
+        return value
+
+    @model_serializer(mode="wrap")
+    def serialize_explicit(self, handler):
+        return {key: value for key, value in handler(self).items() if key in self.model_fields_set}
+
+
+Action = Annotated[CommentAction | StatusAction | AssignAction | EditAction | TaskAction | CreateAction,
                    Field(discriminator="kind")]
 _actions = TypeAdapter(Action)
 
@@ -105,7 +140,7 @@ class PreviewField(ImmutableModel):
 
 class ChangePreview(ImmutableModel):
     application: str
-    ticket_id: PositiveID
+    ticket_id: Annotated[int, Field(strict=True, ge=0)]  # 0 while a ticket is being created
     ticket_title: str
     action: str
     fields: tuple[PreviewField, ...]
@@ -127,3 +162,4 @@ class WriteResult(ImmutableModel):
     outcome: Literal["applied", "rejected", "unknown"]
     message: str
     status_code: int | None = None
+    detail: dict | None = None  # safe projection of what the tenant applied (e.g. created ticket ID)

@@ -9,8 +9,8 @@ from uuid import UUID
 
 import requests
 
-from .models import (AssignAction, ChangePreview, CommentAction, EditAction, PreparedChange,
-                     PreviewField, StatusAction, TaskAction, WriteResult, parse_action)
+from .models import (AssignAction, ChangePreview, CommentAction, CreateAction, EditAction,
+                     PreparedChange, PreviewField, StatusAction, TaskAction, WriteResult, parse_action)
 
 
 def canonical_json(value):
@@ -266,6 +266,115 @@ class WriteAdapter:
         return {"ticket_id": ticket_id, "tasks": tasks, "returned": len(tasks),
                 "complete": len(valid) <= limit}
 
+    CREATE_KINDS = {
+        "types": ("/tickets/types", ("ID", "Name", "CategoryName")),
+        "forms": ("/tickets/forms", ("ID", "Name", "IsDefaultForApp")),
+        "sources": ("/tickets/sources", ("ID", "Name")),
+    }
+    CREATE_FLAGS = {"EnableNotifyReviewer": "false", "NotifyResponsible": "false",
+                    "AllowRequestorCreation": "false", "applyDefaults": "true"}
+
+    def discover_create_metadata(self, kind, *, search=None, limit=10):
+        """Bounded, minimal options for creating tickets: types, forms, sources (lists) and accounts (search)."""
+        if type(limit) is not int or not 1 <= limit <= 100:
+            raise ValueError("Limit must be between 1 and 100.")
+        if kind == "accounts":
+            if not isinstance(search, str) or not 2 <= len(search.strip()) <= 100:
+                raise ValueError("Account searches require 2 to 100 characters.")
+            rows = self._metadata_request("POST", "/api/accounts/search",
+                                          payload={"SearchText": search.strip(), "IsActive": True, "MaxResults": limit})
+            valid = [row for row in rows if self._valid_option(row)]
+            results = [{"ID": row["ID"], "Name": row["Name"]} for row in valid[:limit]]
+            return {"kind": kind, "results": results, "returned": len(results), "complete": len(valid) <= limit}
+        if kind not in self.CREATE_KINDS:
+            raise ValueError("Unsupported ticket creation metadata kind.")
+        path, keys = self.CREATE_KINDS[kind]
+        rows = self._metadata_request("GET", f"/api/{self.app_id}{path}")
+        needle = search.strip().casefold() if isinstance(search, str) and search.strip() else None
+        valid = [row for row in rows if self._valid_option(row)
+                 and (needle is None or needle in row["Name"].casefold())]
+        results = [{key: row.get(key) for key in keys} for row in valid[:limit]]
+        return {"kind": kind, "results": results, "returned": len(results), "complete": len(valid) <= limit}
+
+    def _named_option(self, path, identifier, label):
+        options = self._get(path)
+        matches = [row for row in options if isinstance(row, dict) and row.get("ID") == identifier] if isinstance(options, list) else []
+        if len(matches) != 1 or not self._valid_option(matches[0]):
+            raise ValueError(f"Selected {label} could not be verified as active.")
+        return matches[0]["Name"]
+
+    def _named_object(self, path, identifier, label):
+        item = self._get(path)
+        if not isinstance(item, dict) or item.get("ID") != identifier or not self._valid_option(item):
+            raise ValueError(f"Selected {label} could not be verified as active.")
+        return item["Name"]
+
+    def _validate_create(self, action):
+        app = self.app_id
+        snapshot = {
+            "type": self._named_option(f"/api/{app}/tickets/types", action.type_id, "ticket type"),
+            "account": self._named_object(f"/api/accounts/{action.account_id}", action.account_id, "account"),
+        }
+        requestor = self._get(f"/api/people/{action.requestor_uid}")
+        if (not isinstance(requestor, dict) or str(requestor.get("UID", "")).lower() != str(action.requestor_uid)
+                or requestor.get("IsActive") is not True or not requestor.get("FullName")):
+            raise ValueError("Selected requestor is not a verified active person.")
+        snapshot["requestor"] = requestor["FullName"]
+        payload = dict(TypeID=action.type_id, Title=action.title, IsRichHtml=False,
+                       AccountID=action.account_id, RequestorUid=str(action.requestor_uid))
+        fields = [PreviewField(name="Title", before=None, after=action.title),
+                  PreviewField(name="Type", before=None, after=snapshot["type"]),
+                  PreviewField(name="Account", before=None, after=snapshot["account"]),
+                  PreviewField(name="Requestor", before=None, after=snapshot["requestor"])]
+        if action.description is not None:
+            payload["Description"] = action.description
+            fields.append(PreviewField(name="Description", before=None, after=action.description))
+        if action.form_id is not None:
+            snapshot["form"] = self._named_option(f"/api/{app}/tickets/forms", action.form_id, "form")
+            payload["FormID"] = action.form_id
+            fields.append(PreviewField(name="Form", before=None, after=snapshot["form"]))
+        for attr, collection, wire, label in (("status_id", "statuses", "StatusID", "Status"),
+                                              ("priority_id", "priorities", "PriorityID", "Priority")):
+            value = getattr(action, attr)
+            if value is None:
+                fields.append(PreviewField(name=label, before=None, after="Tenant default"))
+                continue
+            option = self._active_option(collection, value)
+            snapshot[label.lower()] = option["Name"]
+            payload[wire] = value
+            fields.append(PreviewField(name=label, before=None, after=option["Name"]))
+        if action.service_id is not None:
+            snapshot["service"] = self._named_object(f"/api/{app}/services/{action.service_id}", action.service_id, "service")
+            payload["ServiceID"] = action.service_id
+            fields.append(PreviewField(name="Service", before=None, after=snapshot["service"]))
+        if action.source_id is not None:
+            snapshot["source"] = self._named_option(f"/api/{app}/tickets/sources", action.source_id, "source")
+            payload["SourceID"] = action.source_id
+            fields.append(PreviewField(name="Source", before=None, after=snapshot["source"]))
+        if action.responsible_uid is not None:
+            user = self._get(f"/api/people/{action.responsible_uid}")
+            if (not isinstance(user, dict) or str(user.get("UID", "")).lower() != str(action.responsible_uid)
+                    or user.get("IsActive") is not True or not self._app_eligible(user.get("OrgApplications"), person=True)
+                    or not user.get("FullName")):
+                raise ValueError("Selected person is not verified active and application eligible.")
+            snapshot["responsible"] = user["FullName"]
+            payload["ResponsibleUid"] = str(action.responsible_uid)
+            fields.append(PreviewField(name="ResponsibleUid", before=None, after=user["FullName"]))
+        if action.responsible_group_id is not None:
+            group = self._get(f"/api/groups/{action.responsible_group_id}")
+            apps = self._get(f"/api/groups/{action.responsible_group_id}/applications")
+            if (not isinstance(group, dict) or group.get("ID") != action.responsible_group_id
+                    or group.get("IsActive") is not True or not self._app_eligible(apps, group_id=action.responsible_group_id)
+                    or not group.get("Name")):
+                raise ValueError("Selected group is not verified active and application eligible.")
+            snapshot["responsible_group"] = group["Name"]
+            payload["ResponsibleGroupID"] = action.responsible_group_id
+            fields.append(PreviewField(name="ResponsibleGroupID", before=None, after=group["Name"]))
+        preview = ChangePreview(application=self.application_name, ticket_id=0, ticket_title=action.title,
+                                action=action.kind, fields=tuple(fields), notices=self._notices(action))
+        return PreparedChange(action=action, base_url=self.base_url, app_id=app, baseline_json=canonical_json(snapshot),
+                              payload_json=canonical_json(payload), preview=preview)
+
     def _task_snapshot(self, action):
         task = self._get(f"/api/{self.app_id}/tickets/{action.ticket_id}/tasks/{action.task_id}")
         percent = task.get("PercentComplete") if isinstance(task, dict) else None
@@ -330,6 +439,8 @@ class WriteAdapter:
 
     def validate(self, action):
         action = parse_action(action)
+        if isinstance(action, CreateAction):
+            return self._validate_create(action)
         ticket, metadata = self.snapshot(action.ticket_id), self.metadata(action)
         if ticket.get("IsConvertedToTask") is True and isinstance(action, (AssignAction, StatusAction)):
             raise ValueError("Assignment and status changes on converted project tasks are unsupported.")
@@ -363,6 +474,9 @@ class WriteAdapter:
             return common + ("Only the listed email recipients are requested through Notify. Private visibility does not prevent disclosure to email recipients.",)
         if isinstance(action, TaskAction):
             return common + ("TeamDynamix accepting the update is not proof the task shows as completed; confirm CompletedDate with list_ticket_tasks.",)
+        if isinstance(action, CreateAction):
+            return common + ("Omitted status, priority and form use the tenant's defaults; the result reports what was applied.",
+                             "Responsible and reviewer notifications are off; the requestor is notified only when notify_requestor is set.")
         return common + ("New-responsible notification is disabled.",)
 
     def _feed(self, action, ticket, metadata):
@@ -398,10 +512,40 @@ class WriteAdapter:
             fields.append(PreviewField(name=wire, before=None if before is None else str(before), after=None if after is None else str(after)))
         return payload, fields
 
+    CREATED_KEYS = (("status", "StatusName"), ("priority", "PriorityName"), ("responsible", "ResponsibleFullName"),
+                    ("responsible_group", "ResponsibleGroupName"), ("form", "FormName"), ("type", "TypeName"),
+                    ("requestor", "RequestorName"), ("account", "AccountName"))
+
+    def _apply_create(self, prepared):
+        params = {**self.CREATE_FLAGS, "NotifyRequestor": "true" if prepared.action.notify_requestor else "false"}
+        try:
+            response = self.request("POST", self.base_url + f"/api/{self.app_id}/tickets", headers=self._headers,
+                                    params=params, json=json.loads(prepared.payload_json),
+                                    timeout=(5, 30), allow_redirects=False)
+        except Exception:
+            return WriteResult(outcome="unknown", message="The upstream outcome is unknown; do not retry.")
+        status = response.status_code
+        if status in (200, 201):
+            try:
+                ticket = response.json()
+                if (not isinstance(ticket, dict) or type(ticket.get("ID")) is not int or ticket["ID"] <= 0
+                        or ticket.get("AppID") != self.app_id):
+                    raise ValueError("Unrecognized ticket response.")
+            except Exception:
+                return WriteResult(outcome="unknown", status_code=status,
+                                   message="The response did not confirm a created ticket; do not retry.")
+            detail = {"ticket_id": ticket["ID"], **{key: ticket.get(wire) for key, wire in self.CREATED_KEYS}}
+            return WriteResult(outcome="applied", message="TeamDynamix created the ticket.", status_code=status, detail=detail)
+        outcome = "rejected" if 400 <= status < 500 and status != 408 else "unknown"
+        return WriteResult(outcome=outcome, status_code=status,
+                           message="TeamDynamix rejected the change." if outcome == "rejected" else "The upstream outcome is unknown; do not retry.")
+
     def apply_once(self, prepared):
         if prepared.base_url != self.base_url or prepared.app_id != self.app_id:
             return WriteResult(outcome="rejected", message="Tenant or application binding does not match.")
         action = prepared.action
+        if isinstance(action, CreateAction):
+            return self._apply_create(prepared)
         path = f"/api/{self.app_id}/tickets/{action.ticket_id}"
         feed = isinstance(action, (CommentAction, TaskAction))
         if isinstance(action, TaskAction):

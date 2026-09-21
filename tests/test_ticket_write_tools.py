@@ -29,10 +29,12 @@ class FakeService:
             raise self.failure
         self.actions.append(action)
         assert request_id == "request-1"
+        created = action.kind == "create"
         return TicketWriteStatus(
             operation_id="privatevalue" if self.malformed else "a" * 32,
             outcome="applied", message="TeamDynamix accepted the change.",
-            ticket_id=action.ticket_id,
+            ticket_id=5555 if created else action.ticket_id,
+            detail={"ticket_id": 5555, "status": "New"} if created else None,
             ticket_url="https://tenant.example/TDNext/Apps/42/Tickets/TicketDet.aspx?TicketID=1001",
             status_code=201,
         )
@@ -50,6 +52,7 @@ class FakeService:
 
 
 class FakeConnection:
+    people = {}
     base_url = "https://tenant.example/TDWebApi"
     app_id = 42
     header_app_id = "8"
@@ -61,10 +64,15 @@ class FakeConnection:
     def ready(self):
         return self
 
+    def resolve_person(self, role, search):
+        matched = self.people.get(search, [])
+        chosen = matched if len(matched) == 1 else []
+        return {"role": role, "search": search, "matched": matched}, [m["uid"] for m in chosen]
+
 
 def run(server, name, arguments):
     if name in {"add_ticket_comment", "update_ticket_status", "assign_ticket", "edit_ticket",
-                "complete_ticket_task"} and isinstance(arguments, dict):
+                "complete_ticket_task", "create_ticket"} and isinstance(arguments, dict):
         arguments = {"request_id": "request-1", **arguments}
     return asyncio.run(server.call_tool(name, arguments))
 
@@ -93,12 +101,12 @@ def test_registers_only_four_direct_tools_and_two_bounded_read_tools(tools_serve
         "connection_status", "ticket_statuses", "search_tickets", "my_queue",
         "get_ticket", "ticket_feed", "survey_report", "days_off",
         "add_ticket_comment", "update_ticket_status",
-        "assign_ticket", "edit_ticket", "complete_ticket_task",
-        "ticket_write_metadata", "ticket_write_result", "list_ticket_tasks",
+        "assign_ticket", "edit_ticket", "complete_ticket_task", "create_ticket",
+        "ticket_write_metadata", "ticket_write_result", "list_ticket_tasks", "ticket_create_metadata",
     }
     for name in (
         "add_ticket_comment", "update_ticket_status",
-        "assign_ticket", "edit_ticket", "complete_ticket_task",
+        "assign_ticket", "edit_ticket", "complete_ticket_task", "create_ticket",
     ):
         tool = tools[name]
         assert tool.annotations.readOnlyHint is False
@@ -116,7 +124,9 @@ def test_registers_only_four_direct_tools_and_two_bounded_read_tools(tools_serve
     assert tools["list_ticket_tasks"].annotations.readOnlyHint is True
     assert tools["list_ticket_tasks"].meta["securitySchemes"][0]["scopes"] == ["tdx.read"]
     assert tools["list_ticket_tasks"].parameters["additionalProperties"] is False
-    assert not any(name.startswith(("create_", "commit_", "reconcile_")) for name in tools)
+    assert tools["ticket_create_metadata"].annotations.readOnlyHint is True
+    assert tools["ticket_create_metadata"].meta["securitySchemes"][0]["scopes"] == ["tdx.read"]
+    assert not any(name.startswith(("prepare_", "commit_", "reconcile_")) for name in tools)
 
 
 @pytest.mark.parametrize(
@@ -135,6 +145,7 @@ def test_direct_tools_use_strict_typed_actions_and_return_result(name, action, t
         "outcome": "applied",
         "message": "TeamDynamix accepted the change.",
         "operation_id": "a" * 32,
+        "detail": None,
         "ticket_id": action["ticket_id"],
         "ticket_url": "https://tenant.example/TDNext/Apps/42/Tickets/TicketDet.aspx?TicketID=1001",
         "status_code": 201,
@@ -158,6 +169,7 @@ def test_result_returns_only_safe_owner_checked_projection(tools_server):
         "ticket_id": 1001,
         "ticket_url": "https://tenant.example/TDNext/Apps/42/Tickets/TicketDet.aspx?TicketID=1001",
         "status_code": None,
+        "detail": None,
     }
 
 
@@ -293,7 +305,7 @@ def test_real_http_tools_list_mirrors_hosted_security_schemes_at_top_level():
             "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {},
         }, headers={"Accept": "application/json, text/event-stream"})
     tools = response.json()["result"]["tools"]
-    assert len(tools) == 16
+    assert len(tools) == 18
     for tool in tools:
         assert tool["securitySchemes"] == tool["_meta"]["securitySchemes"]
 
@@ -499,3 +511,68 @@ def test_list_ticket_tasks_uses_bounded_adapter_and_collapses_failures(monkeypat
     assert failure.isError and "private" not in failure.content[0].text
     with pytest.raises(Exception):
         run(server, "list_ticket_tasks", {"ticket_id": 1001, "limit": 0})
+
+
+ALAN = {"uid": "aaaaaaaa-0000-4000-8000-000000000001", "name": "Alan McCain", "email": "mccaina@cedarville.edu"}
+MICAH = {"uid": "aaaaaaaa-0000-4000-8000-000000000002", "name": "Micah Cooper", "email": "micahcooper@cedarville.edu"}
+
+
+def test_create_ticket_resolves_people_first_and_reports_them_with_the_new_ticket(tools_server):
+    from dynamix_manager.ticket_writes.models import CreateAction
+
+    server, service = tools_server
+    FakeConnection.people = {"Alan McCain": [ALAN], "Micah Cooper": [MICAH]}
+    result = structured(run(server, "create_ticket", {"ticket": {
+        "title": "Replace projector", "description": "Room 101", "type_id": 3, "account_id": 11,
+        "requestor": "Alan McCain", "responsible": "Micah Cooper", "priority_id": 7}}))
+    action = service.actions[-1]
+    assert isinstance(action, CreateAction)
+    assert str(action.requestor_uid) == ALAN["uid"] and str(action.responsible_uid) == MICAH["uid"]
+    assert action.priority_id == 7 and action.form_id is None and "form_id" not in action.model_fields_set
+    assert result["ticket_id"] == 5555 and result["outcome"] == "applied"
+    assert result["detail"] == {"ticket_id": 5555, "status": "New"}
+    assert result["resolved_people"] == [
+        {"role": "requestor", "search": "Alan McCain", "matched": [ALAN]},
+        {"role": "responsible", "search": "Micah Cooper", "matched": [MICAH]},
+    ]
+
+
+def test_create_ticket_accepts_uids_directly_and_stops_on_ambiguous_people(tools_server):
+    server, service = tools_server
+    FakeConnection.people = {"McCain": [ALAN, {**MICAH, "name": "Other McCain"}]}
+    count = len(service.actions)
+    result = structured(run(server, "create_ticket", {"ticket": {
+        "title": "T", "type_id": 3, "account_id": 11, "requestor_uid": ALAN["uid"]}}))
+    assert str(service.actions[-1].requestor_uid) == ALAN["uid"] and len(service.actions) == count + 1
+    assert result["resolved_people"] == []
+
+    ambiguous = run(server, "create_ticket", {"ticket": {"title": "T", "type_id": 3, "account_id": 11, "requestor": "McCain"}})
+    assert ambiguous.isError and "ambiguous" in ambiguous.content[0].text.lower()
+    assert "mccaina@cedarville.edu" in ambiguous.content[0].text
+    assert len(service.actions) == count + 1
+
+    nobody = run(server, "create_ticket", {"ticket": {"title": "T", "type_id": 3, "account_id": 11, "requestor": "Nobody"}})
+    assert nobody.isError and "no person" in nobody.content[0].text.lower()
+    with pytest.raises(Exception):
+        run(server, "create_ticket", {"ticket": {"title": "T", "type_id": 3, "account_id": 11}})
+    with pytest.raises(Exception):
+        run(server, "create_ticket", {"ticket": {"title": "T", "type_id": 3, "account_id": 11,
+                                                  "requestor": "Alan McCain", "requestor_uid": ALAN["uid"]}})
+
+
+def test_ticket_create_metadata_uses_bounded_adapter(monkeypatch, tools_server):
+    server, _ = tools_server
+    seen = []
+
+    class FakeAdapter:
+        def discover_create_metadata(self, kind, *, search=None, limit=10):
+            seen.append((kind, search, limit))
+            return {"kind": kind, "results": [{"ID": 3, "Name": "Hardware", "CategoryName": "Support"}],
+                    "returned": 1, "complete": True}
+
+    monkeypatch.setattr("dynamix_manager.ticket_writes.tools.WriteAdapter.from_connection",
+                        staticmethod(lambda connection: FakeAdapter()))
+    result = structured(run(server, "ticket_create_metadata", {"kind": "types", "search": "hard", "limit": 5}))
+    assert result["results"][0]["ID"] == 3 and seen == [("types", "hard", 5)]
+    with pytest.raises(Exception):
+        run(server, "ticket_create_metadata", {"kind": "people"})

@@ -254,8 +254,13 @@ health/auth/Origin checks and actual ChatGPT read-only connection status. Then
 write-enabled deployment `ff11c74f-3987-4313-bfca-fd651e275950` reached SUCCESS
 and health 200. ChatGPT refreshed all 14 tools. Source upload was exactly 25
 allowlisted files; existing vault/key preserved. No production ticket mutation.
-Separate write consent, exact approved live Save/read-back and pending-preview
-rollback remain gates, so the last three checklist items are not yet complete.
+The user subsequently completed explicit read-and-modify reconnect. Settings
+cleared RECONNECT NEEDED; ChatGPT's live check returned connected=true,
+read_only=false, write_available=true and bounded priority metadata succeeded.
+The nonexistent-operation result probe returned INVALID_ARGUMENT. Exact approved
+live Save/read-back and pending-preview rollback remain unverified. The old read
+grant was observed as write_available=false before reconnect; no live preparation
+attempt was made with it, so that checklist item remains only partially complete.
 
 - [x] Run `.venv/bin/python3.14 -m pytest -q`, `node --test tests/frontend/*.test.cjs`, focused Ruff on changed Python files, and `git diff --check`. Resolve failures; record exact counts and gaps.
 - [x] Request independent code/security review with @superpowers:requesting-code-review, prioritizing authorization, token/grant binding, capability leakage, unknown outcome retention and payload immutability. Resolve actionable findings and rerun tests.

@@ -321,6 +321,8 @@ class Upstream:
             ),
             "/api/groups/4": dict(ID=4, Name="Team", IsActive=True),
             "/api/groups/4/applications": [dict(AppID=42, GroupID=4)],
+            "/api/42/tickets/types": [dict(ID=3, Name="Hardware", IsActive=True, CategoryName="Support")],
+            "/api/accounts/11": dict(ID=11, Name="Information Technology", IsActive=True),
             "/api/42/tickets/1001/tasks/77": dict(
                 ID=77, TicketID=1001, Title="Approve payment", IsActive=True,
                 PercentComplete=0, CompletedDate=None, ModifiedDate="task-v1", TypeID=1,
@@ -548,3 +550,29 @@ def test_task_completion_submits_once_and_conflicts_when_the_task_changes(setup)
     second = setup.service.submit("principal", parse_action(dict(kind="task", ticket_id=1001, task_id=77)), "task-2")
     assert second.outcome == "conflict"
     assert setup.upstream.apply_count == 1
+
+
+def test_create_ticket_reports_the_new_ticket_and_replays_without_a_second_creation(setup):
+    setup.upstream.apply_result = SimpleNamespace(status_code=201, json=lambda: dict(
+        ID=5555, AppID=42, Title="New printer", StatusName="New", PriorityName="Normal",
+        ResponsibleFullName="Person", ResponsibleGroupName=None, FormName="Standard", TypeName="Hardware",
+        RequestorName="Person", AccountName="Information Technology"))
+    action = parse_action(dict(kind="create", title="New printer", type_id=3, account_id=11,
+                               requestor_uid=UID, responsible_uid=UID))
+    result = setup.service.submit("principal", action, "create-1")
+    assert result.outcome == "applied" and result.status_code == 201
+    assert result.ticket_id == 5555
+    assert result.ticket_url == "https://tenant.example/TDNext/Apps/42/Tickets/TicketDet.aspx?TicketID=5555"
+    assert result.detail["responsible"] == "Person" and result.detail["status"] == "New"
+    assert setup.service.submit("principal", action, "create-1") == result
+    assert setup.upstream.apply_count == 1
+    assert setup.service.result("principal", result.operation_id).ticket_id == 5555
+
+
+def test_create_ticket_rejection_has_no_ticket_and_points_at_the_app(setup):
+    setup.upstream.apply_result = SimpleNamespace(status_code=400, json=lambda: {"Message": "private detail"})
+    action = parse_action(dict(kind="create", title="New printer", type_id=3, account_id=11, requestor_uid=UID))
+    result = setup.service.submit("principal", action, "create-1")
+    assert result.outcome == "rejected" and result.ticket_id == 0 and result.detail is None
+    assert result.ticket_url == "https://tenant.example/TDNext/Apps/42/Tickets/"
+    assert "private detail" not in repr(result)

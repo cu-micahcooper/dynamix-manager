@@ -19,6 +19,7 @@ from .adapter import WriteAdapter, canonical_json
 from .models import (
     AssignAction,
     CommentAction,
+    CreateAction,
     EditAction,
     StatusAction,
     TaskAction,
@@ -57,9 +58,10 @@ class TicketWriteStatus:
     ticket_id: int
     ticket_url: str
     status_code: int | None = None
+    detail: dict | None = None
 
 
-_ACTION_TYPES = (CommentAction, StatusAction, AssignAction, EditAction, TaskAction)
+_ACTION_TYPES = (CommentAction, StatusAction, AssignAction, EditAction, TaskAction, CreateAction)
 _UNKNOWN_MESSAGE = "The upstream outcome is unknown; do not retry."
 _PENDING_MESSAGE = ("The change was recorded but not yet sent to TeamDynamix; "
                     "resubmit it with the same request ID and arguments.")
@@ -258,7 +260,8 @@ class TicketWriteService:
 
                 # Only fixed, safe messages are persisted; adapter text never escapes.
                 safe_message = {
-                    "applied": "TeamDynamix accepted the change.",
+                    "applied": ("TeamDynamix created the ticket." if claim.record.prepared.action.kind == "create"
+                                else "TeamDynamix accepted the change."),
                     "rejected": _REJECTED_MESSAGES.get(result.status_code, _REJECTED_MESSAGE),
                     "unknown": _UNKNOWN_MESSAGE,
                 }[result.outcome]
@@ -267,6 +270,7 @@ class TicketWriteService:
                     result.outcome,
                     safe_message,
                     status_code=result.status_code,
+                    detail=result.detail if result.outcome == "applied" else None,
                 )
                 return self._safe_status(finished)
         except (WriteAuthorizationRequired, LinkedIdentityMismatch, WritesDisabled):
@@ -312,7 +316,19 @@ class TicketWriteService:
             return False
 
     @staticmethod
-    def _ticket_url(record):
+    def _ticket_identity(record):
+        """Ticket ID and result detail for a record; a created ticket's ID comes from the result."""
+        if isinstance(record, DirectReplayResult):
+            ticket_id, detail = record.ticket_id, record.result.detail
+        else:
+            ticket_id = record.prepared.action.ticket_id
+            detail = record.result.detail if record.result else None
+        if isinstance(detail, dict) and type(detail.get("ticket_id")) is int and detail["ticket_id"] > 0:
+            ticket_id = detail["ticket_id"]
+        return ticket_id, detail
+
+    @classmethod
+    def _ticket_url(cls, record):
         destination = record if isinstance(record, DirectReplayResult) else record.prepared
         parsed = urlsplit(destination.base_url)
         if (
@@ -325,11 +341,9 @@ class TicketWriteService:
             or parsed.path.lower() != "/tdwebapi"
         ):
             raise TicketWriteServiceError("Stored ticket destination is invalid.")
-        ticket_id = record.ticket_id if isinstance(record, DirectReplayResult) else record.prepared.action.ticket_id
-        return (
-            f"https://{parsed.netloc}/TDNext/Apps/{destination.app_id}/Tickets/"
-            f"TicketDet.aspx?TicketID={ticket_id}"
-        )
+        ticket_id, _ = cls._ticket_identity(record)
+        base = f"https://{parsed.netloc}/TDNext/Apps/{destination.app_id}/Tickets/"
+        return base + f"TicketDet.aspx?TicketID={ticket_id}" if ticket_id > 0 else base
 
     def _safe_status(self, record, *, outcome=None, message=None):
         effective = outcome or record.effective_state
@@ -343,13 +357,15 @@ class TicketWriteService:
                 message = _PENDING_MESSAGE
             else:
                 message = "The ticket-write operation is no longer pending."
+        ticket_id, detail = self._ticket_identity(record)
         return TicketWriteStatus(
             operation_id=record.operation_id,
             outcome=effective,
             message=message,
-            ticket_id=record.ticket_id if isinstance(record, DirectReplayResult) else record.prepared.action.ticket_id,
+            ticket_id=ticket_id,
             ticket_url=self._ticket_url(record),
             status_code=stored_result.status_code if stored_result else None,
+            detail=detail,
         )
 
 

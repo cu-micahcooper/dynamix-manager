@@ -1,0 +1,35 @@
+<h2>One ticket at a time. Which workspace fits you?</h2>
+<p class="subtitle">Illustrative ticket and AI text only. Nothing here connects to TeamDynamix or sends messages.</p>
+<style>
+.card-image.pre{display:block;height:auto;overflow:visible}.cards{grid-template-columns:1fr!important}.pre{min-height:0!important}.card{overflow:hidden}
+
+.pre{background:#f3f5f8;color:#203040;padding:20px;border-radius:10px;font:14px/1.5 system-ui;min-height:450px}.top{display:flex;justify-content:space-between;border-bottom:1px solid #ccd5df;padding-bottom:12px;margin-bottom:16px}.pill{background:#e1e9f3;padding:3px 9px;border-radius:20px;font-size:11px}.panels{display:grid;grid-template-columns:1fr 1fr;gap:12px}.box{background:white;border:1px solid #d9e1eb;border-radius:8px;padding:14px;margin-bottom:12px}.pre h4{margin:0 0 8px;font-size:16px}.pre p{margin:7px 0}.muted{color:#64748b;font-size:12px}.suggest{border-top:3px solid #467f80}.send{display:inline-block;background:#1e6769;color:white;border-radius:6px;padding:9px 12px;font-size:12px}.draft{background:#f7f9fb;border:1px solid #d9e1eb;padding:10px;min-height:72px;margin:10px 0}.steps{display:flex;gap:9px;font-size:12px;margin-bottom:15px}.active{color:#1e6769;font-weight:bold}.pre footer{display:flex;justify-content:space-between;align-items:center;margin-top:16px;font-size:12px}@media(max-width:850px){.cards{display:block!important}.card{margin-bottom:20px}.panels{grid-template-columns:1fr}}
+</style>
+<div class="cards">
+ <div class="card" data-choice="side-by-side" onclick="toggleSelect(this)">
+  <div class="card-image pre">
+   <div class="top"><strong>Ticket workbench</strong><span>3 of 12 · Assigned to me</span></div>
+   <h4>#10428 · Access to reporting workspace</h4>
+   <p><span class="pill">In progress</span> <span class="pill">Due tomorrow</span></p>
+   <div class="panels">
+    <div><div class="box"><strong>Request &amp; conversation</strong><p>“I can sign in, but the shared reporting workspace is missing.”</p><p class="muted">Requester · Today, 9:10 AM</p><hr><p>Internal note: Confirm which workspace and access level are needed.</p><p class="muted">You · Yesterday, 2:40 PM</p></div><p class="muted">View full history ↗ · Open in TeamDynamix ↗</p></div>
+    <div><div class="box suggest"><strong>Suggested next step</strong><p>Ask for the workspace name, then verify membership.</p><p class="muted">Based on the request and last internal note. Membership has not been checked.</p></div><div class="box"><strong>Reply draft</strong><p class="muted">Public reply · To: requester</p><div class="draft">Could you send me the name of the reporting workspace you need? I’ll use that to check the appropriate access.</div><p class="muted">Status: keep In progress</p></div></div>
+   </div>
+   <footer><span>← Previous · Skip for now</span><span class="send">Review submission →</span></footer>
+  </div>
+  <div class="card-body"><h3>A · Context and action together — recommended</h3><p>Keep the ticket history beside AI suggestions and your editable reply. Faster when you regularly cross-check details.</p></div>
+ </div>
+ <div class="card" data-choice="guided" onclick="toggleSelect(this)">
+  <div class="card-image pre">
+   <div class="top"><strong>Ticket workbench</strong><span>3 of 12 · Assigned to me</span></div>
+   <div class="steps"><span>1 Understand</span><span>→</span><span class="active">2 Compose</span><span>→</span><span>3 Review &amp; submit</span></div>
+   <h4>#10428 · Access to reporting workspace</h4>
+   <div class="box"><strong>Ticket summary</strong><p>The requester can sign in but cannot see a shared workspace. Its name and required access are still unknown.</p><p class="muted">Expand original request and conversation ↓</p></div>
+   <div class="box suggest"><strong>Suggested next step</strong><p>Ask for the workspace name, then verify membership.</p><p class="muted">Suggested action; access has not been checked.</p></div>
+   <div class="box"><strong>Your reply</strong><p class="muted">Public reply · To: requester · Status unchanged</p><div class="draft">Could you send me the name of the reporting workspace you need? I’ll use that to check the appropriate access.</div></div>
+   <footer><span>← Understand · Skip</span><span class="send">Review submission →</span></footer>
+  </div>
+  <div class="card-body"><h3>B · Guided steps</h3><p>Read, compose, then review on separate screens. Less on screen at once, with more navigation to revisit the source.</p></div>
+ </div>
+</div>
+<div class="section"><h3>Both options include a final submission preview</h3><p>Exact message, recipients, public or internal visibility, and any status change. The final button is <strong>Submit and next</strong>. New ticket activity triggers a review before sending; a failed or uncertain submission keeps you on the current ticket.</p></div>

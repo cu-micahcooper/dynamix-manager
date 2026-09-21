@@ -451,3 +451,122 @@ def test_task_completion_treats_tdx_min_date_as_not_completed():
     routes = {("GET", "/api/42/tickets/1001/tasks"): [task]}
     listing, _ = metadata_adapter(routes)
     assert listing.list_tasks(1001)["tasks"][0]["CompletedDate"] is None
+
+
+CREATE_ROUTES = {
+    "/api/42/tickets/types": [dict(ID=3, Name="Hardware", IsActive=True, CategoryName="Support"),
+                              dict(ID=4, Name="Retired", IsActive=False, CategoryName="Support")],
+    "/api/accounts/11": dict(ID=11, Name="Information Technology", IsActive=True),
+    "/api/42/tickets/forms": [dict(ID=2, Name="Standard", IsActive=True, IsDefaultForApp=True)],
+    "/api/42/tickets/sources": [dict(ID=6, Name="Web", IsActive=True)],
+    "/api/42/services/9": dict(ID=9, Name="Classroom AV", IsActive=True),
+}
+CREATE = dict(kind="create", title="Replace projector", description="Room 101 projector is dead.",
+              type_id=3, account_id=11, requestor_uid=UID)
+CREATED = dict(ID=5555, AppID=42, Title="Replace projector", StatusName="New", PriorityName="Normal",
+               ResponsibleFullName=None, ResponsibleGroupName="Team", FormName="Standard", TypeName="Hardware",
+               RequestorName="Person", AccountName="Information Technology", Description="private body")
+
+
+def test_create_validates_metadata_and_posts_with_fixed_safety_flags():
+    adapter, calls, _ = setup_adapter(**CREATE_ROUTES)
+    prepared = adapter.validate(parse_action(dict(CREATE, form_id=2, status_id=5, priority_id=7, service_id=9,
+                                                  source_id=6, responsible_group_id=4)))
+    assert json.loads(prepared.payload_json) == dict(
+        TypeID=3, Title="Replace projector", Description="Room 101 projector is dead.", IsRichHtml=False,
+        AccountID=11, RequestorUid=UID, FormID=2, StatusID=5, PriorityID=7, ServiceID=9, SourceID=6,
+        ResponsibleGroupID=4)
+    baseline = json.loads(prepared.baseline_json)
+    assert baseline["type"] == "Hardware" and baseline["account"] == "Information Technology"
+    assert baseline["requestor"] == "Person" and baseline["responsible_group"] == "Team"
+    assert prepared.preview.action == "create" and prepared.preview.ticket_id == 0
+    fields = {f.name: f.after for f in prepared.preview.fields}
+    assert fields["Title"] == "Replace projector" and fields["Type"] == "Hardware"
+    assert fields["Requestor"] == "Person" and fields["Status"] == "Ordered" and fields["ResponsibleGroupID"] == "Team"
+
+    adapter.request = lambda *args, **kwargs: (calls.append((args, kwargs)) or
+                                               SimpleNamespace(status_code=201, json=lambda: CREATED.copy()))
+    result = adapter.apply_once(prepared)
+    args, kwargs = calls[-1]
+    assert args == ("POST", "https://tenant.example/TDWebApi/api/42/tickets")
+    assert kwargs["params"] == {"EnableNotifyReviewer": "false", "NotifyRequestor": "false",
+                                "NotifyResponsible": "false", "AllowRequestorCreation": "false",
+                                "applyDefaults": "true"}
+    assert kwargs["json"] == json.loads(prepared.payload_json)
+    assert result.outcome == "applied" and result.status_code == 201
+    assert result.detail == {"ticket_id": 5555, "status": "New", "priority": "Normal", "responsible": None,
+                             "responsible_group": "Team", "form": "Standard", "type": "Hardware",
+                             "requestor": "Person", "account": "Information Technology"}
+    assert "private body" not in json.dumps(result.model_dump())
+
+
+def test_create_defaults_omitted_fields_to_tenant_defaults_and_can_notify_requestor():
+    adapter, calls, _ = setup_adapter(**CREATE_ROUTES)
+    prepared = adapter.validate(parse_action(dict(CREATE, notify_requestor=True)))
+    payload = json.loads(prepared.payload_json)
+    assert set(payload) == {"TypeID", "Title", "Description", "IsRichHtml", "AccountID", "RequestorUid"}
+    fields = {f.name: f.after for f in prepared.preview.fields}
+    assert fields["Status"] == "Tenant default" and fields["Priority"] == "Tenant default"
+    adapter.request = lambda *args, **kwargs: (calls.append((args, kwargs)) or
+                                               SimpleNamespace(status_code=201, json=lambda: CREATED.copy()))
+    adapter.apply_once(prepared)
+    assert calls[-1][1]["params"]["NotifyRequestor"] == "true"
+
+
+@pytest.mark.parametrize("change", [
+    dict(type_id=4), dict(type_id=99), dict(account_id=12), dict(form_id=9), dict(status_id=99),
+    dict(priority_id=99), dict(source_id=99), dict(service_id=99), dict(responsible_group_id=99),
+    dict(requestor_uid="22222222-2222-4222-8222-222222222222"),
+])
+def test_create_rejects_unverified_or_inactive_metadata(change):
+    adapter, _, _ = setup_adapter(**CREATE_ROUTES)
+    with pytest.raises(ValueError):
+        adapter.validate(parse_action(dict(CREATE, **change)))
+
+
+@pytest.mark.parametrize("status,body,outcome", [
+    (201, CREATED, "applied"), (200, CREATED, "applied"),
+    (201, dict(ID=5555, AppID=99), "unknown"), (201, "not json", "unknown"),
+    (400, None, "rejected"), (403, None, "rejected"), (500, None, "unknown"),
+])
+def test_create_outcomes_require_a_verified_created_ticket(status, body, outcome):
+    adapter, _, _ = setup_adapter(**CREATE_ROUTES)
+    prepared = adapter.validate(parse_action(CREATE))
+
+    def json_body():
+        if body == "not json":
+            raise ValueError("no json")
+        return body
+
+    adapter.request = lambda *args, **kwargs: SimpleNamespace(status_code=status, json=json_body)
+    result = adapter.apply_once(prepared)
+    assert result.outcome == outcome
+    assert (result.detail or {}).get("ticket_id") == (5555 if outcome == "applied" else None)
+
+
+def test_discover_create_metadata_is_bounded_and_uses_account_search():
+    routes = {
+        ("GET", "/api/42/tickets/types"): CREATE_ROUTES["/api/42/tickets/types"] + [{"ID": "bad"}],
+        ("GET", "/api/42/tickets/forms"): CREATE_ROUTES["/api/42/tickets/forms"],
+        ("GET", "/api/42/tickets/sources"): CREATE_ROUTES["/api/42/tickets/sources"],
+        ("POST", "/api/accounts/search"): [dict(ID=11, Name="Information Technology", IsActive=True, ManagerFullName="private"),
+                                           dict(ID=12, Name="Old", IsActive=False)],
+    }
+    adapter, calls = metadata_adapter(routes)
+    types = adapter.discover_create_metadata("types", limit=10)
+    assert types == {"kind": "types", "results": [{"ID": 3, "Name": "Hardware", "CategoryName": "Support"}],
+                     "returned": 1, "complete": True}
+    assert adapter.discover_create_metadata("types", search="hard", limit=10)["returned"] == 1
+    assert adapter.discover_create_metadata("types", search="zzz", limit=10)["returned"] == 0
+    forms = adapter.discover_create_metadata("forms", limit=10)
+    assert forms["results"] == [{"ID": 2, "Name": "Standard", "IsDefaultForApp": True}]
+    assert adapter.discover_create_metadata("sources", limit=10)["results"] == [{"ID": 6, "Name": "Web"}]
+    accounts = adapter.discover_create_metadata("accounts", search="Info", limit=5)
+    assert accounts["results"] == [{"ID": 11, "Name": "Information Technology"}]
+    assert "private" not in json.dumps(accounts)
+    post = next(c for c in calls if c[0] == "POST")
+    assert post[2]["json"] == {"SearchText": "Info", "IsActive": True, "MaxResults": 5}
+    with pytest.raises(ValueError):
+        adapter.discover_create_metadata("accounts", limit=5)
+    with pytest.raises(ValueError):
+        adapter.discover_create_metadata("unknown", limit=5)

@@ -4,14 +4,15 @@ from __future__ import annotations
 
 from dataclasses import asdict
 from typing import Annotated, Any, Literal
+from uuid import UUID
 
 from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.fastmcp.utilities.func_metadata import FuncMetadata
 from mcp.types import CallToolResult, TextContent, ToolAnnotations
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from .adapter import WriteAdapter
-from .models import AssignAction, CommentAction, EditAction, StatusAction, TaskAction
+from .models import AssignAction, CommentAction, EditAction, StatusAction, TaskAction, parse_action
 from .service import WriteAuthorizationRequired, WritesDisabled
 from .store import EquivalentWriteBlocked, WriteBindingError
 
@@ -25,7 +26,9 @@ METADATA_SEARCH = Annotated[str, Field(strict=True, min_length=2, max_length=100
 METADATA_LIMIT = Annotated[int, Field(strict=True, ge=1, le=10)]
 TICKET_ID = Annotated[int, Field(strict=True, gt=0)]
 TASK_LIMIT = Annotated[int, Field(strict=True, ge=1, le=100)]
+PERSON = Annotated[str, Field(strict=True, min_length=2, max_length=100)]
 MetadataKind = Literal["statuses", "priorities", "people", "groups"]
+CreateMetadataKind = Literal["types", "forms", "sources", "accounts"]
 
 
 class _Output(BaseModel):
@@ -39,6 +42,48 @@ class ResultOutput(_Output):
     ticket_id: int
     ticket_url: str
     status_code: int | None = None
+    detail: dict[str, Any] | None = None
+
+
+class CreateResultOutput(ResultOutput):
+    resolved_people: list[dict[str, Any]] = []
+
+
+class CreateMetadataOutput(_Output):
+    kind: CreateMetadataKind
+    results: list[dict[str, Any]]
+    returned: int
+    complete: bool
+
+
+class CreateTicketRequest(BaseModel):
+    """Creation request as the model states it; people are resolved to UIDs before submission."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    title: Annotated[str, Field(strict=True, min_length=1, max_length=300)]
+    description: Annotated[str, Field(strict=True, max_length=20000)] | None = None
+    type_id: TICKET_ID
+    account_id: TICKET_ID
+    requestor: PERSON | None = None
+    requestor_uid: UUID | None = None
+    responsible: PERSON | None = None
+    responsible_uid: UUID | None = None
+    responsible_group_id: TICKET_ID | None = None
+    form_id: TICKET_ID | None = None
+    status_id: TICKET_ID | None = None
+    priority_id: TICKET_ID | None = None
+    service_id: TICKET_ID | None = None
+    source_id: TICKET_ID | None = None
+    notify_requestor: Annotated[bool, Field(strict=True)] = False
+
+    @model_validator(mode="after")
+    def one_way_to_name_each_person(self):
+        if (self.requestor is None) == (self.requestor_uid is None):
+            raise ValueError("Give exactly one of requestor (name/email) or requestor_uid.")
+        if self.responsible is not None and self.responsible_uid is not None:
+            raise ValueError("Give responsible (name/email) or responsible_uid, not both.")
+        return self
 
 
 class MetadataOutput(_Output):
@@ -106,7 +151,8 @@ def _write_challenge(public_url):
     )
 
 
-def _submit(service, action, request_id):
+def _submit(service, action, request_id, extra=None):
+    """Submit and return a typed result, or an error result; ``extra`` widens the output model."""
     try:
         status = service.submit(get_access_token(), action, request_id)
     except WriteAuthorizationRequired:
@@ -132,9 +178,38 @@ def _submit(service, action, request_id):
             "or resend the change; recover using the same request ID and arguments."
         )
     try:
+        if extra is not None:
+            return CreateResultOutput.model_validate({**asdict(status), **extra})
         return ResultOutput.model_validate(asdict(status))
     except Exception:
         return _error("The ticket change result is unavailable. Do not resend with a new request ID.")
+
+
+def _resolve_people(connection, ticket):
+    """Resolve requestor/responsible text to single UIDs; return (uids, resolved, error_result)."""
+    uids, resolved = {}, []
+    for role, text, given in (("requestor", ticket.requestor, ticket.requestor_uid),
+                              ("responsible", ticket.responsible, ticket.responsible_uid)):
+        if given is not None:
+            uids[role] = str(given)
+            continue
+        if text is None:
+            continue
+        try:
+            entry, chosen = connection.resolve_person(role, text)
+        except Exception:
+            return None, resolved, _error("The people lookup is unavailable; nothing was created.")
+        resolved.append(entry)
+        if len(chosen) == 1:
+            uids[role] = chosen[0]
+            continue
+        candidates = ", ".join(f"{m.get('name')} <{m.get('email')}>" for m in entry["matched"][:10])
+        if entry["matched"]:
+            return None, resolved, _error(
+                f"The {role} {text!r} is ambiguous: {candidates}. Nothing was created; "
+                "retry with the right person's *_uid.")
+        return None, resolved, _error(f"No person matched the {role} {text!r}. Nothing was created.")
+    return uids, resolved, None
 
 
 def _result(service, operation_id):
@@ -241,6 +316,46 @@ def register_ticket_write_tools(server, tool, service, connection_provider):
         """
         return _submit(service, action, request_id)
 
+    @tool(annotations=prepare, meta=write_meta, structured_output=True)
+    def create_ticket(ticket: CreateTicketRequest, request_id: REQUEST_ID) -> CreateResultOutput:
+        """Create a ticket only on an explicit user request; no review page.
+
+        `requestor` and `responsible` take a name, email or username and are resolved through the
+        people API first; state the resolved person to the user (for example "creating the ticket
+        for mccaina@cedarville.edu") and continue without asking. Resolve type_id and account_id
+        with ticket_create_metadata; omitted status, priority and form use the tenant's defaults
+        and the result's `detail` reports what was applied plus the new ticket ID. If the created
+        ticket is not assigned as intended, assign_ticket on the new ID is the second step.
+        Generate a unique request_id and reuse it with identical arguments for recovery for 30 days.
+        """
+        connection = connection_provider()
+        uids, resolved, failure = _resolve_people(connection, ticket)
+        if failure is not None:
+            return failure
+        given = ticket.model_dump(exclude_unset=True, exclude={"requestor", "requestor_uid",
+                                                               "responsible", "responsible_uid"})
+        action = {**given, "kind": "create", "requestor_uid": uids["requestor"]}
+        if "responsible" in uids:
+            action["responsible_uid"] = uids["responsible"]
+        try:
+            parsed = parse_action(action)
+        except Exception:
+            return _error("Invalid ticket creation request.")
+        return _submit(service, parsed, request_id, extra={"resolved_people": resolved})
+
+    @tool(annotations=read, meta=read_meta, structured_output=True)
+    def ticket_create_metadata(
+        kind: CreateMetadataKind,
+        search: METADATA_SEARCH | None = None,
+        limit: TASK_LIMIT = 10,
+    ) -> CreateMetadataOutput:
+        """Read bounded ticket types, forms, sources, or accounts (accounts require a search) for create_ticket."""
+        try:
+            adapter = WriteAdapter.from_connection(connection_provider())
+            return CreateMetadataOutput.model_validate(adapter.discover_create_metadata(kind, search=search, limit=limit))
+        except Exception:
+            return _error("Ticket creation metadata is unavailable.")
+
     @tool(annotations=read, meta=read_meta, structured_output=True)
     def list_ticket_tasks(ticket_id: TICKET_ID, limit: TASK_LIMIT = 25) -> TasksOutput:
         """Read a bounded list of a ticket's tasks: ID, title, active flag, percent complete, completion date."""
@@ -280,7 +395,9 @@ def register_ticket_write_tools(server, tool, service, connection_provider):
         "assign_ticket",
         "edit_ticket",
         "complete_ticket_task",
+        "create_ticket",
         "list_ticket_tasks",
+        "ticket_create_metadata",
         "ticket_write_metadata",
         "ticket_write_result",
     )

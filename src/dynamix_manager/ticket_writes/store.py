@@ -113,6 +113,7 @@ class StoredResult:
     outcome: Literal["applied", "rejected", "unknown", "conflict", "expired"]
     message: str
     status_code: int | None = None
+    detail: dict | None = None  # safe projection of what the tenant applied (e.g. created ticket ID)
 
 
 @dataclass(frozen=True)
@@ -370,7 +371,11 @@ class WriteStore:
         return hashlib.sha256(self._canonical(identity).encode()).hexdigest()
 
     def _ticket_hash(self, prepared):
-        identity = [prepared.base_url, prepared.app_id, prepared.action.ticket_id]
+        # Creations have no ticket yet: an unresolved creation blocks only an identical creation.
+        if prepared.action.kind == "create":
+            identity = [prepared.base_url, prepared.app_id, "create", json.loads(prepared.payload_json)]
+        else:
+            identity = [prepared.base_url, prepared.app_id, prepared.action.ticket_id]
         return hashlib.sha256(self._canonical(identity).encode()).hexdigest()
 
     def _direct_identity(self, binding, action, request_id):
@@ -574,7 +579,7 @@ class WriteStore:
             self._audit(db, data, "sending", now)
             return ClaimResult(True, self._record(data), claim_token)
 
-    def finish(self, claim, outcome, message, *, status_code=None):
+    def finish(self, claim, outcome, message, *, status_code=None, detail=None):
         if not isinstance(claim, ClaimResult) or not claim.claimed or not claim.claim_token:
             raise WriteStateError("A successful claim fence is required.")
         if outcome not in {"applied", "rejected", "unknown", "conflict"}:
@@ -583,6 +588,8 @@ class WriteStore:
             raise ValueError("A safe result message is required.")
         if status_code is not None and (type(status_code) is not int or not 100 <= status_code <= 599):
             raise ValueError("Invalid result status code.")
+        if detail is not None and not isinstance(detail, dict):
+            raise ValueError("Result detail must be a JSON object.")
         now = float(self.clock())
         with self._transaction() as db:
             self._begin(db)
@@ -595,7 +602,7 @@ class WriteStore:
             data.update(state=outcome, finished_at=now,
                         purge_at=None if outcome == "unknown" else now + self.RESULT_RETENTION,
                         result={"outcome": outcome, "message": message,
-                                "status_code": status_code})
+                                "status_code": status_code, "detail": detail})
             marker_unresolved = outcome == "unknown"
             if not marker_unresolved:
                 if outcome == "applied":

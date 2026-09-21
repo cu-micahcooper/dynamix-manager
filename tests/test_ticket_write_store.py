@@ -475,3 +475,42 @@ def test_prepare_direct_rejects_incomplete_or_non_write_binding(store_setup, bad
     store, _, _, _ = store_setup
     with pytest.raises(ValueError):
         store.prepare_direct(bad, prepared(), "request-1")
+
+
+def created(title="New printer", requestor="aaaaaaaa-0000-4000-8000-000000000001"):
+    action = parse_action(dict(kind="create", title=title, type_id=3, account_id=11, requestor_uid=requestor))
+    return PreparedChange(
+        action=action, base_url="https://tenant.example/TDWebApi", app_id=42,
+        baseline_json=json.dumps({"type": "Hardware"}),
+        payload_json=json.dumps({"Title": title, "TypeID": 3}, sort_keys=True, separators=(",", ":")),
+        preview=ChangePreview(application="InfoTech Tickets", ticket_id=0, ticket_title=title, action="create",
+                              fields=(PreviewField(name="Title", before=None, after=title),)),
+    )
+
+
+def test_finish_persists_result_detail_for_created_tickets(store_setup):
+    from dynamix_manager.ticket_writes.store import WriteStore
+    store, path, key, clock = store_setup
+    record, claim = submit(store, created(), "create-1")
+    assert record.ticket_id == 0 if hasattr(record, "ticket_id") else True
+    finished = store.finish(claim, "applied", "Created.", status_code=201,
+                            detail={"ticket_id": 5555, "status": "New"})
+    assert finished.result.detail == {"ticket_id": 5555, "status": "New"}
+    reopened = WriteStore(CredentialVault(path, key), clock=lambda: clock[0])
+    replay = reopened.lookup_direct(binding(), created().action, "create-1")
+    assert replay.result.detail["ticket_id"] == 5555
+    assert b"New printer" not in path.read_bytes()
+
+
+def test_distinct_creations_do_not_lock_each_other_but_identical_ones_do(store_setup):
+    store, _, _, _ = store_setup
+    _, first = submit(store, created("New printer"), "create-1")
+    assert first.claimed
+    _, second = submit(store, created("New laptop"), "create-2")
+    assert second.claimed, "a different creation must not wait on an unresolved one"
+    from dynamix_manager.ticket_writes.store import EquivalentWriteBlocked
+    with pytest.raises(EquivalentWriteBlocked):
+        store.prepare_direct(binding(), created("New printer"), "create-3")
+    store.finish(first, "applied", "Created.", status_code=201, detail={"ticket_id": 5555})
+    _, again = submit(store, created("New printer"), "create-4")
+    assert again.claimed, "a resolved creation no longer blocks an identical new request"
