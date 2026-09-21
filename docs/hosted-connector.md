@@ -399,6 +399,16 @@ page with "Keep me connected" checked by default. Existing links made before
 this deployment hold no password and still expire with their TDX token; sign in
 once more through ChatGPT with the box checked to switch to renewal.
 
+### Task completion deployment — 2026-09-20
+
+Commit `26d8577` added `complete_ticket_task` and `list_ticket_tasks`. Railway
+deployment `72337f64-b8f2-4e09-a265-9435eeedab03` succeeded; `/healthz` 200 and
+unauthenticated `/mcp` 401. The task feed contract comes from the published
+OpenAPI document, not a live capture: the first real completion must be checked
+with `list_ticket_tasks` (or the TDX UI) to confirm `CompletedDate` is set and
+the task shows as complete, and that observation should be recorded here.
+Refresh the connector's tool definitions in ChatGPT to see the new tools.
+
 ### ChatGPT tool surface
 
 Personal mode exposes 16 tools: the existing eight read tools, five direct-write
