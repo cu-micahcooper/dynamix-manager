@@ -71,6 +71,12 @@ explicit safety flags (`AllowRequestorCreation=false`, `NotifyResponsible=false`
 and without custom attributes or templates. The form-requirements gap described
 here still stands: a tenant rejection caused by a required attribute surfaces as a
 `rejected` outcome, and attribute support needs a verified form contract first.
+Live observation 2026-09-21 (ticket 30865373, type 23329, account 56883, source
+1317, `ResponsibleUid` supplied, no status/priority/form): HTTP 201 with the full
+`Ticket`; defaults applied were status New, priority Low, form "Generic Form",
+and `ResponsibleGroupName` "CIO" was set by the tenant alongside the supplied
+responsible person. `RequestorName`, `TypeName`, `AccountName`, `SourceName` and
+`FormName` are present in the creation response and can be reported directly.
 
 `Tickets_CreateTicket` takes `Ticket` and returns HTTP 201 with the created `Ticket`. The `Ticket` schema marks `TypeID`, `Title`, `AccountID`, `StatusID`, `PriorityID`, and `RequestorUid` required. Endpoint prose also allows at least one of `RequestorEmail`, `RequestorUid`, or `AccountID`; `RequestorEmail` is marked read-only in the shared schema. This mismatch means an email-only minimal request is not a verified fixture. Supplying an existing verified `RequestorUid` and every schema-required field avoids relying on that alternative, but does not resolve form requirements.
 

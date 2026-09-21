@@ -429,10 +429,16 @@ connector's tool definitions in ChatGPT to pick up the new filters.
 Commit `c89c86e` added `create_ticket` and `ticket_create_metadata`; Railway
 deployment `cbbdc9f7-b90e-4fdb-b6cf-07d6d3c1bd39` succeeded and the persistent
 test client listed 18 tools. Live read checks: types, forms and sources list
-correctly and the account search returns "Information Technology" (56883). No
-live creation has been performed yet; the first one must be a deliberately
-labelled test ticket whose applied status, priority, form and responsibility
-are read back and recorded here, then closed.
+correctly and the account search returns "Information Technology" (56883). Live
+creation verified the same day: ticket 30865373 ("Connector creation test
+(please ignore)", type Classroom Technology and Support, account Information
+Technology, source 4. Web, requestor and responsible resolved from "Micah
+Cooper" to micahcooper@cedarville.edu) returned 201. Tenant defaults applied
+with `applyDefaults=true`: status New, priority Low, form Generic Form, and the
+responsible group CIO alongside the requested responsible person, so the
+one-call assignment took and no second step was needed. Replaying the same
+request ID returned the identical result without a second creation. The
+ticket was then closed through `update_ticket_status`.
 
 ### ChatGPT tool surface
 
