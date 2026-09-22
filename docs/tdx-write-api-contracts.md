@@ -219,10 +219,11 @@ Source: `https://demotemplate.teamdynamix.com/TDWebApi/swagger/v1/openapi.json`
   (items carry `BackingItemID` = asset ID), `GET .../assets/statuses`,
   `POST .../assets/models/search`, `POST .../assets/vendors/search`. Ticket search
   `ConfigurationItemIDs` accepts the asset's `ConfigurationItemID`.
-- Writes implemented, not yet exercised live: `POST .../assets/{id}/feed` (`FeedEntry`;
-  200 documented, 201 accepted as for ticket feeds), `POST /api/{appId}/tickets/{id}/assets/{assetId}`
+- Writes: `POST .../assets/{id}/feed` (`FeedEntry`; 200 documented, **201 observed live**;
+  **`IsPrivate` is not honored**: the entry read back as public), `POST /api/{appId}/tickets/{id}/assets/{assetId}`
   (link; 200 with a message), `PATCH .../assets/{id}` (JSON Patch `replace` on
   `Name`, `Tag`, `SerialNumber`, `StatusID`, `OwningCustomerID`, `OwningDepartmentID`,
-  `LocationID`, `LocationRoomID`, `ExternalID`, `ExpectedReplacementDate`; 200 returns
-  the updated `Asset`, verified by `ID` and `AppID`). Asset create and delete are
-  deliberately not exposed.
+  `LocationID`, `LocationRoomID`, `ExternalID`, `ExpectedReplacementDate`; **200 observed
+  live** returning the updated `Asset`, verified by `ID` and `AppID`; a no-op replace still
+  bumps `ModifiedDate`). The link endpoint is not yet exercised live. Asset create and
+  delete are deliberately not exposed.

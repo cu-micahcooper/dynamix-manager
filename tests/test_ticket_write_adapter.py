@@ -658,3 +658,10 @@ def test_asset_actions_need_an_asset_application():
     adapter = WriteAdapter("https://tenant.example/TDWebApi", 42, "secret", request=lambda *a, **k: None, read=lambda p: {})
     with pytest.raises(ValueError, match="asset application"):
         adapter.validate(parse_action(dict(kind="asset_comment", asset_id=1, comments="x")))
+
+
+def test_asset_comment_preview_warns_that_asset_feeds_ignore_private_visibility():
+    adapter, _, _ = asset_adapter()
+    prepared = adapter.validate(parse_action(dict(kind="asset_comment", asset_id=1973209, comments="Racked")))
+    assert any("do not honor private" in notice for notice in prepared.preview.notices)
+    assert prepared.preview.visibility is None

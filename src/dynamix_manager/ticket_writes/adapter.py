@@ -469,9 +469,9 @@ class WriteAdapter:
         asset = self._asset_snapshot(action.asset_id)
         if isinstance(action, AssetCommentAction):
             payload = dict(Comments=action.comments, IsPrivate=action.is_private, IsRichHtml=False, Notify=list(action.notify))
+            # Observed live 2026-09-22: TDX asset feeds show comments regardless of IsPrivate.
             return self._asset_prepared(action, asset, payload, [PreviewField(name="Comment", before=None, after=action.comments)],
-                                        title=asset["Name"], visibility="private" if action.is_private else "public",
-                                        recipients=action.notify)
+                                        title=asset["Name"], recipients=action.notify)
         if isinstance(action, LinkAssetAction):
             ticket = self.snapshot(action.ticket_id)
             return self._asset_prepared(action, {"ticket": ticket, "asset": asset}, {},
@@ -550,7 +550,8 @@ class WriteAdapter:
             return common + ("Omitted status, priority and form use the tenant's defaults; the result reports what was applied.",
                              "Responsible and reviewer notifications are off; the requestor is notified only when notify_requestor is set.")
         if isinstance(action, AssetCommentAction):
-            return common + ("Only the listed email recipients are requested through Notify.",)
+            return common + ("TeamDynamix asset feeds do not honor private visibility: the comment is visible to anyone who can view the asset.",
+                             "Only the listed email recipients are requested through Notify.")
         if isinstance(action, AssetAction):
             return common + ("Asset changes are applied to the asset record only; linked tickets and CMDB relationships are not modified.",)
         return common + ("New-responsible notification is disabled.",)

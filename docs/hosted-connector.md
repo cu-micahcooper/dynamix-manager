@@ -581,8 +581,13 @@ edits are a JSON Patch on the asset with status, owner and department verified
 first and a snapshot compare so concurrent changes conflict. Results carry an
 `item` naming the asset and its TDNext URL. Live-verified reads on 2026-09-22:
 statuses, model and vendor search, owner-resolved search, asset detail with
-attributes, feed, and ticket links; the asset writes have unit and contract
-tests but no live write yet.
+attributes, feed, and ticket links. Live-verified writes the same day on the
+owner's own asset 1973209: a feed comment returned 201, replayed identically
+under the same request ID, and appeared in the feed **as public even though it
+was sent private**, so the tool now states that asset feeds ignore the private
+flag; a no-op `edit_asset` (external ID set to its current value) returned 200
+with the updated asset and left tag and status unchanged. `link_asset_to_ticket`
+has contract tests only; exercise it on a test ticket before relying on it.
 
 **Ticket cards are on demand.** Only `show_tickets(ticket_ids)` carries the
 widget `outputTemplate`, so ChatGPT renders the ticket viewer just when asked to

@@ -322,8 +322,10 @@ def register_ticket_write_tools(server, tool, service, connection_provider):
     def add_asset_comment(action: AssetCommentAction, request_id: REQUEST_ID) -> ResultOutput:
         """Add a comment to an asset's feed only on an explicit user request.
 
-        Private by default with no email recipients. Generate a unique request_id and reuse it
-        with identical arguments for recovery for 30 days. The result's `item` names the asset.
+        Asset feed comments are visible to anyone who can view the asset; TeamDynamix does not
+        honor a private flag there, so never post sensitive text. No email recipients by default.
+        Generate a unique request_id and reuse it with identical arguments for recovery for 30 days.
+        The result's `item` names the asset.
         """
         return _submit(service, action, request_id)
 
