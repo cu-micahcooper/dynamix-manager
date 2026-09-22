@@ -62,15 +62,37 @@ class PersonalAuthProvider:
         self.allowed_uid = str(UUID(allowed_uid)) if allowed_uid else None
         if not isinstance(redirect_uris, list) or any(not isinstance(x, str) for x in redirect_uris):
             raise ValueError('Redirect allowlist must be a JSON list of exact HTTPS URLs.')
+        exact, prefixes = set(), set()
         for uri in redirect_uris:
-            parts = urlsplit(uri)
+            # "https://host/some/path/*" admits exactly one extra path segment under that prefix,
+            # so each ChatGPT user's per-app callback (…/connector/oauth/<id>) can be accepted.
+            is_prefix = uri.endswith('/*')
+            base = uri[:-1] if is_prefix else uri
+            parts = urlsplit(base)
             if (parts.scheme != 'https' or not parts.hostname or parts.username or parts.password
-                    or parts.fragment or '*' in uri):
-                raise ValueError('Redirect allowlist must contain exact HTTPS URLs.')
-        self.redirect_uris = frozenset(redirect_uris)
+                    or parts.fragment or '*' in base or (is_prefix and (parts.query or len(parts.path) < 2))):
+                raise ValueError('Redirect allowlist must contain exact HTTPS URLs or an HTTPS path prefix ending in /*.')
+            (prefixes if is_prefix else exact).add(base)
+        self.redirect_uris = frozenset(exact)
+        self.redirect_prefixes = frozenset(prefixes)
         self.store = OAuthStore(vault)
         self.login = login or self._tdx_login
         self.routes = [Route('/personal/login', self.login_page, methods=['GET', 'POST'])]
+
+    def redirect_allowed(self, uri):
+        """Exact allowlisted URL, or one clean path segment under an allowlisted prefix."""
+        uri = str(uri)
+        if uri in self.redirect_uris:
+            return True
+        parts = urlsplit(uri)
+        if parts.scheme != 'https' or parts.query or parts.fragment or parts.username or parts.password:
+            return False
+        for prefix in self.redirect_prefixes:
+            if uri.startswith(prefix):
+                tail = uri[len(prefix):]
+                if tail and '/' not in tail and tail not in {'.', '..'}:
+                    return True
+        return False
 
     def _tdx_login(self, username, password):
         connection = Connection({
@@ -138,7 +160,7 @@ class PersonalAuthProvider:
         return OAuthClientInformationFull.model_validate({**value, 'scope': 'tdx.read tdx.write'})
 
     async def register_client(self, client_info):
-        if (not client_info.redirect_uris or any(str(uri) not in self.redirect_uris for uri in client_info.redirect_uris)):
+        if (not client_info.redirect_uris or any(not self.redirect_allowed(uri) for uri in client_info.redirect_uris)):
             raise RegistrationError('invalid_redirect_uri', 'Callback is not approved.')
         try:
             _canonical_scopes(client_info.scope.split() if client_info.scope else None)
@@ -155,7 +177,7 @@ class PersonalAuthProvider:
             scopes = _canonical_scopes(params.scopes)
         except ValueError:
             raise AuthorizeError('invalid_scope', 'Requested scope set is not supported.') from None
-        if (str(params.redirect_uri) not in self.redirect_uris
+        if (not self.redirect_allowed(params.redirect_uri)
                 or params.resource != self.settings.resource):
             raise AuthorizeError('invalid_request', 'Authorization request is not permitted.')
         transaction = secrets.token_urlsafe(32)
@@ -246,7 +268,7 @@ asking me to sign in every day. Leave unchecked to reconnect manually when TeamD
         finally:
             password = None
         params = value['params']
-        if params['redirect_uri'] not in self.redirect_uris:
+        if not self.redirect_allowed(params['redirect_uri']):
             return denied()
         # A remembered login can renew its TDX token, so the connector grant may outlive it.
         grant_expiry = int(time.time() + self.GRANT_LIFETIME) if remember else int(expiry)

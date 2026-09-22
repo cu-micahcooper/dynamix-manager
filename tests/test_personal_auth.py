@@ -732,3 +732,43 @@ def test_multi_user_login_page_explains_tdx_permissions_govern_access(open_pilot
     assert "your own TeamDynamix account" in page
     assert "governed by your TeamDynamix permissions" in page
     assert "Only the approved personal account" not in page
+
+
+def test_redirect_allowlist_supports_a_chatgpt_callback_prefix(tmp_path):
+    from dynamix_manager.hosted import HostedSettings
+    from dynamix_manager.hosted_vault import CredentialVault
+    from dynamix_manager.personal_auth import PersonalAuthProvider
+    settings = HostedSettings('https://connector.test', 'https://connector.test', 'https://connector.test/unused')
+    vault = CredentialVault(tmp_path / 'vault.sqlite', Fernet.generate_key())
+    provider = PersonalAuthProvider(settings, vault, None,
+                                    ['https://chatgpt.com/connector/oauth/*', 'https://localhost:8443/callback'])
+    assert provider.redirect_allowed('https://chatgpt.com/connector/oauth/_Eilu8ZXDrY0')
+    assert provider.redirect_allowed('https://chatgpt.com/connector/oauth/anything-else')
+    assert provider.redirect_allowed('https://localhost:8443/callback')
+    for bad in ('https://chatgpt.com/connector/oauth/', 'https://chatgpt.com/connector/oauth/x/../../evil',
+                'https://chatgpt.com/connector/oauth/x?next=https://evil.test', 'https://chatgpt.com/connector/oauth/x#frag',
+                'http://chatgpt.com/connector/oauth/x', 'https://chatgpt.com.evil.test/connector/oauth/x',
+                'https://chatgpt.com/other/x', 'https://localhost:8443/callback2', 'https://localhost:8443/*'):
+        assert not provider.redirect_allowed(bad), bad
+    for invalid in (['https://chatgpt.com/*'], ['https://chatgpt.com/connector/*/oauth'], ['*'],
+                    ['https://*.chatgpt.com/connector/oauth/*'], ['https://chatgpt.com/connector/oauth*']):
+        with pytest.raises(ValueError):
+            PersonalAuthProvider(settings, vault, None, invalid)
+
+
+def test_prefix_allowlisted_callback_completes_registration_and_login(tmp_path):
+    from dynamix_manager.hosted import HostedSettings, create_app
+    from dynamix_manager.hosted_vault import CredentialVault
+    from dynamix_manager.personal_auth import PersonalAuthProvider
+    settings = HostedSettings('https://connector.test', 'https://connector.test', 'https://connector.test/unused')
+    vault = CredentialVault(tmp_path / 'vault.sqlite', Fernet.generate_key())
+    provider = PersonalAuthProvider(settings, vault, None, ['https://chatgpt.test/connector/oauth/*'],
+                                    login=lambda u, p: (UID, 'tdx', int(time.time()) + 3600))
+    with TestClient(create_app(settings, vault, auth_provider=provider), base_url=settings.public_url) as http:
+        callback = 'https://chatgpt.test/connector/oauth/colleague-1'
+        assert register(http, 'https://chatgpt.test/connector/oauth/').status_code == 400
+        client = register(http, callback).json()['client_id']
+        response = http.get('/authorize', params={'client_id': client, 'response_type': 'code', 'redirect_uri': callback,
+            'scope': 'tdx.read', 'state': 's', 'resource': settings.resource, 'code_challenge_method': 'S256',
+            'code_challenge': base64.urlsafe_b64encode(hashlib.sha256(VERIFIER.encode()).digest()).decode().rstrip('=')})
+        assert response.status_code == 200 and callback in response.text
