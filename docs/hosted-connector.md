@@ -41,7 +41,10 @@ using two real users before release.
 
 Set `TDX_HOSTED_AUTH_MODE=personal`, `TDX_HOSTED_PUBLIC_URL`,
 `TDX_HOSTED_VAULT_PATH`, `TDX_HOSTED_VAULT_KEY` and `TDX_HOSTED_REDIRECT_URIS`
-(JSON array of exact approved ChatGPT callback URLs). `TDX_HOSTED_ALLOWED_UID`
+(JSON array of approved callback URLs: exact HTTPS URLs, or an HTTPS path prefix
+ending in `/*` that admits exactly one extra path segment with no query or
+fragment; production uses `https://chatgpt.com/connector/oauth/*` because ChatGPT
+gives every person's copy of the app its own callback). `TDX_HOSTED_ALLOWED_UID`
 is optional: set it to restrict the connector to one person, omit it to admit
 every authenticated TeamDynamix user.
 An empty callback array permits the process to run but denies all client
@@ -257,6 +260,21 @@ widget rendered; a private comment on the closed connector test ticket 30865373
 was written and read back from the feed. The pilot app was then deleted from
 ChatGPT. The pilot Railway project in the personal account remains until
 decommissioned (requires signing the CLI in as that account).
+
+### Sharing the app with colleagues — 2026-09-22
+
+ChatGPT offers no per-person sharing for a developer-mode app and the owner is not
+a workspace admin, so each colleague adds the app themselves: Plugins, Create app,
+name it, paste `https://connector-production-a492.up.railway.app/mcp`, keep OAuth
+(endpoints and both scopes are discovered automatically), tick the risk
+acknowledgement, Create, then sign in on the connector's login page with their own
+TeamDynamix credentials. Each copy gets its own
+`https://chatgpt.com/connector/oauth/<id>` callback, so the production allowlist
+now carries the prefix rule (deployment `a5bfad71`, then variable restart
+`d360c6c5`); a live registration with an arbitrary callback under that prefix
+returned 201 while the bare prefix, a nested path and a foreign host returned 400.
+Developer mode must be enabled for the colleague in the workspace. Publishing to
+the whole Edu workspace remains a workspace-admin action.
 
 ## Institutional account linking remains a separate gate
 
