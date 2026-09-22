@@ -210,3 +210,19 @@ Source: `https://demotemplate.teamdynamix.com/TDWebApi/swagger/v1/openapi.json`
   An incomplete task reports `CompletedDate` as `0001-01-01T00:00:00` (the .NET minimum
   date), not null; the adapter treats that sentinel as unset. Whether TDX notified the
   responsible party was not observed. Rate limit: 60 requests per 60 seconds per IP.
+
+## Assets (implemented 2026-09-22 from the tenant OpenAPI document)
+
+- Reads verified live: `POST /api/{appId}/assets/search` (`AssetSearch`),
+  `GET /api/{appId}/assets/{id}` (full `Asset` with `Attributes` and
+  `ConfigurationItemID`), `GET .../assets/{id}/feed`, `GET /api/{appId}/tickets/{id}/assets`
+  (items carry `BackingItemID` = asset ID), `GET .../assets/statuses`,
+  `POST .../assets/models/search`, `POST .../assets/vendors/search`. Ticket search
+  `ConfigurationItemIDs` accepts the asset's `ConfigurationItemID`.
+- Writes implemented, not yet exercised live: `POST .../assets/{id}/feed` (`FeedEntry`;
+  200 documented, 201 accepted as for ticket feeds), `POST /api/{appId}/tickets/{id}/assets/{assetId}`
+  (link; 200 with a message), `PATCH .../assets/{id}` (JSON Patch `replace` on
+  `Name`, `Tag`, `SerialNumber`, `StatusID`, `OwningCustomerID`, `OwningDepartmentID`,
+  `LocationID`, `LocationRoomID`, `ExternalID`, `ExpectedReplacementDate`; 200 returns
+  the updated `Asset`, verified by `ID` and `AppID`). Asset create and delete are
+  deliberately not exposed.

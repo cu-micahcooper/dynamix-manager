@@ -1,8 +1,9 @@
 """Bounded immutable inputs and server-owned normalized change records."""
-from typing import Annotated, Literal
+from typing import Annotated, ClassVar, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator, model_serializer, model_validator
+from pydantic import (AfterValidator, BaseModel, ConfigDict, Field, TypeAdapter, field_validator,
+                      model_serializer, model_validator)
 
 PositiveID = Annotated[int, Field(strict=True, gt=0)]
 Text = Annotated[str, Field(strict=True, min_length=1, max_length=20000)]
@@ -16,10 +17,24 @@ class ImmutableModel(BaseModel):
 class TicketAction(ImmutableModel):
     ticket_id: PositiveID
 
+    @property
+    def item(self):
+        """The record this action locks and is deduplicated against: (domain, id)."""
+        return ("ticket", self.ticket_id)
+
     @model_serializer(mode="wrap")
     def serialize_explicit(self, handler):
         # Omitted edit/assignment fields must remain omitted after encrypted storage.
         return {key: value for key, value in handler(self).items() if key in self.model_fields_set}
+
+
+def _iso_date(value):
+    from datetime import date, datetime
+    try:
+        (datetime.fromisoformat(value.replace("Z", "+00:00")) if "T" in value else date.fromisoformat(value))
+    except ValueError:
+        raise ValueError("Dates must be ISO 8601, for example 2029-06-30.") from None
+    return value
 
 
 class CommentAction(TicketAction):
@@ -111,6 +126,10 @@ class CreateAction(ImmutableModel):
         """No ticket exists until TeamDynamix creates it."""
         return 0
 
+    @property
+    def item(self):
+        return ("create", None)
+
     @field_validator("title")
     @classmethod
     def nonblank(cls, value):
@@ -123,7 +142,85 @@ class CreateAction(ImmutableModel):
         return {key: value for key, value in handler(self).items() if key in self.model_fields_set}
 
 
-Action = Annotated[CommentAction | StatusAction | AssignAction | EditAction | TaskAction | CreateAction,
+class AssetAction(ImmutableModel):
+    """Base for actions on an asset in the tenant's asset application."""
+
+    asset_id: PositiveID
+
+    @property
+    def item(self):
+        return ("asset", self.asset_id)
+
+    @model_serializer(mode="wrap")
+    def serialize_explicit(self, handler):
+        return {key: value for key, value in handler(self).items() if key in self.model_fields_set}
+
+
+class _AssetOnly(AssetAction):
+    """Asset actions that touch no ticket; ``ticket_id`` is 0 for the shared write pipeline."""
+
+    @property
+    def ticket_id(self):
+        return 0
+
+
+class AssetCommentAction(_AssetOnly):
+    kind: Literal["asset_comment"]
+    comments: Text
+    is_private: Annotated[bool, Field(strict=True)] = True
+    notify: Annotated[tuple[Email, ...], Field(max_length=50)] = ()
+
+    @field_validator("comments")
+    @classmethod
+    def nonblank(cls, value):
+        if not value.strip():
+            raise ValueError("Comment must contain text.")
+        return value
+
+
+class LinkAssetAction(AssetAction):
+    """Associate an asset with a ticket; locks the ticket like other ticket writes."""
+
+    kind: Literal["asset_link"]
+    ticket_id: PositiveID
+
+    @property
+    def item(self):
+        return ("ticket", self.ticket_id)
+
+
+class EditAssetAction(_AssetOnly):
+    kind: Literal["asset_edit"]
+    name: Annotated[str, Field(strict=True, min_length=1, max_length=300)] | None = None
+    tag: Annotated[str, Field(strict=True, max_length=100)] | None = None
+    serial_number: Annotated[str, Field(strict=True, max_length=100)] | None = None
+    status_id: PositiveID | None = None
+    owner_uid: UUID | None = None
+    owning_department_id: PositiveID | None = None
+    location_id: PositiveID | None = None
+    location_room_id: PositiveID | None = None
+    external_id: Annotated[str, Field(strict=True, max_length=100)] | None = None
+    expected_replacement_date: Annotated[str, Field(strict=True, min_length=10, max_length=35),
+                                         AfterValidator(_iso_date)] | None = None
+
+    EDITABLE: ClassVar[tuple[str, ...]] = ("name", "tag", "serial_number", "status_id", "owner_uid",
+                                             "owning_department_id", "location_id", "location_room_id",
+                                             "external_id", "expected_replacement_date")
+
+    @model_validator(mode="after")
+    def explicit_edit(self):
+        fields = self.model_fields_set & set(self.EDITABLE)
+        if not fields:
+            raise ValueError("Select at least one asset field to change.")
+        if any(getattr(self, field) is None for field in fields - {"external_id"}):
+            raise ValueError("Only external_id may be cleared with null.")
+        if "name" in fields and not self.name.strip():
+            raise ValueError("Name must contain text.")
+        return self
+
+
+Action = Annotated[CommentAction | StatusAction | AssignAction | EditAction | TaskAction | CreateAction
+                   | AssetCommentAction | LinkAssetAction | EditAssetAction,
                    Field(discriminator="kind")]
 _actions = TypeAdapter(Action)
 
@@ -153,6 +250,7 @@ class PreparedChange(ImmutableModel):
     action: Action
     base_url: str
     app_id: PositiveID
+    asset_app_id: PositiveID | None = None
     baseline_json: str
     payload_json: str
     preview: ChangePreview

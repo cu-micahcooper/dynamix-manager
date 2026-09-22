@@ -591,3 +591,61 @@ def test_another_subject_cannot_see_or_replay_a_users_operation(setup):
     assert second.operation_id != first.operation_id
     assert setup.upstream.apply_count == 2
     assert setup.connections[-1].values["WORKBENCH_PERSONAL_TOKEN"] == "other-secret"
+
+
+ASSET_APP = 928
+ASSET_REC = dict(ID=1973209, AppID=ASSET_APP, Name="MacBook", Tag="CU-1", SerialNumber="SN1", StatusID=1447, StatusName="In Use",
+                 ConfigurationItemID=77009, ModifiedDate="asset-v1")
+
+
+def with_assets(setup):
+    from dynamix_manager.ticket_writes.adapter import WriteAdapter
+    setup.upstream.records[f"/api/{ASSET_APP}/assets/1973209"] = dict(ASSET_REC)
+    setup.upstream.records[f"/api/{ASSET_APP}/assets/statuses"] = [dict(ID=1448, Name="Retired", IsActive=True)]
+
+    def adapter_factory(connection):
+        return WriteAdapter(connection.base_url, connection.app_id, connection.token, header_app_id=connection.header_app_id,
+                            read=setup.upstream.read, request=setup.upstream.request, asset_app_id=ASSET_APP)
+    setup.service.adapter_factory = adapter_factory
+    return setup
+
+
+def test_asset_comment_submit_reports_the_asset_item_and_replays(setup):
+    setup = with_assets(setup)
+    setup.upstream.apply_result = SimpleNamespace(status_code=201, json=lambda: {})
+    action = parse_action(dict(kind="asset_comment", asset_id=1973209, comments="Racked"))
+    result = setup.service.submit("principal", action, "asset-1")
+    assert result.outcome == "applied" and result.ticket_id == 0
+    assert result.item == {"type": "asset", "id": 1973209,
+                           "url": f"https://tenant.example/TDNext/Apps/{ASSET_APP}/Assets/AssetDet?AssetID=1973209"}
+    assert result.ticket_url == "https://tenant.example/TDNext/Apps/42/Tickets/"
+    assert setup.service.submit("principal", action, "asset-1") == result
+    assert setup.upstream.apply_count == 1
+
+
+def test_asset_edit_conflicts_when_the_asset_changes_and_link_reports_the_ticket(setup):
+    setup = with_assets(setup)
+    setup.upstream.apply_result = SimpleNamespace(status_code=200, json=lambda: {**ASSET_REC, "StatusName": "Retired"})
+    factory = setup.service.adapter_factory
+    count = [0]
+
+    def changing_factory(connection):
+        adapter = factory(connection)
+        validate = adapter.validate
+
+        def changing_validate(value):
+            count[0] += 1
+            if count[0] == 2:
+                setup.upstream.records[f"/api/{ASSET_APP}/assets/1973209"]["ModifiedDate"] = "asset-v2"
+            return validate(value)
+        adapter.validate = changing_validate
+        return adapter
+    setup.service.adapter_factory = changing_factory
+    edit = setup.service.submit("principal", parse_action(dict(kind="asset_edit", asset_id=1973209, status_id=1448)), "edit-1")
+    assert edit.outcome == "conflict" and setup.upstream.apply_count == 0
+
+    setup.service.adapter_factory = factory
+    setup.upstream.apply_result = SimpleNamespace(status_code=200, json=lambda: {"Message": "linked"})
+    link = setup.service.submit("principal", parse_action(dict(kind="asset_link", asset_id=1973209, ticket_id=1001)), "link-1")
+    assert link.outcome == "applied" and link.ticket_id == 1001 and link.item["id"] == 1973209
+    assert link.ticket_url.endswith("TicketID=1001")

@@ -1,6 +1,6 @@
 # Assets tools for the hosted connector — design notes
 
-Status: researched and scoped 2026-09-22, not started. Written so the work can be
+Status: implemented 2026-09-22 (reads live-verified; writes awaiting a live test). Written so the work can be
 picked up cold. Source of API facts: the tenant's own OpenAPI document
 (`https://cedarville.teamdynamix.com/TDWebApi/swagger/v1/openapi.json`, v1);
 no live asset call has been made yet.

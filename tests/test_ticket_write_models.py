@@ -95,3 +95,28 @@ def test_create_action_requires_core_fields_and_has_no_ticket_yet():
                 dict(kind="create", title="x" * 301, type_id=3, account_id=11, requestor_uid=REQUESTOR)):
         with pytest.raises(ValidationError):
             parse(bad)
+
+
+ASSET_UID = "aaaaaaaa-0000-4000-8000-000000000001"
+
+
+def test_asset_actions_are_typed_bounded_and_carry_an_item_identity():
+    from dynamix_manager.ticket_writes.models import (AssetCommentAction, CommentAction, CreateAction,
+                                                       EditAssetAction, LinkAssetAction)
+    comment = parse(dict(kind="asset_comment", asset_id=1973209, comments="Racked in SSC 101"))
+    assert isinstance(comment, AssetCommentAction) and comment.is_private is True and comment.notify == ()
+    assert comment.item == ("asset", 1973209) and comment.ticket_id == 0
+    link = parse(dict(kind="asset_link", asset_id=1973209, ticket_id=30605254))
+    assert isinstance(link, LinkAssetAction) and link.item == ("ticket", 30605254)
+    edit = parse(dict(kind="asset_edit", asset_id=1973209, status_id=1447, expected_replacement_date="2029-06-30", tag="CU-1"))
+    assert isinstance(edit, EditAssetAction) and edit.item == ("asset", 1973209)
+    assert edit.model_dump(mode="json") == {"kind": "asset_edit", "asset_id": 1973209, "status_id": 1447,
+                                            "expected_replacement_date": "2029-06-30", "tag": "CU-1"}
+    assert CommentAction(kind="comment", ticket_id=5, comments="x").item == ("ticket", 5)
+    assert CreateAction(kind="create", title="T", type_id=1, account_id=2, requestor_uid=ASSET_UID).item[0] == "create"
+    for bad in (dict(kind="asset_edit", asset_id=1973209), dict(kind="asset_edit", asset_id=1973209, name="  "),
+                dict(kind="asset_edit", asset_id=1973209, expected_replacement_date="soon"),
+                dict(kind="asset_edit", asset_id=1973209, owner_uid="nope"),
+                dict(kind="asset_comment", asset_id=0, comments="x"), dict(kind="asset_link", asset_id=1)):
+        with pytest.raises(ValidationError):
+            parse(bad)

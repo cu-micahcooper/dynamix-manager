@@ -9,8 +9,9 @@ from uuid import UUID
 
 import requests
 
-from .models import (AssignAction, ChangePreview, CommentAction, CreateAction, EditAction,
-                     PreparedChange, PreviewField, StatusAction, TaskAction, WriteResult, parse_action)
+from .models import (AssetAction, AssetCommentAction, AssignAction, ChangePreview, CommentAction, CreateAction,
+                     EditAction, EditAssetAction, LinkAssetAction, PreparedChange, PreviewField, StatusAction,
+                     TaskAction, WriteResult, parse_action)
 
 
 def canonical_json(value):
@@ -19,7 +20,7 @@ def canonical_json(value):
 
 class WriteAdapter:
     def __init__(self, base_url, app_id, token, *, request=None, read=None,
-                 application_name="InfoTech Tickets", header_app_id=None):
+                 application_name="InfoTech Tickets", header_app_id=None, asset_app_id=None):
         base_url = base_url.rstrip("/")
         parsed = urlsplit(base_url)
         if (parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password
@@ -28,6 +29,9 @@ class WriteAdapter:
         if type(app_id) is not int or app_id <= 0 or not token:
             raise ValueError("An application and personal token are required.")
         self.base_url, self.app_id, self.application_name = base_url, app_id, application_name
+        if asset_app_id is not None and (type(asset_app_id) is not int or asset_app_id <= 0):
+            raise ValueError("The asset application ID must be positive.")
+        self.asset_app_id = asset_app_id
         self._headers = {"Authorization": f"Bearer {token}", "X-TDClient-ID": str(header_app_id or app_id),
                          "Accept": "application/json"}
         # requests.request creates a fresh Session with zero retry adapters. Do not use
@@ -40,8 +44,12 @@ class WriteAdapter:
         connection.ready()
         if connection.auth_mode != "user":
             raise ValueError("Ticket writes require a personal connection.")
+        try:
+            asset_app_id = connection.asset_app_id
+        except Exception:
+            asset_app_id = None  # asset tools then fail closed with a clear message
         return cls(connection.base_url, connection.app_id, connection.token,
-                   header_app_id=connection.header_app_id)
+                   header_app_id=connection.header_app_id, asset_app_id=asset_app_id)
 
     def _read(self, path):
         if not path.startswith("/api/"):
@@ -437,10 +445,74 @@ class WriteAdapter:
             raise ValueError("Exact assignment notification recipients are not verified; disable notifications.")
         return selected
 
+    def _require_asset_app(self):
+        if self.asset_app_id is None:
+            raise ValueError("No asset application is available for this account.")
+        return self.asset_app_id
+
+    def _asset_snapshot(self, asset_id):
+        app = self._require_asset_app()
+        asset = self._get(f"/api/{app}/assets/{asset_id}")
+        if (not isinstance(asset, dict) or asset.get("ID") != asset_id or asset.get("AppID") != app
+                or not isinstance(asset.get("Name"), str) or not asset.get("ModifiedDate")):
+            raise ValueError("A matching asset baseline is required.")
+        return asset
+
+    def _asset_prepared(self, action, baseline, payload, fields, *, ticket_id=0, title, visibility=None, recipients=()):
+        preview = ChangePreview(application="Assets", ticket_id=ticket_id, ticket_title=title, action=action.kind,
+                                fields=tuple(fields), visibility=visibility, recipients=recipients,
+                                notices=self._notices(action))
+        return PreparedChange(action=action, base_url=self.base_url, app_id=self.app_id, asset_app_id=self.asset_app_id,
+                              baseline_json=canonical_json(baseline), payload_json=canonical_json(payload), preview=preview)
+
+    def _validate_asset(self, action):
+        asset = self._asset_snapshot(action.asset_id)
+        if isinstance(action, AssetCommentAction):
+            payload = dict(Comments=action.comments, IsPrivate=action.is_private, IsRichHtml=False, Notify=list(action.notify))
+            return self._asset_prepared(action, asset, payload, [PreviewField(name="Comment", before=None, after=action.comments)],
+                                        title=asset["Name"], visibility="private" if action.is_private else "public",
+                                        recipients=action.notify)
+        if isinstance(action, LinkAssetAction):
+            ticket = self.snapshot(action.ticket_id)
+            return self._asset_prepared(action, {"ticket": ticket, "asset": asset}, {},
+                                        [PreviewField(name="Asset", before=None, after=asset["Name"])],
+                                        ticket_id=action.ticket_id, title=ticket["Title"])
+        return self._validate_asset_edit(action, asset)
+
+    def _validate_asset_edit(self, action, asset):
+        app = self.asset_app_id
+        mapping = (("name", "Name", None), ("tag", "Tag", None), ("serial_number", "SerialNumber", None),
+                   ("status_id", "StatusID", "StatusName"), ("owner_uid", "OwningCustomerID", "OwningCustomerName"),
+                   ("owning_department_id", "OwningDepartmentID", "OwningDepartmentName"),
+                   ("location_id", "LocationID", "LocationName"), ("location_room_id", "LocationRoomID", "LocationRoomName"),
+                   ("external_id", "ExternalID", None), ("expected_replacement_date", "ExpectedReplacementDate", None))
+        payload, fields = [], []
+        for name, wire, label in mapping:
+            if name not in action.model_fields_set:
+                continue
+            value = getattr(action, name)
+            before = asset.get(label) if label else asset.get(wire)
+            after = value
+            if name == "status_id":
+                after = self._named_option(f"/api/{app}/assets/statuses", value, "asset status")
+            elif name == "owner_uid":
+                value = str(value)
+                user = self._get(f"/api/people/{value}")
+                if not isinstance(user, dict) or str(user.get("UID", "")).lower() != value or user.get("IsActive") is not True or not user.get("FullName"):
+                    raise ValueError("Selected owner is not a verified active person.")
+                after = user["FullName"]
+            elif name == "owning_department_id":
+                after = self._named_object(f"/api/accounts/{value}", value, "department")
+            payload.append(dict(op="replace", path=f"/{wire}", value=value))
+            fields.append(PreviewField(name=wire, before=None if before is None else str(before), after=None if after is None else str(after)))
+        return self._asset_prepared(action, asset, payload, fields, title=asset["Name"])
+
     def validate(self, action):
         action = parse_action(action)
         if isinstance(action, CreateAction):
             return self._validate_create(action)
+        if isinstance(action, AssetAction):
+            return self._validate_asset(action)
         ticket, metadata = self.snapshot(action.ticket_id), self.metadata(action)
         if ticket.get("IsConvertedToTask") is True and isinstance(action, (AssignAction, StatusAction)):
             raise ValueError("Assignment and status changes on converted project tasks are unsupported.")
@@ -477,6 +549,10 @@ class WriteAdapter:
         if isinstance(action, CreateAction):
             return common + ("Omitted status, priority and form use the tenant's defaults; the result reports what was applied.",
                              "Responsible and reviewer notifications are off; the requestor is notified only when notify_requestor is set.")
+        if isinstance(action, AssetCommentAction):
+            return common + ("Only the listed email recipients are requested through Notify.",)
+        if isinstance(action, AssetAction):
+            return common + ("Asset changes are applied to the asset record only; linked tickets and CMDB relationships are not modified.",)
         return common + ("New-responsible notification is disabled.",)
 
     def _feed(self, action, ticket, metadata):
@@ -540,12 +616,46 @@ class WriteAdapter:
         return WriteResult(outcome=outcome, status_code=status,
                            message="TeamDynamix rejected the change." if outcome == "rejected" else "The upstream outcome is unknown; do not retry.")
 
+    def _apply_asset(self, prepared):
+        action, app = prepared.action, prepared.asset_app_id
+        if app is None or app != self.asset_app_id:
+            return WriteResult(outcome="rejected", message="Asset application binding does not match.")
+        if isinstance(action, LinkAssetAction):
+            method, path, body = "POST", f"/api/{self.app_id}/tickets/{action.ticket_id}/assets/{action.asset_id}", None
+        elif isinstance(action, AssetCommentAction):
+            method, path, body = "POST", f"/api/{app}/assets/{action.asset_id}/feed", json.loads(prepared.payload_json)
+        else:
+            method, path, body = "PATCH", f"/api/{app}/assets/{action.asset_id}", json.loads(prepared.payload_json)
+        try:
+            response = self.request(method, self.base_url + path, headers=self._headers, json=body,
+                                    timeout=(5, 30), allow_redirects=False)
+        except Exception:
+            return WriteResult(outcome="unknown", message="The upstream outcome is unknown; do not retry.")
+        status = response.status_code
+        if status in (200, 201):
+            detail = None
+            if isinstance(action, EditAssetAction):
+                try:
+                    asset = response.json()
+                    if not isinstance(asset, dict) or asset.get("ID") != action.asset_id or asset.get("AppID") != app:
+                        raise ValueError("Unrecognized asset response.")
+                except Exception:
+                    return WriteResult(outcome="unknown", status_code=status,
+                                       message="The response did not confirm the target asset; do not retry.")
+                detail = {"asset_id": asset["ID"], "status": asset.get("StatusName"), "tag": asset.get("Tag"), "name": asset.get("Name")}
+            return WriteResult(outcome="applied", message="TeamDynamix accepted the change.", status_code=status, detail=detail)
+        outcome = "rejected" if 400 <= status < 500 and status != 408 else "unknown"
+        return WriteResult(outcome=outcome, status_code=status,
+                           message="TeamDynamix rejected the change." if outcome == "rejected" else "The upstream outcome is unknown; do not retry.")
+
     def apply_once(self, prepared):
         if prepared.base_url != self.base_url or prepared.app_id != self.app_id:
             return WriteResult(outcome="rejected", message="Tenant or application binding does not match.")
         action = prepared.action
         if isinstance(action, CreateAction):
             return self._apply_create(prepared)
+        if isinstance(action, AssetAction):
+            return self._apply_asset(prepared)
         path = f"/api/{self.app_id}/tickets/{action.ticket_id}"
         feed = isinstance(action, (CommentAction, TaskAction))
         if isinstance(action, TaskAction):

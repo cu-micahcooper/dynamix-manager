@@ -12,7 +12,8 @@ from mcp.types import CallToolResult, TextContent, ToolAnnotations
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from .adapter import WriteAdapter
-from .models import AssignAction, CommentAction, EditAction, StatusAction, TaskAction, parse_action
+from .models import (AssetCommentAction, AssignAction, CommentAction, EditAction, EditAssetAction,
+                     LinkAssetAction, StatusAction, TaskAction, parse_action)
 from .service import WriteAuthorizationRequired, WritesDisabled
 from .store import EquivalentWriteBlocked, WriteBindingError
 
@@ -43,6 +44,7 @@ class ResultOutput(_Output):
     ticket_url: str
     status_code: int | None = None
     detail: dict[str, Any] | None = None
+    item: dict[str, Any] | None = None
 
 
 class CreateResultOutput(ResultOutput):
@@ -317,6 +319,36 @@ def register_ticket_write_tools(server, tool, service, connection_provider):
         return _submit(service, action, request_id)
 
     @tool(annotations=prepare, meta=write_meta, structured_output=True)
+    def add_asset_comment(action: AssetCommentAction, request_id: REQUEST_ID) -> ResultOutput:
+        """Add a comment to an asset's feed only on an explicit user request.
+
+        Private by default with no email recipients. Generate a unique request_id and reuse it
+        with identical arguments for recovery for 30 days. The result's `item` names the asset.
+        """
+        return _submit(service, action, request_id)
+
+    @tool(annotations=prepare, meta=write_meta, structured_output=True)
+    def link_asset_to_ticket(action: LinkAssetAction, request_id: REQUEST_ID) -> ResultOutput:
+        """Associate an asset with a ticket only on an explicit user request.
+
+        Both the ticket and the asset are verified first. Generate a unique request_id and reuse
+        it with identical arguments for recovery for 30 days.
+        """
+        return _submit(service, action, request_id)
+
+    @tool(annotations=prepare, meta=write_meta, structured_output=True)
+    def edit_asset(action: EditAssetAction, request_id: REQUEST_ID) -> ResultOutput:
+        """Change asset fields (name, tag, serial number, status, owner, department, location, external ID,
+        expected replacement date) only on an explicit user request.
+
+        Resolve status IDs with asset_metadata and people with search_assets/ticket_write_metadata
+        first; the asset is snapshotted so a concurrent change conflicts instead of overwriting.
+        Only external_id may be cleared with null. Generate a unique request_id and reuse it with
+        identical arguments for recovery for 30 days.
+        """
+        return _submit(service, action, request_id)
+
+    @tool(annotations=prepare, meta=write_meta, structured_output=True)
     def create_ticket(ticket: CreateTicketRequest, request_id: REQUEST_ID) -> CreateResultOutput:
         """Create a ticket only on an explicit user request; no review page.
 
@@ -396,6 +428,9 @@ def register_ticket_write_tools(server, tool, service, connection_provider):
         "edit_ticket",
         "complete_ticket_task",
         "create_ticket",
+        "add_asset_comment",
+        "link_asset_to_ticket",
+        "edit_asset",
         "list_ticket_tasks",
         "ticket_create_metadata",
         "ticket_write_metadata",

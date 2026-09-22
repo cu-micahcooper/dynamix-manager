@@ -72,7 +72,8 @@ class FakeConnection:
 
 def run(server, name, arguments):
     if name in {"add_ticket_comment", "update_ticket_status", "assign_ticket", "edit_ticket",
-                "complete_ticket_task", "create_ticket"} and isinstance(arguments, dict):
+                "complete_ticket_task", "create_ticket", "add_asset_comment", "link_asset_to_ticket",
+                "edit_asset"} and isinstance(arguments, dict):
         arguments = {"request_id": "request-1", **arguments}
     return asyncio.run(server.call_tool(name, arguments))
 
@@ -103,11 +104,13 @@ def test_registers_only_four_direct_tools_and_two_bounded_read_tools(tools_serve
         "search_assets", "get_asset", "asset_feed", "ticket_assets", "asset_tickets", "asset_metadata",
         "add_ticket_comment", "update_ticket_status",
         "assign_ticket", "edit_ticket", "complete_ticket_task", "create_ticket",
+        "add_asset_comment", "link_asset_to_ticket", "edit_asset",
         "ticket_write_metadata", "ticket_write_result", "list_ticket_tasks", "ticket_create_metadata",
     }
     for name in (
         "add_ticket_comment", "update_ticket_status",
         "assign_ticket", "edit_ticket", "complete_ticket_task", "create_ticket",
+        "add_asset_comment", "link_asset_to_ticket", "edit_asset",
     ):
         tool = tools[name]
         assert tool.annotations.readOnlyHint is False
@@ -147,6 +150,7 @@ def test_direct_tools_use_strict_typed_actions_and_return_result(name, action, t
         "message": "TeamDynamix accepted the change.",
         "operation_id": "a" * 32,
         "detail": None,
+        "item": None,
         "ticket_id": action["ticket_id"],
         "ticket_url": "https://tenant.example/TDNext/Apps/42/Tickets/TicketDet.aspx?TicketID=1001",
         "status_code": 201,
@@ -171,6 +175,7 @@ def test_result_returns_only_safe_owner_checked_projection(tools_server):
         "ticket_url": "https://tenant.example/TDNext/Apps/42/Tickets/TicketDet.aspx?TicketID=1001",
         "status_code": None,
         "detail": None,
+        "item": None,
     }
 
 
@@ -306,7 +311,7 @@ def test_real_http_tools_list_mirrors_hosted_security_schemes_at_top_level():
             "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {},
         }, headers={"Accept": "application/json, text/event-stream"})
     tools = response.json()["result"]["tools"]
-    assert len(tools) == 25
+    assert len(tools) == 28
     for tool in tools:
         assert tool["securitySchemes"] == tool["_meta"]["securitySchemes"]
 
@@ -577,3 +582,19 @@ def test_ticket_create_metadata_uses_bounded_adapter(monkeypatch, tools_server):
     assert result["results"][0]["ID"] == 3 and seen == [("types", "hard", 5)]
     with pytest.raises(Exception):
         run(server, "ticket_create_metadata", {"kind": "people"})
+
+
+@pytest.mark.parametrize("name,action", [
+    ("add_asset_comment", {"kind": "asset_comment", "asset_id": 1973209, "comments": "Racked"}),
+    ("link_asset_to_ticket", {"kind": "asset_link", "asset_id": 1973209, "ticket_id": 1001}),
+    ("edit_asset", {"kind": "asset_edit", "asset_id": 1973209, "status_id": 1448}),
+])
+def test_asset_write_tools_submit_typed_actions(name, action, tools_server):
+    from dynamix_manager.ticket_writes.models import AssetCommentAction, EditAssetAction, LinkAssetAction
+    server, service = tools_server
+    result = structured(run(server, name, {"action": action}))
+    assert result["outcome"] == "applied"
+    assert isinstance(service.actions[-1], (AssetCommentAction, LinkAssetAction, EditAssetAction))
+    assert service.actions[-1].asset_id == 1973209
+    with pytest.raises(Exception):
+        run(server, name, {"action": {"kind": "comment", "ticket_id": 1, "comments": "x"}})

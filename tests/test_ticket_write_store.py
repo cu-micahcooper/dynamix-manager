@@ -514,3 +514,24 @@ def test_distinct_creations_do_not_lock_each_other_but_identical_ones_do(store_s
     store.finish(first, "applied", "Created.", status_code=201, detail={"ticket_id": 5555})
     _, again = submit(store, created("New printer"), "create-4")
     assert again.claimed, "a resolved creation no longer blocks an identical new request"
+
+
+def asset_change(comments="Racked", asset_id=1973209):
+    action = parse_action(dict(kind="asset_comment", asset_id=asset_id, comments=comments))
+    return PreparedChange(action=action, base_url="https://tenant.example/TDWebApi", app_id=42, asset_app_id=928,
+                          baseline_json=json.dumps({"ModifiedDate": "v1"}),
+                          payload_json=json.dumps({"Comments": comments}, sort_keys=True, separators=(",", ":")),
+                          preview=ChangePreview(application="InfoTech Assets/CIs", ticket_id=0, ticket_title="MacBook",
+                                                action="asset_comment", fields=()))
+
+
+def test_asset_and_ticket_operations_lock_independently_by_item(store_setup):
+    store, _, _, _ = store_setup
+    _, ticket_claim = submit(store, prepared(), "t-1")
+    _, asset_claim = submit(store, asset_change(), "a-1")
+    assert ticket_claim.claimed and asset_claim.claimed
+    _, same_asset = submit(store, asset_change("Different"), "a-2")
+    assert not same_asset.claimed and same_asset.record.state == "conflict"
+    _, other_asset = submit(store, asset_change(asset_id=5), "a-3")
+    assert other_asset.claimed
+    assert asset_claim.record.prepared.asset_app_id == 928

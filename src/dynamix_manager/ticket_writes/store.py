@@ -368,14 +368,20 @@ class WriteStore:
             raise ValueError("Prepared payload is not valid JSON.") from None
         identity = [binding.subject, prepared.base_url, prepared.app_id,
                     prepared.action.ticket_id, prepared.action.kind, payload]
+        domain, item_id = prepared.action.item
+        if domain not in ("ticket", "create"):
+            identity.append([domain, item_id])  # ticket/create hashes unchanged for existing records
         return hashlib.sha256(self._canonical(identity).encode()).hexdigest()
 
     def _ticket_hash(self, prepared):
-        # Creations have no ticket yet: an unresolved creation blocks only an identical creation.
-        if prepared.action.kind == "create":
+        """Serialize writes per item: a ticket, an asset, or (for creations) an identical payload."""
+        domain, item_id = prepared.action.item
+        if domain == "create":
             identity = [prepared.base_url, prepared.app_id, "create", json.loads(prepared.payload_json)]
+        elif domain == "ticket":
+            identity = [prepared.base_url, prepared.app_id, item_id]  # unchanged for existing ticket records
         else:
-            identity = [prepared.base_url, prepared.app_id, prepared.action.ticket_id]
+            identity = [prepared.base_url, prepared.app_id, domain, item_id]
         return hashlib.sha256(self._canonical(identity).encode()).hexdigest()
 
     def _direct_identity(self, binding, action, request_id):

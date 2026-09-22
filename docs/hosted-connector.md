@@ -559,13 +559,30 @@ ticket was then closed through `update_ticket_status`.
 
 ### ChatGPT tool surface
 
-Personal mode exposes 19 tools: nine read tools (the original eight plus
-`show_tickets`), six direct-write
-tools (`add_ticket_comment`, `update_ticket_status`, `assign_ticket`,
-`edit_ticket`, `complete_ticket_task`, `create_ticket`), bounded read-only
-`ticket_write_metadata`, `list_ticket_tasks` and `ticket_create_metadata`, and
-grant-owner-only `ticket_write_result`. External issuer mode keeps the eight
-read-only tools.
+Personal mode exposes 28 tools: fifteen read tools (the original eight,
+`show_tickets`, and six asset reads: `search_assets`, `get_asset`, `asset_feed`,
+`ticket_assets`, `asset_tickets`, `asset_metadata`), nine direct-write tools
+(`add_ticket_comment`, `update_ticket_status`, `assign_ticket`, `edit_ticket`,
+`complete_ticket_task`, `create_ticket`, `add_asset_comment`,
+`link_asset_to_ticket`, `edit_asset`), bounded read-only `ticket_write_metadata`,
+`list_ticket_tasks` and `ticket_create_metadata`, and grant-owner-only
+`ticket_write_result`. External issuer mode keeps the fifteen read-only tools.
+
+**Assets.** The connector discovers the tenant's asset application by class
+(`TDAssets`), preferring "InfoTech Assets/CIs" when several exist (Cedarville has
+CTL, InfoTech and Operations asset apps); `connection_status` lists them.
+`search_assets` maps the API's `AssetSearch` filters one-to-one and resolves
+`owner`/`user` through the people API like ticket searches. `asset_tickets` and
+the `asset_id` filter on `search_tickets` go through the asset's
+`ConfigurationItemID`, which is what ticket search filters on. Asset writes use
+the same one-attempt, request-ID-deduplicated pipeline: comments post to the
+asset feed, links post to `tickets/{id}/assets/{assetId}` and lock the ticket,
+edits are a JSON Patch on the asset with status, owner and department verified
+first and a snapshot compare so concurrent changes conflict. Results carry an
+`item` naming the asset and its TDNext URL. Live-verified reads on 2026-09-22:
+statuses, model and vendor search, owner-resolved search, asset detail with
+attributes, feed, and ticket links; the asset writes have unit and contract
+tests but no live write yet.
 
 **Ticket cards are on demand.** Only `show_tickets(ticket_ids)` carries the
 widget `outputTemplate`, so ChatGPT renders the ticket viewer just when asked to

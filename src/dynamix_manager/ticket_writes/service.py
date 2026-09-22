@@ -17,6 +17,7 @@ from dynamix_manager.plugin import Connection
 
 from .adapter import WriteAdapter, canonical_json
 from .models import (
+    AssetAction,
     AssignAction,
     CommentAction,
     CreateAction,
@@ -59,9 +60,10 @@ class TicketWriteStatus:
     ticket_url: str
     status_code: int | None = None
     detail: dict | None = None
+    item: dict | None = None  # non-ticket record the write applied to, e.g. an asset
 
 
-_ACTION_TYPES = (CommentAction, StatusAction, AssignAction, EditAction, TaskAction, CreateAction)
+_ACTION_TYPES = (CommentAction, StatusAction, AssignAction, EditAction, TaskAction, CreateAction, AssetAction)
 _UNKNOWN_MESSAGE = "The upstream outcome is unknown; do not retry."
 _PENDING_MESSAGE = ("The change was recorded but not yet sent to TeamDynamix; "
                     "resubmit it with the same request ID and arguments.")
@@ -366,7 +368,18 @@ class TicketWriteService:
             ticket_url=self._ticket_url(record),
             status_code=stored_result.status_code if stored_result else None,
             detail=detail,
+            item=self._item(record),
         )
+
+    @staticmethod
+    def _item(record):
+        if isinstance(record, DirectReplayResult) or not isinstance(record.prepared.action, AssetAction):
+            return None
+        prepared = record.prepared
+        parsed = urlsplit(prepared.base_url)
+        url = (f"https://{parsed.netloc}/TDNext/Apps/{prepared.asset_app_id}/Assets/AssetDet?AssetID={prepared.action.asset_id}"
+               if prepared.asset_app_id else None)
+        return {"type": "asset", "id": prepared.action.asset_id, "url": url}
 
 
 def create_ticket_write_service(

@@ -570,3 +570,91 @@ def test_discover_create_metadata_is_bounded_and_uses_account_search():
         adapter.discover_create_metadata("accounts", limit=5)
     with pytest.raises(ValueError):
         adapter.discover_create_metadata("unknown", limit=5)
+
+
+ASSET_APP = 928
+ASSET_REC = dict(ID=1973209, AppID=ASSET_APP, Name="Micah Cooper MacBook", Tag="CU-1", SerialNumber="SN1", StatusID=1447,
+                 StatusName="In Use", ConfigurationItemID=77009, ModifiedDate="asset-v1", ExpectedReplacementDate="2028-01-01T00:00:00Z",
+                 OwningCustomerName="Micah Cooper", ExternalID=None)
+ASSET_ROUTES = {
+    f"/api/{ASSET_APP}/assets/1973209": ASSET_REC.copy(),
+    f"/api/{ASSET_APP}/assets/statuses": [dict(ID=1447, Name="In Use", IsActive=True, IsOutOfService=False),
+                                          dict(ID=1448, Name="Retired", IsActive=True, IsOutOfService=True),
+                                          dict(ID=9, Name="Old", IsActive=False)],
+    "/api/accounts/56883": dict(ID=56883, Name="Information Technology", IsActive=True),
+}
+
+
+def asset_adapter(**overrides):
+    from dynamix_manager.ticket_writes.adapter import WriteAdapter
+    records = {**ASSET_ROUTES, "/api/42/tickets/1001": TICKET.copy(), f"/api/people/{UID}": dict(UID=UID, IsActive=True, FullName="Person", OrgApplications=[dict(ID=42, IsActive=True)])}
+    records.update(overrides)
+    calls = []
+
+    def request(method, url, **kwargs):
+        calls.append((method, url, kwargs))
+        return SimpleNamespace(status_code=200, json=lambda: ASSET_REC.copy())
+
+    adapter = WriteAdapter("https://tenant.example/TDWebApi", 42, "secret", request=request,
+                           read=lambda path: records[path], asset_app_id=ASSET_APP)
+    return adapter, calls, records
+
+
+def test_asset_comment_snapshots_the_asset_and_posts_to_its_feed():
+    adapter, calls, _ = asset_adapter()
+    prepared = adapter.validate(parse_action(dict(kind="asset_comment", asset_id=1973209, comments="Racked", is_private=False)))
+    assert json.loads(prepared.payload_json) == dict(Comments="Racked", IsPrivate=False, IsRichHtml=False, Notify=[])
+    assert json.loads(prepared.baseline_json)["ModifiedDate"] == "asset-v1"
+    assert prepared.preview.action == "asset_comment" and prepared.preview.ticket_title == "Micah Cooper MacBook"
+    assert prepared.asset_app_id == ASSET_APP and prepared.preview.ticket_id == 0
+    adapter.request = lambda *a, **k: (calls.append((a, k)) or SimpleNamespace(status_code=201))
+    assert adapter.apply_once(prepared).outcome == "applied"
+    assert calls[-1][0] == ("POST", f"https://tenant.example/TDWebApi/api/{ASSET_APP}/assets/1973209/feed")
+
+
+def test_asset_link_verifies_both_items_and_posts_the_association():
+    adapter, calls, _ = asset_adapter()
+    prepared = adapter.validate(parse_action(dict(kind="asset_link", asset_id=1973209, ticket_id=1001)))
+    baseline = json.loads(prepared.baseline_json)
+    assert baseline["ticket"]["ID"] == 1001 and baseline["asset"]["ID"] == 1973209
+    assert prepared.preview.ticket_id == 1001 and prepared.preview.action == "asset_link"
+    adapter.request = lambda *a, **k: (calls.append((a, k)) or SimpleNamespace(status_code=200, json=lambda: {"Message": "ok"}))
+    assert adapter.apply_once(prepared).outcome == "applied"
+    assert calls[-1][0] == ("POST", "https://tenant.example/TDWebApi/api/42/tickets/1001/assets/1973209")
+    assert calls[-1][1]["json"] is None
+    with pytest.raises(ValueError):
+        adapter.validate(parse_action(dict(kind="asset_link", asset_id=1973209, ticket_id=1002)))
+
+
+def test_asset_edit_builds_a_verified_patch_and_confirms_the_updated_asset():
+    adapter, calls, _ = asset_adapter()
+    prepared = adapter.validate(parse_action(dict(kind="asset_edit", asset_id=1973209, status_id=1448, tag="CU-2",
+                                                  owning_department_id=56883, owner_uid=UID, external_id=None,
+                                                  expected_replacement_date="2029-06-30")))
+    assert json.loads(prepared.payload_json) == [
+        dict(op="replace", path="/Tag", value="CU-2"), dict(op="replace", path="/StatusID", value=1448),
+        dict(op="replace", path="/OwningCustomerID", value=UID), dict(op="replace", path="/OwningDepartmentID", value=56883),
+        dict(op="replace", path="/ExternalID", value=None), dict(op="replace", path="/ExpectedReplacementDate", value="2029-06-30")]
+    fields = {f.name: (f.before, f.after) for f in prepared.preview.fields}
+    assert fields["StatusID"] == ("In Use", "Retired") and fields["Tag"] == ("CU-1", "CU-2")
+    assert fields["OwningCustomerID"] == ("Micah Cooper", "Person") and fields["OwningDepartmentID"][1] == "Information Technology"
+    adapter.request = lambda *a, **k: (calls.append((a, k)) or SimpleNamespace(status_code=200, json=lambda: {**ASSET_REC, "Tag": "CU-2"}))
+    result = adapter.apply_once(prepared)
+    assert result.outcome == "applied" and calls[-1][0] == ("PATCH", f"https://tenant.example/TDWebApi/api/{ASSET_APP}/assets/1973209")
+    assert result.detail == {"asset_id": 1973209, "status": "In Use", "tag": "CU-2", "name": "Micah Cooper MacBook"}
+    adapter.request = lambda *a, **k: SimpleNamespace(status_code=200, json=lambda: {"ID": 5, "AppID": ASSET_APP})
+    assert adapter.apply_once(prepared).outcome == "unknown"
+
+
+@pytest.mark.parametrize("change", [dict(status_id=9), dict(status_id=77), dict(owning_department_id=1), dict(owner_uid="22222222-2222-4222-8222-222222222222")])
+def test_asset_edit_rejects_unverified_metadata(change):
+    adapter, _, _ = asset_adapter()
+    with pytest.raises(ValueError):
+        adapter.validate(parse_action(dict(kind="asset_edit", asset_id=1973209, **change)))
+
+
+def test_asset_actions_need_an_asset_application():
+    from dynamix_manager.ticket_writes.adapter import WriteAdapter
+    adapter = WriteAdapter("https://tenant.example/TDWebApi", 42, "secret", request=lambda *a, **k: None, read=lambda p: {})
+    with pytest.raises(ValueError, match="asset application"):
+        adapter.validate(parse_action(dict(kind="asset_comment", asset_id=1, comments="x")))
