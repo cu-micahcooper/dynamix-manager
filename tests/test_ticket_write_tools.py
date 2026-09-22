@@ -99,7 +99,7 @@ def test_registers_only_four_direct_tools_and_two_bounded_read_tools(tools_serve
     tools = {tool.name: tool for tool in server._tool_manager.list_tools()}
     assert set(tools) == {
         "connection_status", "ticket_statuses", "search_tickets", "my_queue",
-        "get_ticket", "ticket_feed", "survey_report", "days_off",
+        "get_ticket", "ticket_feed", "survey_report", "days_off", "show_tickets",
         "add_ticket_comment", "update_ticket_status",
         "assign_ticket", "edit_ticket", "complete_ticket_task", "create_ticket",
         "ticket_write_metadata", "ticket_write_result", "list_ticket_tasks", "ticket_create_metadata",
@@ -305,7 +305,7 @@ def test_real_http_tools_list_mirrors_hosted_security_schemes_at_top_level():
             "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {},
         }, headers={"Accept": "application/json, text/event-stream"})
     tools = response.json()["result"]["tools"]
-    assert len(tools) == 18
+    assert len(tools) == 19
     for tool in tools:
         assert tool["securitySchemes"] == tool["_meta"]["securitySchemes"]
 

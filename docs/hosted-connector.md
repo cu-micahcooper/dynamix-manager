@@ -545,12 +545,20 @@ ticket was then closed through `update_ticket_status`.
 
 ### ChatGPT tool surface
 
-Personal mode exposes 18 tools: the existing eight read tools, six direct-write
+Personal mode exposes 19 tools: nine read tools (the original eight plus
+`show_tickets`), six direct-write
 tools (`add_ticket_comment`, `update_ticket_status`, `assign_ticket`,
 `edit_ticket`, `complete_ticket_task`, `create_ticket`), bounded read-only
 `ticket_write_metadata`, `list_ticket_tasks` and `ticket_create_metadata`, and
 grant-owner-only `ticket_write_result`. External issuer mode keeps the eight
 read-only tools.
+
+**Ticket cards are on demand.** Only `show_tickets(ticket_ids)` carries the
+widget `outputTemplate`, so ChatGPT renders the ticket viewer just when asked to
+show tickets, for up to ten known IDs (missing or unpermitted IDs are reported).
+`search_tickets`, `my_queue`, `get_ticket` and `ticket_feed` return text only, so
+multi-step answers no longer splash cards at every intermediate call; `get_ticket`
+and `ticket_feed` stay widget-callable for the card view's drill-down.
 
 `create_ticket` posts a `Ticket` to `POST /api/{appId}/tickets` with fixed query
 flags: no requestor creation, no responsible or reviewer notification,

@@ -160,10 +160,19 @@ def test_read_tools_and_ui_resource_without_credentials():
 
     async def check():
         tools = await server.list_tools()
-        assert len(tools) == 8
+        assert len(tools) == 9
         assert all(t.annotations.readOnlyHint for t in tools)
-        search = next(t for t in tools if t.name == "search_tickets")
-        assert search.meta["ui"]["resourceUri"] == APP_URI
+        by_name = {t.name: t for t in tools}
+        # Only the on-demand card tool renders the widget; lookups stay text-only.
+        assert by_name["show_tickets"].meta["ui"]["resourceUri"] == APP_URI
+        assert by_name["show_tickets"].meta["openai/outputTemplate"] == APP_URI
+        for name in ("search_tickets", "my_queue", "get_ticket", "ticket_feed"):
+            assert "openai/outputTemplate" not in (by_name[name].meta or {}), name
+            assert "resourceUri" not in ((by_name[name].meta or {}).get("ui") or {}), name
+        # The widget's drill-down still needs to call these two from inside the card view.
+        for name in ("get_ticket", "ticket_feed"):
+            assert by_name[name].meta["openai/widgetAccessible"] is True
+            assert "app" in by_name[name].meta["ui"]["visibility"]
         resource = await server.read_resource(APP_URI)
         assert resource[0].mime_type == "text/html;profile=mcp-app"
         assert "TeamDynamix" in resource[0].content
@@ -325,3 +334,30 @@ def test_search_by_username_matches_the_email_local_part_when_tdx_omits_username
     result = call(server_for(c), "search_tickets", {"requestor": "mccaina"})
     assert c.client.search_tickets.call_args.args[1]["RequestorUids"] == [ALAN["UID"]]
     assert [m["email"] for m in result["resolved_people"][0]["matched"]] == ["mccaina@cedarville.edu"]
+
+
+def test_show_tickets_renders_known_ids_and_reports_missing_ones():
+    c = connection()
+    tickets = {1: {"ID": 1, "Title": "First", "StatusName": "Open"}, 3: {"ID": 3, "Title": "Third", "StatusName": "Closed"}}
+
+    def get_ticket(ticket_id, token, app_id, max_attempts):
+        if ticket_id not in tickets:
+            raise RuntimeError("TeamDynamix request failed (HTTP 404).")
+        return dict(tickets[ticket_id])
+
+    c.client.get_ticket.side_effect = get_ticket
+    result = call(server_for(c), "show_tickets", {"ticket_ids": [1, 2, 3, 1]})
+    assert [t["ID"] for t in result["tickets"]] == [1, 3]
+    assert result["tickets"][0]["url"].endswith("TicketID=1") and result["tickets"][0]["StatusName"] == "Open"
+    assert result["returned"] == 2 and result["missing"] == [2] and result["complete"] is True
+    assert "2" in result["warning"]
+    assert c.client.get_ticket.call_count == 3
+    c.client.search_tickets.assert_not_called()
+
+
+@pytest.mark.parametrize("arguments", [{"ticket_ids": []}, {"ticket_ids": [0]}, {"ticket_ids": list(range(1, 12))}, {}])
+def test_show_tickets_is_bounded(arguments):
+    c = connection()
+    with pytest.raises(Exception):
+        call(server_for(c), "show_tickets", arguments)
+    c.client.get_ticket.assert_not_called()

@@ -343,7 +343,7 @@ def test_real_signed_tokens_protect_http_tools_and_resources(tmp_path):
             assert response.status_code == 401
             assert 'resource_metadata=' in response.headers['www-authenticate']
         tools = http.post('/mcp', json=listing, headers=headers()).json()['result']['tools']
-        assert len(tools) == 8
+        assert len(tools) == 9
         assert all(t['_meta']['securitySchemes'][0]['scopes'] == ['tdx.read'] for t in tools)
         resource = {'jsonrpc': '2.0', 'id': 2, 'method': 'resources/read',
                     'params': {'uri': 'ui://teamdynamix/tickets-v2.html'}}
@@ -486,14 +486,14 @@ def test_personal_hosted_server_registers_prepare_tools_and_preserves_per_tool_s
     )
     assert app.write_service is not None
     tools = {tool.name: tool for tool in captured['server']._tool_manager.list_tools()}
-    assert len(tools) == 18
+    assert len(tools) == 19
     assert tools['ticket_write_metadata'].meta['securitySchemes'][0]['scopes'] == ['tdx.read']
     for name in ('add_ticket_comment', 'update_ticket_status',
                  'assign_ticket', 'edit_ticket', 'complete_ticket_task', 'create_ticket',
                  'ticket_write_result'):
         assert tools[name].meta['securitySchemes'][0]['scopes'] == ['tdx.read', 'tdx.write']
     for name in ('connection_status', 'ticket_statuses', 'search_tickets', 'my_queue',
-                 'get_ticket', 'ticket_feed', 'survey_report', 'days_off'):
+                 'get_ticket', 'ticket_feed', 'survey_report', 'days_off', 'show_tickets'):
         assert tools[name].meta['securitySchemes'][0]['scopes'] == ['tdx.read']
     assert 'explicit user request' in captured['kwargs']['instructions']
     assert 'review link' not in captured['kwargs']['instructions']
