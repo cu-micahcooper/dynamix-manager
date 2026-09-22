@@ -249,9 +249,14 @@ registration method: `https://chatgpt.com/connector/oauth/_Eilu8ZXDrY0`, now in
 `TDX_HOSTED_REDIRECT_URIS` alongside the pilot's callback and the localhost test
 callback. Creation immediately launched the OAuth flow; the owner signed in on the
 production login page (no denials logged) and the app shows a connected account
-and all 18 tools. The pilot app **TeamDynamix Personal Pilot**
-(`asdk_app_6aadc664665481919afb82215b68f924`) and the pilot Railway project remain
-until decommissioned.
+and all 18 tools. End-to-end test from a ChatGPT conversation the same day:
+`connection_status` active; "tickets requested by Alan McCain created in August
+2026" resolved the person (stated back as mccaina@cedarville.edu, no
+confirmation prompt) and returned the three matching tickets with the ticket
+widget rendered; a private comment on the closed connector test ticket 30865373
+was written and read back from the feed. The pilot app was then deleted from
+ChatGPT. The pilot Railway project in the personal account remains until
+decommissioned (requires signing the CLI in as that account).
 
 ## Institutional account linking remains a separate gate
 
