@@ -78,3 +78,9 @@ test('back invalidates in-flight activity and html remains literal',async()=>{
  a.nodes.get('back').onclick();complete({structuredContent:{ticket_id:1,items:[{body_text:'Late'}]}});await opening;
  assert.equal(a.nodes.get('detail').hidden,true);assert.equal(a.nodes.get('activity').children.length,0);
 });
+test('widget header describes a ticket viewer, not a read-only connector',()=>{
+ const html=fs.readFileSync('src/dynamix_manager/plugin_app.html','utf8');
+ const header=html.match(/<header>([\s\S]*?)<\/header>/)[1];
+ assert.match(header,/InfoTech Tickets · Ticket viewer/);
+ assert.doesNotMatch(html,/Read only/i);
+});
