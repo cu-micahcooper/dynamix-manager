@@ -1,5 +1,6 @@
 """Account-restricted TDX login and local OAuth grants for the personal pilot."""
 
+import base64
 import hashlib
 import html
 import logging
@@ -25,11 +26,74 @@ from starlette.routing import Route
 from dynamix_manager.personal_auth_store import OAuthStore, StateCapacityError
 from dynamix_manager.plugin import Connection
 
+# One inline stylesheet, allowed by hash only: no scripts, no external assets, no inline attributes.
+PAGE_STYLE = """
+:root{--blue:#003963;--blue-deep:#002a4a;--gold:#FBB93A;--orange:#F59536;--rule:#E7E6E6;
+--ink:#1F2A37;--muted:#5B6673;--paper:#F3F5F8;--card:#FFFFFF;--focus:#F59536}
+*{box-sizing:border-box}
+html{background:var(--paper);color:var(--ink);font:16px/1.55 "Minion Pro","Iowan Old Style",Georgia,serif}
+body{margin:0;padding:2.5rem 1rem 4rem}
+main{max-width:46rem;margin:0 auto}
+.card{background:var(--card);border:1px solid var(--rule);border-top:6px solid var(--blue);
+box-shadow:0 1px 2px rgba(0,41,74,.06),0 12px 32px -18px rgba(0,41,74,.35)}
+.card>*{padding-left:2rem;padding-right:2rem}
+.eyebrow{margin:0;padding-top:1.1rem;padding-bottom:.9rem;border-bottom:1px solid var(--gold);
+font:600 .78rem/1.2 "Myriad Pro","Segoe UI",system-ui,sans-serif;letter-spacing:.06em;text-transform:uppercase;color:var(--blue)}
+h1,h2,h3{font-family:"Myriad Pro","Segoe UI",system-ui,sans-serif;font-weight:600;color:var(--blue);margin:0}
+h1{font-size:1.85rem;line-height:1.15;padding-top:1.5rem}
+h2{font-size:1.1rem;line-height:1.3;margin-bottom:.35rem}
+p{margin:.65rem 0}
+.lead{font-size:1.05rem;padding-bottom:.25rem}
+.meta{color:var(--muted);font-size:.9rem;word-break:break-all}
+.options{display:grid;grid-template-columns:1fr 1fr;gap:1.25rem;padding-top:1rem;padding-bottom:1.25rem}
+.option{border:1px solid var(--rule);border-radius:4px;padding:1.1rem 1.15rem;background:#FBFCFD}
+.option p,.option ol{font-size:.95rem}
+ol{margin:.5rem 0 .75rem;padding-left:1.25rem}
+li{margin:.25rem 0}
+label{display:block;margin:.6rem 0 .35rem;font:600 .85rem/1.3 "Myriad Pro","Segoe UI",system-ui,sans-serif;color:var(--ink)}
+input[type=text],input[type=password],input:not([type]),textarea{display:block;width:100%;font:1rem/1.4 inherit;color:var(--ink);
+background:#fff;border:1px solid #B9C2CC;border-radius:3px;padding:.55rem .65rem}
+textarea{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.85rem;resize:vertical}
+.check{display:flex;gap:.6rem;align-items:flex-start;font:400 .95rem/1.5 inherit;margin:.75rem 0}
+.check input{margin:.3rem 0 0;flex:none;width:1.05rem;height:1.05rem;accent-color:var(--blue)}
+.footer{border-top:1px solid var(--rule);background:#F8FAFC;padding-top:1.1rem;padding-bottom:1.5rem}
+.actions{display:flex;flex-wrap:wrap;gap:1rem;align-items:center;margin-top:.9rem}
+button,.button{display:inline-block;font:600 1rem/1 "Myriad Pro","Segoe UI",system-ui,sans-serif;color:#fff;
+background:var(--blue);border:0;border-bottom:3px solid var(--gold);border-radius:3px;padding:.85rem 1.5rem;cursor:pointer;text-decoration:none}
+button:hover,.button:hover{background:var(--blue-deep)}
+a{color:var(--blue);text-underline-offset:.15em}
+a:focus-visible,button:focus-visible,input:focus-visible,textarea:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
+.status{display:flex;align-items:center;gap:1rem;padding-top:1.6rem}
+.mark{flex:none;width:3rem;height:3rem;border-radius:50%;background:var(--blue);color:var(--gold);
+font:700 1.6rem/3rem "Myriad Pro","Segoe UI",system-ui,sans-serif;text-align:center}
+.mark.warn{background:var(--orange);color:#fff}
+.small{font-size:.9rem;color:var(--muted)}
+.card>:last-child{padding-bottom:1.75rem}
+@media (max-width:40rem){body{padding:1rem .75rem 3rem}.card>*{padding-left:1.15rem;padding-right:1.15rem}
+.options{grid-template-columns:1fr}h1{font-size:1.5rem}}
+@media (prefers-reduced-motion:no-preference){.card{animation:rise .35s ease-out}}
+@keyframes rise{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+""".strip()
+PAGE_STYLE_HASH = base64.b64encode(hashlib.sha256(PAGE_STYLE.encode()).digest()).decode()
+
 # no-referrer makes native browser form POSTs send Origin: null, breaking the
 # strict Origin check below. same-origin retains it without cross-site leakage.
 HEADERS = {'Cache-Control': 'no-store', 'Pragma': 'no-cache', 'Referrer-Policy': 'same-origin',
            'X-Frame-Options': 'DENY', 'X-Content-Type-Options': 'nosniff',
-           'Content-Security-Policy': "default-src 'none'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'"}
+           'Content-Security-Policy': (f"default-src 'none'; style-src 'sha256-{PAGE_STYLE_HASH}'; "
+                                       "form-action 'self'; frame-ancestors 'none'; base-uri 'none'")}
+EYEBROW = 'Cedarville University · TeamDynamix connector for ChatGPT'
+
+
+def render_page(title, body, *, status=200, refresh=None):
+    """Render one page under the hash-only CSP; ``refresh`` is an already-escaped URL to return to."""
+    head = (f'<meta http-equiv="refresh" content="4;url={refresh}">' if refresh else '')
+    return HTMLResponse(f'''<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>{html.escape(title)}</title>
+{head}<style>{PAGE_STYLE}</style></head><body><main><section class="card">
+<p class="eyebrow">{EYEBROW}</p>
+{body}
+</section></main></body></html>''', status_code=status, headers=HEADERS)
 COOKIE = '__Host-tdx-login'
 logger = logging.getLogger(__name__)
 READ_SCOPES = frozenset({'tdx.read'})
@@ -219,7 +283,13 @@ class PersonalAuthProvider:
         def denied(reason='session'):
             # Only fixed internal labels; never log request values or exceptions.
             logger.warning('personal_login_denied: %s', reason)
-            return HTMLResponse('Login could not be completed. Start again from the connector.', status_code=400, headers=HEADERS)
+            return render_page('Login could not be completed', '''<div class="status"><div class="mark warn">!</div>
+<h1>Login could not be completed.</h1></div>
+<p class="lead">Nothing was changed. One of these is the usual cause:</p>
+<ol><li>The link expired: it is good for five minutes and can be opened only once.</li>
+<li>The username, password, or pasted token was not accepted by TeamDynamix.</li>
+<li>Both sign-in options were filled in at once.</li></ol>
+<p><strong>Start again from ChatGPT:</strong> open the TeamDynamix app there and choose Connect to get a fresh link.</p>''', status=400)
         if request.method == 'GET':
             key = request.query_params.get('transaction', '')
             browser, csrf = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
@@ -238,29 +308,35 @@ class PersonalAuthProvider:
             audience = ('Only the approved personal account can connect.' if self.allowed_uid else
                         'Sign in with your own TeamDynamix account; what you can see and change is '
                         'governed by your TeamDynamix permissions.')
-            response = HTMLResponse(f'''<!doctype html><html lang="en"><meta charset="utf-8">
-<meta name="viewport" content="width=device-width"><title>TeamDynamix personal connector</title>
-<h1>Connect your TeamDynamix account</h1><p>This personal connector requests {access_description}.
-{audience}</p><p>Callback destination: {callback}</p>
-<p>Complete this form within five minutes. After signing in, select Continue to ChatGPT.</p>
+            sso = html.escape(self.settings.tdx_url, quote=True) + '/api/auth/loginsso'
+            response = render_page('Connect your TeamDynamix account', f'''<h1>Connect your TeamDynamix account</h1>
+<p class="lead">This connector requests {access_description}. {audience}</p>
+<p class="meta">Returns to: {callback} · This page expires five minutes after it opened.</p>
 <form method="post" action="/personal/login">
 <input type="hidden" name="transaction" value="{html.escape(key, quote=True)}">
 <input type="hidden" name="csrf" value="{csrf}">
-<h2>Option A: TeamDynamix username and password</h2>
-<p><label>Username <input name="username" autocomplete="username" maxlength="254"></label></p>
-<p><label>Password <input name="password" type="password" autocomplete="current-password" maxlength="1024"></label></p>
-<p><label><input type="checkbox" name="remember" value="yes"> Keep me connected: store my
+<div class="options">
+<div class="option"><h2>Sign in with your TeamDynamix password</h2>
+<p>Your password is sent to TeamDynamix once and is not kept unless you ask below.</p>
+<label for="username">Username</label><input id="username" name="username" autocomplete="username" maxlength="254">
+<label for="password">Password</label><input id="password" name="password" type="password" autocomplete="current-password" maxlength="1024">
+<label class="check"><input type="checkbox" name="remember" value="yes"> <span>Keep me connected: store my
 username and password encrypted so the connector can renew TeamDynamix access itself instead of
-asking me to sign in every day. Leave unchecked to reconnect manually when TeamDynamix access expires.</label></p>
-<h2>Option B: Cedarville single sign-on (no password shared with this connector)</h2>
-<p><a href="{html.escape(self.settings.tdx_url, quote=True)}/api/auth/loginsso" target="_blank" rel="noopener noreferrer">Open
-the TeamDynamix SSO login</a> in a new tab. After you sign in, TeamDynamix shows a long block of
-text: that is your access token. Copy all of it and paste it here. SSO tokens last 24 hours, so this
-option asks you to repeat this daily; nothing is stored that could sign in as you again.</p>
-<p><label>Token <textarea name="token" rows="3" maxlength="8192" autocomplete="off" spellcheck="false"></textarea></label></p>
-<p>Fill in one option only, then confirm:</p>
-<p><label><input type="checkbox" name="consent" value="yes" required> {consent_label}</label></p>
-<button type="submit">Connect</button></form></html>''', headers=HEADERS)
+asking me to sign in every day. Leave unchecked to reconnect manually when TeamDynamix access expires.</span></label>
+</div>
+<div class="option"><h2>Sign in with Cedarville single sign-on</h2>
+<p>No password is shared with this connector.</p>
+<ol><li><a href="{sso}" target="_blank" rel="noopener noreferrer">Open the TeamDynamix SSO login</a> in a new tab and sign in.</li>
+<li>TeamDynamix shows a long block of text: that is your access token. Copy all of it.</li>
+<li>Paste it here.</li></ol>
+<label for="token">Token</label><textarea id="token" name="token" rows="3" maxlength="8192" autocomplete="off" spellcheck="false"></textarea>
+<p class="small">SSO tokens last 24 hours, so this option asks you to repeat this daily; nothing is stored that could sign in as you again.</p>
+</div>
+</div>
+<div class="footer"><p>Fill in one option only, then confirm:</p>
+<label class="check"><input type="checkbox" name="consent" value="yes" required> <span>{consent_label}</span></label>
+<div class="actions"><button type="submit">Connect</button></div></div>
+</form>''')
             response.set_cookie(COOKIE, browser, max_age=300, secure=True, httponly=True, samesite='strict', path='/')
             return response
         form = await request.form()
@@ -325,12 +401,16 @@ option asks you to repeat this daily; nothing is stored that could sign in as yo
         # Keep credential form submissions same-origin. Some browsers also apply
         # form-action to redirect targets, so finish via an explicit GET link.
         target = html.escape(construct_redirect_uri(params['redirect_uri'], code=code, state=params['state']), quote=True)
-        response = HTMLResponse(f'''<!doctype html><html lang="en"><meta charset="utf-8">
-<meta name="viewport" content="width=device-width"><title>TeamDynamix sign-in succeeded</title>
-<h1>TeamDynamix sign-in succeeded</h1>
-<p>Your credentials were accepted. Complete the connection within two minutes.</p>
-<p><a href="{target}" rel="noreferrer">Continue to ChatGPT</a></p>
-<p>Do not submit the login form again.</p></html>''', headers=HEADERS)
+        renewal = ('The connector will renew your TeamDynamix access automatically; you can revoke it '
+                   'by disconnecting the app in ChatGPT.' if remember else
+                   'No password was stored. When TeamDynamix access expires, about 24 hours from now, '
+                   'ChatGPT will ask you to sign in again.')
+        response = render_page("You're connected", f'''<div class="status"><div class="mark">✓</div>
+<h1>You're connected</h1></div>
+<p class="lead">TeamDynamix accepted your sign-in. Returning you to ChatGPT in a few seconds.</p>
+<div class="actions"><a class="button" href="{target}" rel="noreferrer">Continue to ChatGPT</a></div>
+<p class="small">{renewal} If nothing happens, use the button above; do not submit the login form again.
+This step must finish within two minutes.</p>''', refresh=target)
         response.delete_cookie(COOKIE, secure=True, httponly=True, samesite='strict')
         return response
 

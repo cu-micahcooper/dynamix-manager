@@ -869,3 +869,36 @@ def test_tdx_token_login_verifies_identity_and_expiry_with_the_pasted_token(pilo
     connection.identity.side_effect = RuntimeError('denied')
     with pytest.raises(RuntimeError):
         provider._tdx_token_login(sso_token(exp))
+
+
+def test_login_pages_are_styled_under_a_hash_only_csp(pilot):
+    from dynamix_manager.personal_auth import HEADERS, PAGE_STYLE_HASH
+    http, provider, _, _ = pilot
+    assert f"style-src 'sha256-{PAGE_STYLE_HASH}'" in HEADERS['Content-Security-Policy']
+    assert "'unsafe-inline'" not in HEADERS['Content-Security-Policy']
+    assert "script-src" not in HEADERS['Content-Security-Policy']
+    register(http)
+    page = _login_page(http)
+    assert '<style>' in page and '<script' not in page
+    assert '#003963' in page  # Cedarville blue
+    assert 'Cedarville University' in page
+    # Denied page shares the styling and gives directions rather than a bare error line.
+    denied = http.get('/personal/login?transaction=stale')
+    assert denied.status_code == 400 and '<style>' in denied.text
+    assert 'Start again from ChatGPT' in denied.text and 'expired' in denied.text.lower()
+
+
+def test_success_page_returns_to_chatgpt_automatically_with_a_button_fallback(pilot):
+    http, provider, calls, vault = pilot
+    client = register(http).json()['client_id']
+    form = login_form(http, client)
+    response = http.post('/personal/login', data={**form, 'username': 'allowed', 'password': 'private-password', 'consent': 'yes'},
+                         headers={'Origin': 'https://connector.test'}, follow_redirects=False)
+    assert response.status_code == 200
+    target = html.unescape(re.search(r'href="([^"]+)"', response.text)[1])
+    assert target.startswith(CALLBACK + '?')
+    refresh = re.search(r'<meta http-equiv="refresh" content="(\d+);url=([^"]+)">', response.text)
+    assert refresh and html.unescape(refresh[2]) == target and 1 <= int(refresh[1]) <= 10
+    assert "You're connected" in response.text
+    assert 'sign in again' in response.text.lower()  # no password stored: explains expiry
+    assert '<style>' in response.text and '<script' not in response.text
