@@ -47,6 +47,9 @@ DAYS = Annotated[int, Field(ge=0)] | None
 PERSON = Annotated[str, Field(min_length=2, max_length=100)] | None
 TICKET_APPLICATION_NAME = "InfoTech Tickets"
 ASSET_APPLICATION_CLASS = "TDAssets"
+# Tenants often run several asset applications; this one is preferred when present,
+# otherwise exactly one asset application must exist.
+ASSET_APPLICATION_NAME = "InfoTech Assets/CIs"
 APPLICATION_CACHE_TTL = 3600
 ASSET_METADATA_KINDS = ("statuses", "models", "vendors")
 
@@ -159,10 +162,12 @@ class Connection:
             matches = [a for a in apps if a.get("Name") == TICKET_APPLICATION_NAME]
             label = TICKET_APPLICATION_NAME
         else:
-            matches = [a for a in applications if a.get("AppClass") == ASSET_APPLICATION_CLASS]
-            label = "an asset application"
-            if not matches:
+            candidates = self.asset_applications(applications)
+            if not candidates:
                 raise RuntimeError("This account has no TeamDynamix asset application; asset tools are unavailable.")
+            preferred = [a for a in candidates if a.get("Name") == ASSET_APPLICATION_NAME]
+            matches = preferred or candidates
+            label = "an asset application (" + ", ".join(str(a.get("Name")) for a in candidates) + ")"
         if len(matches) != 1:
             raise RuntimeError(f"Could not uniquely discover {label} in this tenant.")
         with _APPLICATIONS_LOCK:
@@ -172,6 +177,10 @@ class Connection:
     @property
     def app_id(self):
         return int(self.ready().application["AppID"])
+
+    @staticmethod
+    def asset_applications(applications):
+        return [a for a in (applications or []) if isinstance(a, dict) and a.get("AppClass") == ASSET_APPLICATION_CLASS]
 
     @property
     def asset_application(self):
@@ -310,6 +319,13 @@ def create_server(
         c = conn()
         result = {"connected": True, "tenant": c.base_url, "authentication": c.auth_mode,
                   "ticket_app_id": c.app_id, "ticket_app_name": c.application["Name"], "read_only": True}
+        names = sorted(str(a.get("Name")) for a in c.asset_applications(c.client.fetch_applications(c.token)))
+        result["asset_applications"] = names
+        try:
+            asset_app = c.asset_application
+            result.update(asset_app_id=int(asset_app["AppID"]), asset_app_name=asset_app.get("Name"))
+        except RuntimeError as error:
+            result.update(asset_app_id=None, asset_app_name=None, asset_warning=str(error))
         if capability_provider is not None:
             try:
                 capabilities = capability_provider()

@@ -65,8 +65,26 @@ def test_missing_or_ambiguous_asset_application_fails_closed():
     plugin._APPLICATIONS.clear()
     two = connection(apps=[{"AppID": 634, "Name": "InfoTech Tickets", "AppClass": "TDTickets"},
                            {"AppID": 928, "Name": "A", "AppClass": "TDAssets"}, {"AppID": 929, "Name": "B", "AppClass": "TDAssets"}])
-    with pytest.raises(RuntimeError, match="uniquely"):
+    with pytest.raises(RuntimeError, match="uniquely") as error:
         two.asset_app_id
+    assert "A" in str(error.value) and "B" in str(error.value)
+
+
+def test_preferred_asset_application_wins_when_the_tenant_has_several():
+    c = connection(apps=[{"AppID": 634, "Name": "InfoTech Tickets", "AppClass": "TDTickets"},
+                         {"AppID": 1200, "Name": "Facilities Assets", "AppClass": "TDAssets"},
+                         {"AppID": 928, "Name": "InfoTech Assets/CIs", "AppClass": "TDAssets"},
+                         {"AppID": 1300, "Name": "Library Assets", "AppClass": "TDAssets"}])
+    assert c.asset_app_id == 928
+    status = call(server_for(c), "connection_status")
+    assert status["asset_app_id"] == 928 and status["asset_app_name"] == "InfoTech Assets/CIs"
+    assert status["asset_applications"] == ["Facilities Assets", "InfoTech Assets/CIs", "Library Assets"]
+
+
+def test_connection_status_reports_missing_asset_application_without_failing():
+    c = connection(apps=[{"AppID": 634, "Name": "InfoTech Tickets", "AppClass": "TDTickets"}])
+    status = call(server_for(c), "connection_status")
+    assert status["connected"] is True and status["asset_app_id"] is None and status["asset_applications"] == []
 
 
 def test_search_assets_maps_filters_server_side_and_projects_compactly():
