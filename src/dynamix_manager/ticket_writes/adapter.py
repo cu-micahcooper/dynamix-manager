@@ -633,6 +633,12 @@ class WriteAdapter:
         except Exception:
             return WriteResult(outcome="unknown", message="The upstream outcome is unknown; do not retry.")
         status = response.status_code
+        if status == 204 and isinstance(action, LinkAssetAction):
+            # Observed live: linking an asset that is already on the ticket returns 204 (the
+            # spec documents only 200). The requested end state holds, so record it as applied
+            # rather than leaving the ticket locked behind an unknown outcome.
+            return WriteResult(outcome="applied", status_code=status,
+                               message="The asset was already linked to the ticket.")
         if status in (200, 201):
             detail = None
             if isinstance(action, EditAssetAction):

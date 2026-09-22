@@ -626,6 +626,27 @@ def test_asset_link_verifies_both_items_and_posts_the_association():
         adapter.validate(parse_action(dict(kind="asset_link", asset_id=1973209, ticket_id=1002)))
 
 
+def test_asset_link_already_present_returns_204_and_counts_as_applied():
+    # Observed live 2026-09-22: the first link returned 200; repeating it for an asset already on
+    # the ticket returned 204 with exactly one association on read-back. The desired end state
+    # holds, so the pipeline must not leave the ticket locked behind an "unknown" outcome.
+    adapter, calls, _ = asset_adapter()
+    prepared = adapter.validate(parse_action(dict(kind="asset_link", asset_id=1973209, ticket_id=1001)))
+    adapter.request = lambda *a, **k: (calls.append((a, k)) or SimpleNamespace(status_code=204))
+    result = adapter.apply_once(prepared)
+    assert result.outcome == "applied" and result.status_code == 204
+    assert result.message == "The asset was already linked to the ticket."
+
+
+def test_only_the_link_endpoint_treats_204_as_applied():
+    adapter, _, _ = asset_adapter()
+    for action in (dict(kind="asset_comment", asset_id=1973209, comments="Racked"),
+                   dict(kind="asset_edit", asset_id=1973209, tag="CU-2")):
+        prepared = adapter.validate(parse_action(action))
+        adapter.request = lambda *a, **k: SimpleNamespace(status_code=204)
+        assert adapter.apply_once(prepared).outcome == "unknown"
+
+
 def test_asset_edit_builds_a_verified_patch_and_confirms_the_updated_asset():
     adapter, calls, _ = asset_adapter()
     prepared = adapter.validate(parse_action(dict(kind="asset_edit", asset_id=1973209, status_id=1448, tag="CU-2",

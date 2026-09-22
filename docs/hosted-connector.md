@@ -587,7 +587,14 @@ under the same request ID, and appeared in the feed **as public even though it
 was sent private**, so the tool now states that asset feeds ignore the private
 flag; a no-op `edit_asset` (external ID set to its current value) returned 200
 with the updated asset and left tag and status unchanged. `link_asset_to_ticket`
-has contract tests only; exercise it on a test ticket before relying on it.
+was exercised the same day on scratch ticket 30879870: the link returned 200 and
+appeared on both `ticket_assets` and `asset_tickets`, the replay under the same
+request ID returned the stored result, and a second link under a new request ID
+returned 204 (already linked), which the adapter now records as applied. Before
+that fix the 204 was classified unknown, which left the ticket write-locked
+(an unknown outcome holds its ticket lock until reconciled with authoritative
+evidence; see the submission contract below). The connector exposes no unlink,
+so a link is permanent from the connector's point of view.
 
 **Ticket cards are on demand.** Only `show_tickets(ticket_ids)` carries the
 widget `outputTemplate`, so ChatGPT renders the ticket viewer just when asked to

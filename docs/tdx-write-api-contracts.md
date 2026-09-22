@@ -221,9 +221,11 @@ Source: `https://demotemplate.teamdynamix.com/TDWebApi/swagger/v1/openapi.json`
   `ConfigurationItemIDs` accepts the asset's `ConfigurationItemID`.
 - Writes: `POST .../assets/{id}/feed` (`FeedEntry`; 200 documented, **201 observed live**;
   **`IsPrivate` is not honored**: the entry read back as public), `POST /api/{appId}/tickets/{id}/assets/{assetId}`
-  (link; 200 with a message), `PATCH .../assets/{id}` (JSON Patch `replace` on
+  (link; **200 observed live** for a new association, **204 observed live** when the asset is
+  already on the ticket, which the adapter records as applied with "already linked" so the
+  ticket is not left locked behind an unknown outcome), `PATCH .../assets/{id}` (JSON Patch `replace` on
   `Name`, `Tag`, `SerialNumber`, `StatusID`, `OwningCustomerID`, `OwningDepartmentID`,
   `LocationID`, `LocationRoomID`, `ExternalID`, `ExpectedReplacementDate`; **200 observed
   live** returning the updated `Asset`, verified by `ID` and `AppID`; a no-op replace still
-  bumps `ModifiedDate`). The link endpoint is not yet exercised live. Asset create and
-  delete are deliberately not exposed.
+  bumps `ModifiedDate`). All three asset writes are exercised live. Asset create, delete
+  and unlink (`DELETE .../tickets/{id}/assets/{assetId}`) are deliberately not exposed.
