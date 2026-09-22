@@ -59,6 +59,20 @@ within ten minutes, with single-use rotating refresh tokens. Replaying a used
 refresh token revokes its entire grant family. This is an OAuth bridge, not native
 TDX OAuth or SSO.
 
+**Two sign-in options.** Option A is the TeamDynamix username and password
+(with the optional "Keep me connected"). Option B is Cedarville single sign-on:
+the page links to `GET /api/auth/loginsso` on the tenant, which TeamDynamix wires
+through its Shibboleth service provider to Cedarville's Entra ID and, after
+sign-in, displays the bearer token as plain text on the TeamDynamix origin. The
+person copies that token into the login form; the connector verifies it with
+`getuser`, links the account with the token's own `exp` as the grant expiry, and
+stores no password, so it cannot renew and the person repeats this daily. The two
+options are exclusive in one submission. TeamDynamix documents `loginsso` as
+intended for its own client-side code: the endpoint sends no CORS headers, takes no
+return URL, and its `getuser`/`login` CORS policy is `*` without credentials, so a
+third-party server can never receive the token automatically. Copy-and-paste is the
+only password-free path.
+
 **Per-user isolation.** Vault records, OAuth grant families, write-grant
 bindings, request-ID deduplication and audit rows are all keyed by the person's
 TDX UID (the OAuth subject). Tests prove one person's tokens resolve only their

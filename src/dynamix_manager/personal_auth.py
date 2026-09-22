@@ -55,7 +55,9 @@ class PersonalAuthProvider:
     # A rotated (used) refresh token is kept only long enough to detect replay.
     REFRESH_REPLAY_WINDOW = 24 * 60 * 60
 
-    def __init__(self, settings, vault, allowed_uid, redirect_uris, *, login=None):
+    MAX_TOKEN_LENGTH = 8192
+
+    def __init__(self, settings, vault, allowed_uid, redirect_uris, *, login=None, token_login=None):
         """``allowed_uid`` restricts the connector to one person; ``None`` admits anyone TDX authenticates."""
         self.settings, self.vault = settings, vault
         self._renewal_lock = threading.Lock()
@@ -77,6 +79,7 @@ class PersonalAuthProvider:
         self.redirect_prefixes = frozenset(prefixes)
         self.store = OAuthStore(vault)
         self.login = login or self._tdx_login
+        self.token_login = token_login or self._tdx_token_login
         self.routes = [Route('/personal/login', self.login_page, methods=['GET', 'POST'])]
 
     def redirect_allowed(self, uri):
@@ -112,6 +115,27 @@ class PersonalAuthProvider:
             return connection.identity(), connection.token, int(expiry)
         finally:
             connection.client.password = ''
+            connection.client.session.close()
+
+    def _tdx_token_login(self, token):
+        """Verify a bearer token the person obtained themselves via TDX single sign-on.
+
+        The token is used only as-is: ``getuser`` proves who it belongs to and its own ``exp``
+        bounds the link. Nothing is stored that could mint a new token.
+        """
+        if not isinstance(token, str) or not 0 < len(token) <= self.MAX_TOKEN_LENGTH or token.count('.') != 2:
+            raise ValueError('A TeamDynamix bearer token is required.')
+        claims = jwt.decode(token, options={'verify_signature': False})
+        expiry = claims.get('exp')
+        if (isinstance(expiry, bool) or not isinstance(expiry, (int, float))
+                or not math.isfinite(expiry) or expiry <= time.time()):
+            raise ValueError('Known upstream expiry required.')
+        connection = Connection({
+            'TDX_BASE_URL': self.settings.tdx_url, 'TDX_APP_ID': self.settings.tdx_client_id,
+            'WORKBENCH_PERSONAL_TOKEN': token})
+        try:
+            return connection.identity(), token, int(expiry)
+        finally:
             connection.client.session.close()
 
     def personal_credential(self, subject):
@@ -222,12 +246,20 @@ class PersonalAuthProvider:
 <form method="post" action="/personal/login">
 <input type="hidden" name="transaction" value="{html.escape(key, quote=True)}">
 <input type="hidden" name="csrf" value="{csrf}">
-<p><label>Username <input name="username" autocomplete="username" required maxlength="254"></label></p>
-<p><label>Password <input name="password" type="password" autocomplete="current-password" required maxlength="1024"></label></p>
-<p><label><input type="checkbox" name="consent" value="yes" required> {consent_label}</label></p>
+<h2>Option A: TeamDynamix username and password</h2>
+<p><label>Username <input name="username" autocomplete="username" maxlength="254"></label></p>
+<p><label>Password <input name="password" type="password" autocomplete="current-password" maxlength="1024"></label></p>
 <p><label><input type="checkbox" name="remember" value="yes"> Keep me connected: store my
 username and password encrypted so the connector can renew TeamDynamix access itself instead of
 asking me to sign in every day. Leave unchecked to reconnect manually when TeamDynamix access expires.</label></p>
+<h2>Option B: Cedarville single sign-on (no password shared with this connector)</h2>
+<p><a href="{html.escape(self.settings.tdx_url, quote=True)}/api/auth/loginsso" target="_blank" rel="noopener noreferrer">Open
+the TeamDynamix SSO login</a> in a new tab. After you sign in, TeamDynamix shows a long block of
+text: that is your access token. Copy all of it and paste it here. SSO tokens last 24 hours, so this
+option asks you to repeat this daily; nothing is stored that could sign in as you again.</p>
+<p><label>Token <textarea name="token" rows="3" maxlength="8192" autocomplete="off" spellcheck="false"></textarea></label></p>
+<p>Fill in one option only, then confirm:</p>
+<p><label><input type="checkbox" name="consent" value="yes" required> {consent_label}</label></p>
 <button type="submit">Connect</button></form></html>''', headers=HEADERS)
             response.set_cookie(COOKIE, browser, max_age=300, secure=True, httponly=True, samesite='strict', path='/')
             return response
@@ -246,13 +278,23 @@ asking me to sign in every day. Leave unchecked to reconnect manually when TeamD
             return denied('csrf')
         if form.get('consent') != 'yes':
             return denied('consent')
-        username, password = form.get('username'), form.get('password')
-        if (not isinstance(username, str) or not 0 < len(username) <= 254
-                or not isinstance(password, str) or not 0 < len(password) <= 1024):
-            return denied('credential_fields')
-        remember = form.get('remember') == 'yes'
+        username, password = form.get('username') or '', form.get('password') or ''
+        token = (form.get('token') or '').strip() if isinstance(form.get('token'), str) else ''
+        if token:
+            # Option B: a token the person obtained through TDX single sign-on. Exclusive with a password.
+            if username or password or len(token) > self.MAX_TOKEN_LENGTH:
+                return denied('credential_fields')
+            remember = False
+        else:
+            if (not isinstance(username, str) or not 0 < len(username) <= 254
+                    or not isinstance(password, str) or not 0 < len(password) <= 1024):
+                return denied('credential_fields')
+            remember = form.get('remember') == 'yes'
         try:
-            uid, upstream, expiry = await run_in_threadpool(self.login, username, password)
+            if token:
+                uid, upstream, expiry = await run_in_threadpool(self.token_login, token)
+            else:
+                uid, upstream, expiry = await run_in_threadpool(self.login, username, password)
             uid = str(UUID(str(uid)))
             if ((self.allowed_uid and uid != self.allowed_uid) or isinstance(expiry, bool)
                     or not isinstance(expiry, (int, float)) or not math.isfinite(expiry)
@@ -266,7 +308,7 @@ asking me to sign in every day. Leave unchecked to reconnect manually when TeamD
             # Never log request values, upstream responses, or exception strings.
             return denied('upstream_or_vault')
         finally:
-            password = None
+            password = token = None
         params = value['params']
         if not self.redirect_allowed(params['redirect_uri']):
             return denied()

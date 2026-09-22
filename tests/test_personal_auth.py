@@ -772,3 +772,100 @@ def test_prefix_allowlisted_callback_completes_registration_and_login(tmp_path):
             'scope': 'tdx.read', 'state': 's', 'resource': settings.resource, 'code_challenge_method': 'S256',
             'code_challenge': base64.urlsafe_b64encode(hashlib.sha256(VERIFIER.encode()).digest()).decode().rstrip('=')})
         assert response.status_code == 200 and callback in response.text
+
+
+def test_login_page_offers_sso_token_paste_alongside_password(pilot):
+    http, provider, _, _ = pilot
+    page = _login_page(http)
+    assert f'href="{provider.settings.tdx_url}/api/auth/loginsso"' in page
+    assert 'target="_blank" rel="noopener noreferrer"' in page
+    assert 'name="token"' in page and 'name="password"' in page
+    assert '24 hours' in page
+
+
+def sso_token(exp):
+    import jwt as pyjwt
+    return pyjwt.encode({'exp': exp, 'sub': 'anything'}, 'not-verified' * 4, algorithm='HS256')
+
+
+@pytest.fixture
+def sso_pilot(tmp_path):
+    from dynamix_manager.hosted import HostedSettings, create_app
+    from dynamix_manager.hosted_vault import CredentialVault
+    from dynamix_manager.personal_auth import PersonalAuthProvider
+    settings = HostedSettings('https://connector.test', 'https://connector.test', 'https://connector.test/unused')
+    vault = CredentialVault(tmp_path / 'vault.sqlite', Fernet.generate_key())
+    calls = []
+
+    def login(username, password):
+        calls.append(('password', username))
+        return UID, 'pw-token', int(time.time()) + 1800
+
+    def token_login(token):
+        calls.append(('token', token))
+        if token == 'rejected-token':
+            raise RuntimeError('private upstream 401 body')
+        uid = UID_B if token == 'bob-token' else UID
+        return uid, token, int(time.time()) + 3600
+
+    provider = PersonalAuthProvider(settings, vault, None, [CALLBACK], login=login, token_login=token_login)
+    with TestClient(create_app(settings, vault, auth_provider=provider), base_url=settings.public_url) as http:
+        yield http, provider, calls, vault
+
+
+def post_login(http, client, **fields):
+    form = login_form(http, client, 'tdx.read tdx.write')
+    return http.post('/personal/login', data={**form, 'consent': 'yes', **fields},
+                     headers={'Origin': 'https://connector.test'}, follow_redirects=False)
+
+
+def test_pasted_sso_token_links_the_account_without_any_password(sso_pilot):
+    http, provider, calls, vault = sso_pilot
+    client = register(http).json()['client_id']
+    response = post_login(http, client, token='  alice-token  ', remember='yes')
+    assert response.status_code == 200 and 'Continue to ChatGPT' in response.text
+    assert calls == [('token', 'alice-token')]
+    stored = vault.get(provider.settings.issuer, UID)
+    assert stored['token'] == 'alice-token' and stored.get('password') is None and stored.get('username') is None
+    target = html.unescape(re.search(r'href="([^"]+)"', response.text)[1])
+    tokens = exchange(http, client, parse_qs(urlsplit(target).query)['code'][0]).json()
+    # Without a stored password the grant cannot outlive the pasted token, even with "remember" ticked.
+    assert family_record(provider, tokens['access_token'])['expires_at'] <= time.time() + 3600 + 5
+    assert b'alice-token' not in vault.path.read_bytes()
+
+
+def test_sso_token_login_is_per_person_and_rejects_bad_or_ambiguous_submissions(sso_pilot):
+    http, provider, calls, vault = sso_pilot
+    client = register(http).json()['client_id']
+    assert post_login(http, client, token='bob-token').status_code == 200
+    assert vault.get(provider.settings.issuer, UID_B)['token'] == 'bob-token'
+    for fields in ({'token': 'rejected-token'}, {'token': 'x' * 8193}, {'token': ''}, {},
+                   {'token': 'alice-token', 'username': 'allowed', 'password': 'pw'}):
+        denied = post_login(http, client, **fields)
+        assert denied.status_code == 400, fields
+        assert 'private upstream' not in denied.text
+    # Password login still works unchanged.
+    assert post_login(http, client, username='allowed', password='pw').status_code == 200
+    assert calls[-1] == ('password', 'allowed')
+
+
+def test_tdx_token_login_verifies_identity_and_expiry_with_the_pasted_token(pilot, monkeypatch):
+    from unittest.mock import Mock
+    http, provider, _, _ = pilot
+    connection = Mock(auth_mode='user')
+    connection.identity.return_value = UID
+    factory = Mock(return_value=connection)
+    monkeypatch.setattr('dynamix_manager.personal_auth.Connection', factory)
+    exp = int(time.time()) + 600
+    token = sso_token(exp)
+    assert provider._tdx_token_login(token) == (UID, token, exp)
+    assert factory.call_args.args[0] == {'TDX_BASE_URL': provider.settings.tdx_url,
+                                         'TDX_APP_ID': provider.settings.tdx_client_id,
+                                         'WORKBENCH_PERSONAL_TOKEN': token}
+    connection.client.session.close.assert_called_once()
+    for bad in ('not-a-jwt', sso_token(int(time.time()) - 5)):
+        with pytest.raises(ValueError):
+            provider._tdx_token_login(bad)
+    connection.identity.side_effect = RuntimeError('denied')
+    with pytest.raises(RuntimeError):
+        provider._tdx_token_login(sso_token(exp))
