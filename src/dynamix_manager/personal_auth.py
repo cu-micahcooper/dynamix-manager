@@ -286,9 +286,9 @@ class PersonalAuthProvider:
             return render_page('Login could not be completed', '''<div class="status"><div class="mark warn">!</div>
 <h1>Login could not be completed.</h1></div>
 <p class="lead">Nothing was changed. One of these is the usual cause:</p>
-<ol><li>The link expired: it is good for five minutes and can be opened only once.</li>
+<div><ol><li>The link expired: it is good for five minutes and can be opened only once.</li>
 <li>The username, password, or pasted token was not accepted by TeamDynamix.</li>
-<li>Both sign-in options were filled in at once.</li></ol>
+<li>Both sign-in options were filled in at once.</li></ol></div>
 <p><strong>Start again from ChatGPT:</strong> open the TeamDynamix app there and choose Connect to get a fresh link.</p>''', status=400)
         if request.method == 'GET':
             key = request.query_params.get('transaction', '')

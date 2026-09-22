@@ -77,6 +77,16 @@ return URL, and its `getuser`/`login` CORS policy is `*` without credentials, so
 third-party server can never receive the token automatically. Copy-and-paste is the
 only password-free path.
 
+**Page design.** The sign-in, success and error pages share one inline stylesheet
+in Cedarville brand colors (blue `#003963`, gold `#FBB93A`, orange for warnings)
+allowed by CSP hash only; there are still no scripts and no external assets. The
+sign-in card shows the password and SSO options side by side (stacked on phones)
+with the SSO steps numbered; the success page says "You're connected", returns to
+ChatGPT automatically after four seconds via a meta refresh with the button as
+fallback, and states whether access will renew or expire; the error page lists
+the likely causes (expired or reused link, rejected credentials, both options
+filled) and points back to ChatGPT.
+
 **Per-user isolation.** Vault records, OAuth grant families, write-grant
 bindings, request-ID deduplication and audit rows are all keyed by the person's
 TDX UID (the OAuth subject). Tests prove one person's tokens resolve only their
