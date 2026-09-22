@@ -21,6 +21,7 @@ class FakeService:
         self.failure = None
         self.malformed = False
         self.thread_ids = []
+        self.resolutions = []
         self.settings = SimpleNamespace(public_url="https://connector.example")
 
     def submit(self, principal, action, request_id):
@@ -38,6 +39,15 @@ class FakeService:
             ticket_url="https://tenant.example/TDNext/Apps/42/Tickets/TicketDet.aspx?TicketID=1001",
             status_code=201,
         )
+
+    def resolve(self, principal, operation_id, resolution, observation):
+        if self.failure:
+            raise self.failure
+        self.resolutions.append((operation_id, resolution, observation))
+        return TicketWriteStatus(
+            operation_id=operation_id, outcome="applied" if resolution == "applied" else "rejected",
+            message="Resolved by the grant owner after inspecting TeamDynamix.", ticket_id=1001,
+            ticket_url="https://tenant.example/TDNext/Apps/42/Tickets/TicketDet.aspx?TicketID=1001")
 
     def result(self, principal, operation_id):
         if self.failure:
@@ -106,6 +116,7 @@ def test_registers_only_four_direct_tools_and_two_bounded_read_tools(tools_serve
         "assign_ticket", "edit_ticket", "complete_ticket_task", "create_ticket",
         "add_asset_comment", "link_asset_to_ticket", "edit_asset",
         "ticket_write_metadata", "ticket_write_result", "list_ticket_tasks", "ticket_create_metadata",
+        "resolve_ticket_write",
     }
     for name in (
         "add_ticket_comment", "update_ticket_status",
@@ -177,6 +188,34 @@ def test_result_returns_only_safe_owner_checked_projection(tools_server):
         "detail": None,
         "item": None,
     }
+
+
+def test_resolve_tool_passes_the_owner_verdict_and_is_a_write(tools_server):
+    server, service = tools_server
+    tools = {t.name: t for t in asyncio.run(server.list_tools())}
+    assert tools["resolve_ticket_write"].annotations.readOnlyHint is False
+    # Marking an outcome not_applied re-opens the equivalent write, so it carries the write hints.
+    assert tools["resolve_ticket_write"].annotations.destructiveHint is True
+    result = structured(run(server, "resolve_ticket_write", {
+        "operation_id": "b" * 32, "resolution": "not_applied",
+        "observation": "Ticket 1001 feed shows no such comment as of now."}))
+    assert service.resolutions == [("b" * 32, "not_applied", "Ticket 1001 feed shows no such comment as of now.")]
+    assert result["outcome"] == "rejected" and result["operation_id"] == "b" * 32
+    with pytest.raises(Exception):
+        run(server, "resolve_ticket_write", {"operation_id": "b" * 32, "resolution": "applied", "observation": "short"})
+
+
+def test_resolve_tool_reports_state_and_ownership_errors_plainly(tools_server):
+    from dynamix_manager.ticket_writes.store import WriteBindingError, WriteStateError
+    server, service = tools_server
+    service.failure = WriteStateError("Only an unresolved dispatched operation can be reconciled.")
+    result = run(server, "resolve_ticket_write", {"operation_id": "b" * 32, "resolution": "applied",
+                                                  "observation": "Seen in the feed just now."})
+    assert result.isError and "unknown" in result.content[0].text
+    service.failure = WriteBindingError("nope")
+    result = run(server, "resolve_ticket_write", {"operation_id": "b" * 32, "resolution": "applied",
+                                                  "observation": "Seen in the feed just now."})
+    assert result.isError and "another grant" in result.content[0].text
 
 
 @pytest.mark.parametrize(
@@ -311,7 +350,7 @@ def test_real_http_tools_list_mirrors_hosted_security_schemes_at_top_level():
             "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {},
         }, headers={"Accept": "application/json, text/event-stream"})
     tools = response.json()["result"]["tools"]
-    assert len(tools) == 28
+    assert len(tools) == 29
     for tool in tools:
         assert tool["securitySchemes"] == tool["_meta"]["securitySchemes"]
 

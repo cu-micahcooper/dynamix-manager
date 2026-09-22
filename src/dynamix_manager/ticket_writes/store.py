@@ -338,7 +338,7 @@ class WriteStore:
         except Exception:
             raise WriteIntegrityError("Stored ticket-write payload is invalid.") from None
 
-    def _audit(self, db, data, outcome, now):
+    def _audit(self, db, data, outcome, now, *, note=None):
         operation_id = data["id"]
         exists = db.execute("SELECT 1 FROM ticket_write_audit WHERE id=?", (operation_id,)).fetchone()
         if not exists and db.execute("SELECT COUNT(*) FROM ticket_write_audit").fetchone()[0] >= self.MAX_AUDIT:
@@ -351,6 +351,8 @@ class WriteStore:
             "time": now,
             "outcome": outcome,
         }
+        if note is not None:
+            audit["note"] = note
         db.execute(
             "INSERT OR REPLACE INTO ticket_write_audit(id,created,value) VALUES (?,?,?)",
             (operation_id, now, self._seal("audit", operation_id, audit)),
@@ -514,9 +516,19 @@ class WriteStore:
             (lock_id, data["id"], self._seal("lock", lock_id, lock)),
         )
 
-    def _terminal_before_dispatch(self, db, data, now, outcome, message):
+    def _blocking_detail(self, db, binding, blocking_operation_id):
+        """Name the unresolved operation holding a lock, but only to its own grant owner."""
+        try:
+            blocking = self._operation_row_by_id(db, blocking_operation_id)
+        except WriteStoreError:
+            return None
+        if not binding.owns(blocking["binding"]):
+            return None
+        return {"blocking_operation_id": blocking_operation_id}
+
+    def _terminal_before_dispatch(self, db, data, now, outcome, message, *, detail=None):
         data.update(state=outcome, finished_at=now, purge_at=now + self.RESULT_RETENTION,
-                    result={"outcome": outcome, "message": message, "status_code": None})
+                    result={"outcome": outcome, "message": message, "status_code": None, "detail": detail})
         self._write_operation(db, data, unresolved=0)
         self._audit(db, data, outcome, now)
         return ClaimResult(False, self._record(data))
@@ -555,14 +567,18 @@ class WriteStore:
             if now >= data["expires_at"]:
                 return self._terminal_before_dispatch(
                     db, data, now, "expired", "The approval capability expired.")
-            if db.execute("SELECT 1 FROM ticket_write_markers WHERE id=?",
-                          (data["equivalence_hash"],)).fetchone():
+            marker = db.execute("SELECT operation_id FROM ticket_write_markers WHERE id=?",
+                                (data["equivalence_hash"],)).fetchone()
+            if marker:
                 return self._terminal_before_dispatch(
-                    db, data, now, "conflict", "An equivalent write is unresolved.")
-            if db.execute("SELECT 1 FROM ticket_write_locks WHERE id=?",
-                          (data["ticket_hash"],)).fetchone():
+                    db, data, now, "conflict", "An equivalent write is unresolved.",
+                    detail=self._blocking_detail(db, binding, marker[0]))
+            lock = db.execute("SELECT operation_id FROM ticket_write_locks WHERE id=?",
+                              (data["ticket_hash"],)).fetchone()
+            if lock:
                 return self._terminal_before_dispatch(
-                    db, data, now, "conflict", "Another write for this ticket is unresolved.")
+                    db, data, now, "conflict", "Another write for this ticket is unresolved.",
+                    detail=self._blocking_detail(db, binding, lock[0]))
             if db.execute("SELECT COUNT(*) FROM ticket_write_markers").fetchone()[0] >= self.MAX_UNRESOLVED:
                 raise WriteCapacityError("Unresolved ticket-write capacity reached.")
             claim_token = secrets.token_urlsafe(32)
@@ -619,23 +635,34 @@ class WriteStore:
             self._audit(db, data, outcome, now)
             return self._record(data)
 
-    def reconcile_authoritative(self, operation_id, evidence):
-        """Internal resolution hook; only typed, specific evidence is accepted.
+    def reconcile_authoritative(self, operation_id, evidence, *, binding=None, note=None):
+        """Resolve an unresolved operation from typed, specific evidence.
 
         A missing item in a bounded feed is intentionally not representable as
-        evidence.  This method records a known result and never makes a retryable
-        operation.
+        evidence.  With ``binding``, the evidence is the grant owner's own inspection
+        of TeamDynamix: ownership is enforced and ``note`` (what they saw) is kept in
+        the audit trail.  This method records a known result and never makes a
+        retryable operation.
         """
+        owner = binding is not None
         if type(evidence) is AuthoritativeAppliedEvidence:
-            outcome, message = "applied", "Authoritative evidence confirms the change."
+            outcome, message = "applied", ("The grant owner confirmed the change after inspecting TeamDynamix."
+                                           if owner else "Authoritative evidence confirms the change.")
         elif type(evidence) is AuthoritativeRejectedEvidence:
-            outcome, message = "rejected", "Authoritative evidence confirms no change was applied."
+            outcome, message = "rejected", ("The grant owner confirmed no change was applied after inspecting "
+                                            "TeamDynamix; the same change may be submitted under a new request ID."
+                                            if owner else "Authoritative evidence confirms no change was applied.")
         else:
             raise InvalidReconciliationEvidence("Typed authoritative evidence is required.")
+        if note is not None and (not isinstance(note, str) or not note.strip() or len(note) > 500):
+            raise ValueError("A reconciliation note must be a short non-empty string.")
         now = float(self.clock())
+        validated = GrantBinding.validate(binding, now) if owner else None
         with self._transaction() as db:
             self._begin(db)
             data = self._operation_row_by_id(db, operation_id)
+            if validated is not None and not validated.owns(data["binding"]):
+                raise WriteBindingError("Ticket-write operation belongs to another grant.")
             if data["state"] in {"applied", "rejected"}:
                 return self._record(data)
             if data["state"] not in {"sending", "unknown"}:
@@ -647,5 +674,5 @@ class WriteStore:
             db.execute("DELETE FROM ticket_write_markers WHERE operation_id=?", (data["id"],))
             db.execute("DELETE FROM ticket_write_locks WHERE operation_id=?", (data["id"],))
             self._write_operation(db, data, unresolved=0)
-            self._audit(db, data, outcome, now)
+            self._audit(db, data, outcome, now, note=note)
             return self._record(data)

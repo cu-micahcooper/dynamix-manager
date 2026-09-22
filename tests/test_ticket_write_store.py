@@ -104,6 +104,19 @@ def test_direct_owner_isolation_and_uncertain_locks(store_setup):
     assert conflict.record.state == "conflict"
 
 
+def test_lock_conflict_names_the_blocking_operation_only_to_its_owner(store_setup):
+    store, _, _, _ = store_setup
+    stuck, fence = submit(store, prepared(), "first")
+    store.finish(fence, "unknown", "Unknown.")
+    mine = store.prepare_direct(binding(), prepared(comments="different"), "second")
+    blocked = store.claim_direct(mine.operation_id, binding())
+    assert blocked.record.state == "conflict"
+    assert blocked.record.result.detail == {"blocking_operation_id": stuck.operation_id}
+    theirs = store.prepare_direct(binding(subject="user-2"), prepared(comments="other"), "third")
+    blocked = store.claim_direct(theirs.operation_id, binding(subject="user-2"))
+    assert blocked.record.state == "conflict" and blocked.record.result.detail is None
+
+
 def test_direct_ticket_lock_conflict_remains_terminal_after_lock_clears(store_setup):
     store, _, _, _ = store_setup
     first = store.prepare_direct(binding(), prepared(), "first")
@@ -437,6 +450,23 @@ def test_reconciliation_requires_typed_authoritative_evidence(store_setup):
         record.operation_id, AuthoritativeAppliedEvidence(evidence_id="tdx-event-123", observed_at=1_001.0))
     assert resolved.state == "applied"
     assert store.prepare_direct(binding(), prepared(), "request-2").operation_id != record.operation_id
+
+
+def test_reconciliation_with_a_binding_is_owner_only_and_records_the_note(store_setup):
+    from dynamix_manager.ticket_writes.store import AuthoritativeRejectedEvidence, WriteBindingError
+    store, path, _, _ = store_setup
+    record, fence = submit(store, prepared(), "request-1")
+    store.finish(fence, "unknown", "No reliable response.")
+    evidence = AuthoritativeRejectedEvidence(evidence_id="owner-inspection", observed_at=1_001.0)
+    with pytest.raises(WriteBindingError):
+        store.reconcile_authoritative(record.operation_id, evidence, binding=binding(subject="user-2"))
+    resolved = store.reconcile_authoritative(record.operation_id, evidence, binding=binding(),
+                                             note="Feed shows no such comment.")
+    assert resolved.state == "rejected"
+    with sqlite3.connect(path) as db:
+        assert db.execute("SELECT COUNT(*) FROM ticket_write_locks").fetchone()[0] == 0
+        sealed = db.execute("SELECT value FROM ticket_write_audit WHERE id=?", (record.operation_id,)).fetchone()[0]
+    assert store._open("audit", record.operation_id, sealed)["note"] == "Feed shows no such comment."
 
 
 def test_ciphertext_record_swapping_is_detected(store_setup):

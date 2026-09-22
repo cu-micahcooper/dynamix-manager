@@ -26,7 +26,8 @@ from .models import (
     TaskAction,
     WriteResult,
 )
-from .store import DirectReplayResult, GrantBinding, WriteStore
+from .store import (AuthoritativeAppliedEvidence, AuthoritativeRejectedEvidence, DirectReplayResult,
+                    GrantBinding, WriteStateError, WriteStore)
 
 
 class TicketWriteServiceError(RuntimeError):
@@ -296,6 +297,25 @@ class TicketWriteService:
         """Return a safe status for the exact current grant owner; never dispatch."""
         binding = self._binding_for_principal(principal, require_enabled=False)
         record = self.store.get_for_owner(operation_id, binding)
+        return self._safe_status(record)
+
+    def resolve(self, principal, operation_id, resolution, observation):
+        """Record the grant owner's verdict on an unknown outcome after they inspected TeamDynamix.
+
+        ``applied`` marks the change as made; ``not_applied`` marks it as absent, which frees the
+        equivalent change for resubmission under a new request ID. Either releases the item lock.
+        """
+        if resolution not in ("applied", "not_applied"):
+            raise ValueError("Resolution must be 'applied' or 'not_applied'.")
+        if not isinstance(observation, str) or not observation.strip():
+            raise ValueError("Describe what was observed in TeamDynamix.")
+        binding = self._binding_for_principal(principal)
+        record = self.store.get_for_owner(operation_id, binding)
+        if record.effective_state != "unknown":
+            raise WriteStateError("Only an operation with an unknown outcome can be resolved.")
+        evidence_type = AuthoritativeAppliedEvidence if resolution == "applied" else AuthoritativeRejectedEvidence
+        evidence = evidence_type(evidence_id=f"owner-inspection:{operation_id}", observed_at=float(self.store.clock()))
+        record = self.store.reconcile_authoritative(operation_id, evidence, binding=binding, note=observation)
         return self._safe_status(record)
 
     @staticmethod

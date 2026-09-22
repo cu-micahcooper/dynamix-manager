@@ -115,6 +115,57 @@ def test_direct_unknown_restart_changed_arguments_and_retained_lock(setup):
     assert setup.upstream.apply_count == 1
 
 
+def test_resolve_releases_an_unknown_outcome_after_owner_inspection(setup):
+    action = parse_action(dict(kind="comment", ticket_id=1001, comments="Hello"))
+    setup.upstream.apply_error = TimeoutError("secret upstream body")
+    unknown = setup.service.submit("principal", action, "request-1")
+    setup.upstream.apply_error = None
+    resolved = setup.service.resolve("principal", unknown.operation_id, "applied",
+                                     "The comment 'Hello' is in the ticket feed.")
+    assert resolved.operation_id == unknown.operation_id
+    assert resolved.outcome == "applied" and "inspect" in resolved.message.lower()
+    assert setup.service.result("principal", unknown.operation_id).outcome == "applied"
+    assert setup.service.submit("principal", action, "request-2").outcome == "applied"
+    assert setup.upstream.apply_count == 2
+
+
+def test_conflict_status_carries_the_owner_visible_blocking_operation(setup):
+    setup.upstream.apply_error = TimeoutError("boom")
+    stuck = setup.service.submit("principal", parse_action(dict(kind="comment", ticket_id=1001, comments="Hello")), "r1")
+    setup.upstream.apply_error = None
+    blocked = setup.service.submit("principal", parse_action(dict(kind="comment", ticket_id=1001, comments="Other")), "r2")
+    assert blocked.outcome == "conflict"
+    assert blocked.detail == {"blocking_operation_id": stuck.operation_id}
+    assert setup.service.result("principal", blocked.operation_id).detail == blocked.detail
+    setup.service.resolve("principal", stuck.operation_id, "applied", "Hello is in the feed.")
+    assert setup.service.submit("principal", parse_action(dict(kind="comment", ticket_id=1001, comments="Other")), "r3").outcome == "applied"
+
+
+def test_resolve_not_applied_permits_the_equivalent_write_again(setup):
+    action = parse_action(dict(kind="comment", ticket_id=1001, comments="Hello"))
+    setup.upstream.apply_error = TimeoutError("boom")
+    unknown = setup.service.submit("principal", action, "request-1")
+    setup.upstream.apply_error = None
+    resolved = setup.service.resolve("principal", unknown.operation_id, "not_applied", "Nothing in the feed.")
+    assert resolved.outcome == "rejected"
+    assert setup.service.submit("principal", action, "request-2").outcome == "applied"
+
+
+def test_resolve_is_owner_only_and_refuses_known_outcomes(setup):
+    from dynamix_manager.ticket_writes.store import WriteBindingError, WriteStateError
+    action = parse_action(dict(kind="comment", ticket_id=1001, comments="Hello"))
+    applied = setup.service.submit("principal", action, "request-1")
+    with pytest.raises(WriteStateError):
+        setup.service.resolve("principal", applied.operation_id, "applied", "Seen in feed.")
+    setup.upstream.apply_error = TimeoutError("boom")
+    unknown = setup.service.submit("principal", action, "request-2")
+    setup.provider.binding["subject"] = "someone-else"
+    with pytest.raises(WriteBindingError):
+        setup.service.resolve("principal", unknown.operation_id, "applied", "Seen in feed.")
+    with pytest.raises(ValueError):
+        setup.service.resolve("principal", unknown.operation_id, "maybe", "Seen in feed.")
+
+
 def test_direct_concurrent_requests_dispatch_once(setup):
     action = parse_action(dict(kind="comment", ticket_id=1001, comments="Hello"))
     setup.upstream.gate = threading.Event()

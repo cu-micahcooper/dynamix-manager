@@ -15,7 +15,7 @@ from .adapter import WriteAdapter
 from .models import (AssetCommentAction, AssignAction, CommentAction, EditAction, EditAssetAction,
                      LinkAssetAction, StatusAction, TaskAction, parse_action)
 from .service import WriteAuthorizationRequired, WritesDisabled
-from .store import EquivalentWriteBlocked, WriteBindingError
+from .store import EquivalentWriteBlocked, WriteBindingError, WriteStateError
 
 
 WRITE_SCHEMES = [{"type": "oauth2", "scopes": ["tdx.read", "tdx.write"]}]
@@ -23,6 +23,8 @@ READ_SCHEMES = [{"type": "oauth2", "scopes": ["tdx.read"]}]
 REQUEST_ID = Annotated[str, Field(strict=True, min_length=1, max_length=200,
                                  pattern=r"^[A-Za-z0-9_-]+$")]
 OPERATION_ID = Annotated[str, Field(strict=True, pattern=r"^[0-9a-f]{32}$")]
+RESOLUTION = Literal["applied", "not_applied"]
+OBSERVATION = Annotated[str, Field(strict=True, min_length=10, max_length=500)]
 METADATA_SEARCH = Annotated[str, Field(strict=True, min_length=2, max_length=100)]
 METADATA_LIMIT = Annotated[int, Field(strict=True, ge=1, le=10)]
 TICKET_ID = Annotated[int, Field(strict=True, gt=0)]
@@ -172,7 +174,9 @@ def _submit(service, action, request_id, extra=None):
     except EquivalentWriteBlocked:
         return _error(
             "An equivalent change for this ticket has an unresolved outcome. Nothing was "
-            "submitted; check ticket_write_result for the earlier operation before retrying."
+            "submitted; check ticket_write_result for the earlier operation. If its outcome is "
+            "unknown, have the user inspect TeamDynamix and record what they saw with "
+            "resolve_ticket_write before retrying."
         )
     except Exception:
         return _error(
@@ -224,6 +228,28 @@ def _result(service, operation_id):
         )
     except Exception:
         return _error("The ticket-write result is unavailable.")
+    try:
+        return ResultOutput.model_validate(asdict(status))
+    except Exception:
+        return _error("The ticket-write result is unavailable.")
+
+
+def _resolve(service, operation_id, resolution, observation):
+    try:
+        status = service.resolve(get_access_token(), operation_id, resolution, observation)
+    except WriteAuthorizationRequired:
+        return _error(
+            "Additional authorization is required to resolve this ticket-write operation.",
+            challenge=_write_challenge(service.settings.public_url),
+        )
+    except WritesDisabled:
+        return _error("Hosted ticket writes are disabled.")
+    except WriteBindingError:
+        return _error("This operation belongs to another grant; nothing was changed.")
+    except WriteStateError:
+        return _error("Only an operation whose outcome is unknown can be resolved; nothing was changed.")
+    except Exception:
+        return _error("The ticket-write operation could not be resolved.")
     try:
         return ResultOutput.model_validate(asdict(status))
     except Exception:
@@ -423,6 +449,19 @@ def register_ticket_write_tools(server, tool, service, connection_provider):
         """Read the safe result for an operation owned by the current write grant."""
         return _result(service, operation_id)
 
+    @tool(annotations=prepare, meta=write_meta, structured_output=True)
+    def resolve_ticket_write(operation_id: OPERATION_ID, resolution: RESOLUTION, observation: OBSERVATION) -> ResultOutput:
+        """Resolve an operation whose outcome is unknown, only after the user inspected TeamDynamix.
+
+        An unknown outcome keeps its ticket or asset locked against further connector writes until
+        resolved. Ask the user to look at the ticket or asset in TeamDynamix and report what they
+        see; put their words in `observation` (it is kept in the audit trail). Use `applied` when
+        the change is visible, `not_applied` when it is absent; `not_applied` allows the same change
+        to be submitted again under a new request ID. Never use this to clear the way for a retry
+        without the user's inspection.
+        """
+        return _resolve(service, operation_id, resolution, observation)
+
     names = (
         "add_ticket_comment",
         "update_ticket_status",
@@ -437,6 +476,7 @@ def register_ticket_write_tools(server, tool, service, connection_provider):
         "ticket_create_metadata",
         "ticket_write_metadata",
         "ticket_write_result",
+        "resolve_ticket_write",
     )
     for name in names:
         _harden_tool(server, name)

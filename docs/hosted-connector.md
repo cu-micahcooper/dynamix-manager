@@ -559,14 +559,15 @@ ticket was then closed through `update_ticket_status`.
 
 ### ChatGPT tool surface
 
-Personal mode exposes 28 tools: fifteen read tools (the original eight,
+Personal mode exposes 29 tools: fifteen read tools (the original eight,
 `show_tickets`, and six asset reads: `search_assets`, `get_asset`, `asset_feed`,
 `ticket_assets`, `asset_tickets`, `asset_metadata`), nine direct-write tools
 (`add_ticket_comment`, `update_ticket_status`, `assign_ticket`, `edit_ticket`,
 `complete_ticket_task`, `create_ticket`, `add_asset_comment`,
 `link_asset_to_ticket`, `edit_asset`), bounded read-only `ticket_write_metadata`,
-`list_ticket_tasks` and `ticket_create_metadata`, and grant-owner-only
-`ticket_write_result`. External issuer mode keeps the fifteen read-only tools.
+`list_ticket_tasks` and `ticket_create_metadata`, and the grant-owner-only
+`ticket_write_result` and `resolve_ticket_write`. External issuer mode keeps the
+fifteen read-only tools.
 
 **Assets.** The connector discovers the tenant's asset application by class
 (`TDAssets`), preferring "InfoTech Assets/CIs" when several exist (Cedarville has
@@ -686,6 +687,23 @@ An unknown outcome must not offer automatic retry: inspect the ticket and
 reconcile authoritative evidence before another equivalent action. Live identity,
 grant, metadata and baseline checks, durable ticket locks, and one-attempt TDX
 dispatch remain in force. Notification acceptance does not establish delivery.
+
+**Resolving an unknown outcome (added 2026-09-22).** An unknown outcome holds
+its ticket or asset lock, and its equivalence marker, until it is resolved; the
+store never expires them. The live link test showed the consequence: a
+misclassified 204 left scratch ticket 30879870 write-locked with no operator
+path in. `resolve_ticket_write(operation_id, resolution, observation)` is that
+path. It is grant-owner-only (the same ownership check as `ticket_write_result`),
+accepts only operations whose effective state is unknown (including a dispatch
+interrupted mid-send), and records the owner's verdict as authoritative evidence:
+`applied` when the user sees the change in TeamDynamix, `not_applied` when it is
+absent, which frees the equivalent change for a new request ID. The
+`observation` text (10 to 500 characters, what the user saw) is stored in the
+encrypted audit row. The tool carries write hints and its description tells the
+model to ask the user to look before calling it; it is never a retry shortcut.
+To make the stuck operation findable, a lock or equivalence conflict now
+returns `detail.blocking_operation_id`, but only when the blocking operation
+belongs to the same grant owner; another user's operation stays anonymous.
 
 ### Durable operation limits
 
