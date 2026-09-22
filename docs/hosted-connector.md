@@ -67,7 +67,11 @@ sign-in, displays the bearer token as plain text on the TeamDynamix origin. The
 person copies that token into the login form; the connector verifies it with
 `getuser`, links the account with the token's own `exp` as the grant expiry, and
 stores no password, so it cannot renew and the person repeats this daily. The two
-options are exclusive in one submission. TeamDynamix documents `loginsso` as
+options are exclusive in one submission. Option B was verified live on
+2026-09-22: the owner completed the Entra hop in the browser, pasted the token,
+the connector linked the account with no denials logged, and the resulting grant
+listed all 19 tools, reported write access available, returned the queue, and
+survived a refresh-token rotation. TeamDynamix documents `loginsso` as
 intended for its own client-side code: the endpoint sends no CORS headers, takes no
 return URL, and its `getuser`/`login` CORS policy is `*` without credentials, so a
 third-party server can never receive the token automatically. Copy-and-paste is the
