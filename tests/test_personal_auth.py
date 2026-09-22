@@ -714,12 +714,21 @@ def test_rotated_refresh_tokens_are_retained_only_for_a_short_replay_window(pilo
     assert http.post('/token', data={**form, 'refresh_token': rotated['refresh_token']}).status_code == 400
 
 
-def test_login_page_wording_matches_the_access_policy(pilot, open_pilot):
-    for fixture, expected, forbidden in ((pilot, "Only the approved personal account can connect", "your own TeamDynamix account"),
-                                         (open_pilot, "your own TeamDynamix account", "Only the approved personal account")):
-        http, provider = fixture[0], fixture[1]
-        client = register(http).json()['client_id']
-        page = []
-        login_form(http, client, page=page)
-        assert expected in page[0]
-        assert forbidden not in page[0]
+def _login_page(http):
+    client = register(http).json()['client_id']
+    page = []
+    login_form(http, client, page=page)
+    return page[0]
+
+
+def test_single_user_login_page_says_only_the_approved_account_can_connect(pilot):
+    page = _login_page(pilot[0])
+    assert "Only the approved personal account can connect" in page
+    assert "your own TeamDynamix account" not in page
+
+
+def test_multi_user_login_page_explains_tdx_permissions_govern_access(open_pilot):
+    page = _login_page(open_pilot[0])
+    assert "your own TeamDynamix account" in page
+    assert "governed by your TeamDynamix permissions" in page
+    assert "Only the approved personal account" not in page
