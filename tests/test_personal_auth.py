@@ -712,3 +712,14 @@ def test_rotated_refresh_tokens_are_retained_only_for_a_short_replay_window(pilo
     # Replay inside the window still revokes the family.
     assert http.post('/token', data=form).status_code == 400
     assert http.post('/token', data={**form, 'refresh_token': rotated['refresh_token']}).status_code == 400
+
+
+def test_login_page_wording_matches_the_access_policy(pilot, open_pilot):
+    for fixture, expected, forbidden in ((pilot, "Only the approved personal account can connect", "your own TeamDynamix account"),
+                                         (open_pilot, "your own TeamDynamix account", "Only the approved personal account")):
+        http, provider = fixture[0], fixture[1]
+        client = register(http).json()['client_id']
+        page = []
+        login_form(http, client, page=page)
+        assert expected in page[0]
+        assert forbidden not in page[0]

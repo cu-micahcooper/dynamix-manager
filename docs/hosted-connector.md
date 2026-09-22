@@ -237,6 +237,22 @@ and its volume from the personal Railway account. A custom `cedarville.edu`
 domain changes the OAuth issuer and audience, so set it before people connect or
 expect everyone to reconnect.
 
+### ChatGPT cutover — 2026-09-22
+
+ChatGPT's settings offer no way to change an installed app's MCP server URL, so
+the cutover created a new app, **TeamDynamix**
+(`asdk_app_6ab26f9bc67881918e3f49a669cbe9bb`), pointed at
+`https://connector-production-a492.up.railway.app/mcp` with OAuth via Dynamic
+Client Registration and both `tdx.read` and `tdx.write` as default scopes. The
+setup form reveals the app's callback only under the "User-Defined OAuth Client"
+registration method: `https://chatgpt.com/connector/oauth/_Eilu8ZXDrY0`, now in
+`TDX_HOSTED_REDIRECT_URIS` alongside the pilot's callback and the localhost test
+callback. Creation immediately launched the OAuth flow; the owner signed in on the
+production login page (no denials logged) and the app shows a connected account
+and all 18 tools. The pilot app **TeamDynamix Personal Pilot**
+(`asdk_app_6aadc664665481919afb82215b68f924`) and the pilot Railway project remain
+until decommissioned.
+
 ## Institutional account linking remains a separate gate
 
 Cedarville's live OpenAPI schema documents `/api/auth/loginsso`, which returns a

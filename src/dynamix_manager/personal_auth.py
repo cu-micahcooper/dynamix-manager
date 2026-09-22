@@ -189,10 +189,13 @@ class PersonalAuthProvider:
                                   if write_access else 'read-only access (tdx.read)')
             consent_label = ('Allow read and modify access (tdx.read and tdx.write)'
                              if write_access else 'Allow read-only access (tdx.read)')
+            audience = ('Only the approved personal account can connect.' if self.allowed_uid else
+                        'Sign in with your own TeamDynamix account; what you can see and change is '
+                        'governed by your TeamDynamix permissions.')
             response = HTMLResponse(f'''<!doctype html><html lang="en"><meta charset="utf-8">
 <meta name="viewport" content="width=device-width"><title>TeamDynamix personal connector</title>
 <h1>Connect your TeamDynamix account</h1><p>This personal connector requests {access_description}.
-Only the approved personal account can connect.</p><p>Callback destination: {callback}</p>
+{audience}</p><p>Callback destination: {callback}</p>
 <p>Complete this form within five minutes. After signing in, select Continue to ChatGPT.</p>
 <form method="post" action="/personal/login">
 <input type="hidden" name="transaction" value="{html.escape(key, quote=True)}">
