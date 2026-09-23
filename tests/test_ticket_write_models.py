@@ -127,13 +127,13 @@ def test_article_actions_are_typed_bounded_and_carry_an_item_identity():
                                                        ArticleUnlinkAction, CategoryCreateAction, CategoryEditAction)
     create = parse(dict(kind="article_create", subject="Reset MFA", body="Step one", category_id=9212, owner_uid=ASSET_UID))
     assert isinstance(create, ArticleCreateAction) and create.item == ("create", None) and create.ticket_id == 0
-    assert create.status == "not_submitted" and create.is_published is False and create.is_public is False
+    assert create.status == "not_submitted" and not hasattr(create, "is_published") and not hasattr(create, "is_public")
     assert create.model_dump(mode="json") == {"kind": "article_create", "subject": "Reset MFA", "body": "Step one", "category_id": 9212,
                                               "owner_uid": ASSET_UID}
     assert parse(dict(kind="article_create", subject="s", body="x", category_id=1, owning_group_id=77)).owner_uid is None
-    edit = parse(dict(kind="article_edit", article_id=95821, status="archived", is_published=False, tags=["macos"]))
+    edit = parse(dict(kind="article_edit", article_id=95821, status="archived", tags=["macos"]))
     assert isinstance(edit, ArticleEditAction) and edit.item == ("article", 95821) and edit.ticket_id == 0
-    assert edit.model_dump(mode="json") == {"kind": "article_edit", "article_id": 95821, "status": "archived", "is_published": False, "tags": ["macos"]}
+    assert edit.model_dump(mode="json") == {"kind": "article_edit", "article_id": 95821, "status": "archived", "tags": ["macos"]}
     link = parse(dict(kind="article_link", article_id=95821, asset_id=1973209))
     assert isinstance(link, ArticleLinkAction) and link.item == ("article", 95821)
     unlink = parse(dict(kind="article_unlink", article_id=95821, related_article_id=84764))
@@ -150,6 +150,8 @@ def test_article_actions_are_typed_bounded_and_carry_an_item_identity():
                 dict(kind="article_create", subject="s", body="x", category_id=1, owner_uid=ASSET_UID, owning_group_id=77),
                 dict(kind="article_edit", article_id=95821),
                 dict(kind="article_edit", article_id=95821, review_date="soon"),
+                dict(kind="article_edit", article_id=95821, is_published=True),  # the API ignores publish flags (observed live)
+                dict(kind="article_create", subject="s", body="x", category_id=1, owner_uid=ASSET_UID, is_public=True),
                 dict(kind="article_link", article_id=95821),
                 dict(kind="article_link", article_id=95821, asset_id=1, related_article_id=2),
                 dict(kind="article_link", article_id=95821, related_article_id=95821),

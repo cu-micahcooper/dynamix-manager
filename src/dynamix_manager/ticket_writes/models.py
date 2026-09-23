@@ -264,8 +264,7 @@ class _ArticleFields(ImmutableModel):
     owner_uid: UUID | None = None
     owning_group_id: PositiveID | None = None
     review_date: IsoDate | None = None
-    is_public: Annotated[bool, Field(strict=True)] | None = None
-    is_published: Annotated[bool, Field(strict=True)] | None = None
+    # IsPublished / IsPublic are accepted but ignored by the tenant API (observed live 2026-09-22), so they are not offered.
     status: ARTICLE_STATUS | None = None
     notify_owner: Annotated[bool, Field(strict=True)] | None = None
     notify_owner_of_review_date: Annotated[bool, Field(strict=True)] | None = None
@@ -280,8 +279,7 @@ class _ArticleFields(ImmutableModel):
 class ArticleEditAction(ArticleAction, _ArticleFields):
     kind: Literal["article_edit"]
     EDITABLE: ClassVar[tuple[str, ...]] = ("subject", "summary", "body", "tags", "category_id", "owner_uid", "owning_group_id",
-                                           "review_date", "is_public", "is_published", "status", "notify_owner",
-                                           "notify_owner_of_review_date", "order")
+                                           "review_date", "status", "notify_owner", "notify_owner_of_review_date", "order")
 
     @model_validator(mode="after")
     def at_least_one_field(self):
@@ -316,8 +314,6 @@ class ArticleCreateAction(_NoTicket, _ArticleFields):
     subject: ArticleTitle
     body: ArticleBody
     category_id: PositiveID
-    is_public: Annotated[bool, Field(strict=True)] = False
-    is_published: Annotated[bool, Field(strict=True)] = False
     status: ARTICLE_STATUS = "not_submitted"
 
     @model_validator(mode="after")

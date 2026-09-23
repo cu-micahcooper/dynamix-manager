@@ -738,7 +738,10 @@ def test_article_actions_submit_and_report_the_portal_item(setup):
     article = setup.service.submit("principal", parse_action(dict(kind="article_create", subject="New", body="b", category_id=10548,
                                                                   owner_uid=UID)), "kb-3")
     assert article.message == "TeamDynamix created the article." and article.item["id"] == 170001
-    setup.upstream.apply_result = SimpleNamespace(status_code=204, json=lambda: None)
+    setup.upstream.apply_result = SimpleNamespace(status_code=500, json=lambda: None)
     setup.upstream.records[f"/api/{ASSET_APP}/assets/1973209"] = dict(ASSET_REC)
+    setup.upstream.records[f"/api/{ASSET_APP}/assets/1973209/articles"] = [dict(ID=95821, Subject="Mac password")]
+    before = setup.upstream.apply_count
     linked = setup.service.submit("principal", parse_action(dict(kind="article_link", article_id=95821, asset_id=1973209)), "kb-4")
     assert linked.outcome == "applied" and linked.message == "The article was already linked."
+    assert setup.upstream.apply_count == before  # no request was sent for a link that already exists

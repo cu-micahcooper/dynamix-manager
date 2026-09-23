@@ -666,7 +666,9 @@ def test_create_article_resolves_the_owner_and_defaults_to_a_draft(tools_server)
         "subject": "Reset MFA", "body": "Step one", "category_id": 9212, "owner": "Alan McCain", "tags": ["mfa"]}}))
     action = service.actions[-1]
     assert action.kind == "article_create" and str(action.owner_uid) == ALAN["uid"] and action.status == "not_submitted"
-    assert action.is_published is False and result["resolved_people"] == [{"role": "owner", "search": "Alan McCain", "matched": [ALAN]}]
+    assert result["resolved_people"] == [{"role": "owner", "search": "Alan McCain", "matched": [ALAN]}]
+    with pytest.raises(Exception):  # publishing is not possible through the API; the flag is not offered
+        run(server, "create_article", {"article": {"subject": "S", "body": "b", "category_id": 1, "is_published": True}})
     without_owner = structured(run(server, "create_article", {"article": {"subject": "S", "body": "b", "category_id": 1}}))
     assert without_owner["resolved_people"] == [] and str(service.actions[-1].owner_uid) == MICAH["uid"]  # signed-in user
     grouped = structured(run(server, "create_article", {"article": {"subject": "S", "body": "b", "category_id": 1, "owning_group_id": 77}}))

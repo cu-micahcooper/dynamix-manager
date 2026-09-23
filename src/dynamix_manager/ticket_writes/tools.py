@@ -105,8 +105,6 @@ class CreateArticleRequest(BaseModel):
     owner_uid: UUID | None = None
     owning_group_id: TICKET_ID | None = None
     review_date: Annotated[str, Field(strict=True, min_length=10, max_length=35)] | None = None
-    is_public: Annotated[bool, Field(strict=True)] = False
-    is_published: Annotated[bool, Field(strict=True)] = False
     status: ARTICLE_STATUS = "not_submitted"
     notify_owner: Annotated[bool, Field(strict=True)] | None = None
     notify_owner_of_review_date: Annotated[bool, Field(strict=True)] | None = None
@@ -420,13 +418,13 @@ def register_ticket_write_tools(server, tool, service, connection_provider):
 
     @tool(annotations=prepare, meta=write_meta, structured_output=True)
     def create_article(article: CreateArticleRequest, request_id: REQUEST_ID) -> CreateResultOutput:
-        """Create a knowledge base article only on an explicit user request; defaults to an unpublished draft.
+        """Create a knowledge base article only on an explicit user request; it starts as a Not Submitted draft.
 
         Resolve category_id with article_categories. TeamDynamix requires exactly one owner: `owner`
         (resolved through the people API; state who matched and continue), `owner_uid`, or
         `owning_group_id`; omit all three and the signed-in user owns it. Body may be HTML or plain
-        text; scripts are stripped. Set is_published/is_public/status only when the user asked to
-        publish. Generate a unique request_id and reuse it with identical arguments for 30 days.
+        text; scripts are stripped. Publishing is not possible through the API: the article must be
+        published in the portal. Generate a unique request_id and reuse it with identical arguments for 30 days.
         """
         connection = connection_provider()
         resolved, uids = [], {}
@@ -455,12 +453,12 @@ def register_ticket_write_tools(server, tool, service, connection_provider):
 
     @tool(annotations=prepare, meta=write_meta, structured_output=True)
     def edit_article(action: ArticleEditAction, request_id: REQUEST_ID) -> ResultOutput:
-        """Change article fields (subject, summary, body, tags, category, owner, group, review date, public,
-        published, status, notifications, order) only on an explicit user request.
+        """Change article fields (subject, summary, body, tags, category, owner, group, review date, status,
+        notifications, order) only on an explicit user request.
 
-        Publishing, making public or archiving are stated in the preview notices; confirm intent first.
-        The article is snapshotted so a concurrent revision conflicts. Generate a unique request_id
-        and reuse it with identical arguments for recovery for 30 days.
+        Status names: not_submitted, submitted, approved, rejected, archived; "remove" an article by archiving it.
+        Publishing is not possible through the API (publish in the portal). The article is snapshotted so a
+        concurrent revision conflicts. Generate a unique request_id and reuse it with identical arguments for 30 days.
         """
         return _submit(service, action, request_id)
 

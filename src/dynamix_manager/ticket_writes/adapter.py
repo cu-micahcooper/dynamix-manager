@@ -523,8 +523,7 @@ class WriteAdapter:
                        ("body", "Body", "Body", None), ("tags", "Tags", "Tags", None),
                        ("category_id", "CategoryID", "Category", "CategoryName"), ("owner_uid", "OwnerUid", "Owner", "OwnerFullName"),
                        ("owning_group_id", "OwningGroupID", "Owning group", "OwningGroupName"),
-                       ("review_date", "ReviewDateUtc", "Review date", None), ("is_public", "IsPublic", "Public", None),
-                       ("is_published", "IsPublished", "Published", None), ("status", "Status", "Status", "StatusName"),
+                       ("review_date", "ReviewDateUtc", "Review date", None), ("status", "Status", "Status", "StatusName"),
                        ("notify_owner", "NotifyOwner", "Notify owner", None),
                        ("notify_owner_of_review_date", "NotifyOwnerOfReviewDate", "Notify owner of review date", None),
                        ("order", "Order", "Order", None))
@@ -617,17 +616,13 @@ class WriteAdapter:
         notices = []
         if isinstance(action, ArticleCreateAction):
             payload, fields = {}, []
-            given = action.model_fields_set | {"status", "is_published", "is_public"}
+            given = action.model_fields_set | {"status"}
             for name, wire, label, _ in self._ARTICLE_FIELDS:
                 if name not in given or getattr(action, name) is None:
                     continue
                 wire_value, shown = self._article_value(name, getattr(action, name), notices)
                 payload[wire] = wire_value
                 fields.append(PreviewField(name=label, before=None, after=shown))
-            if action.is_published:
-                notices.append("This publishes the article in the portal on creation.")
-            if action.is_public:
-                notices.append("This makes the article visible without signing in.")
             return self._kb_prepared(action, {"category": payload["CategoryID"]}, payload, fields, title=action.subject, notices=notices)
         article = self._article_snapshot(action.article_id)
         if isinstance(action, (ArticleLinkAction, ArticleUnlinkAction)):
@@ -635,11 +630,20 @@ class WriteAdapter:
             if action.asset_id is not None:
                 target = self._asset_snapshot(action.asset_id)
                 label, name = "Asset", target["Name"]
+                current = self._get(f"/api/{self.asset_app_id}/assets/{action.asset_id}/articles")
+                linked = any(isinstance(row, dict) and row.get("ID") == action.article_id for row in (current if isinstance(current, list) else []))
             else:
                 target = self._article_snapshot(action.related_article_id)
                 label, name = "Related article", target["Subject"]
+                current = self._get(f"/api/{self.portal_app_id}/knowledgebase/{action.article_id}/related")
+                linked = any(isinstance(row, dict) and row.get("ID") == action.related_article_id for row in (current if isinstance(current, list) else []))
             field = PreviewField(name=label, before=name if removing else None, after=None if removing else name)
-            return self._kb_prepared(action, {"article": article, "target": target}, {}, [field], title=article["Subject"])
+            if linked and not removing:
+                notices.append("The link already exists; nothing will be sent.")
+            elif removing and not linked:
+                notices.append("The link does not exist; nothing will be sent.")
+            return self._kb_prepared(action, {"article": article, "target": target, "linked": linked}, {}, [field],
+                                     title=article["Subject"], notices=notices)
         payload, fields = [], []
         for name, wire, label, before_key in self._ARTICLE_FIELDS:
             if name not in action.model_fields_set:
@@ -652,10 +656,6 @@ class WriteAdapter:
                 before = ", ".join(map(str, before))
             payload.append(dict(op="replace", path=f"/{wire}", value=wire_value))
             fields.append(PreviewField(name=label, before=None if before is None else str(before), after=shown))
-        if action.is_published is True and article.get("IsPublished") is not True:
-            notices.append("This publishes the article in the portal.")
-        if action.is_public is True and article.get("IsPublic") is not True:
-            notices.append("This makes the article visible without signing in.")
         if action.status == "archived" and article.get("Status") != 5:
             notices.append("This archives the article.")
         baseline = {"ID": article["ID"], "ModifiedDate": article["ModifiedDate"], "RevisionNumber": article.get("RevisionNumber"),
@@ -752,7 +752,8 @@ class WriteAdapter:
         if isinstance(action, AssetAction):
             return common + ("Asset changes are applied to the asset record only; linked tickets and CMDB relationships are not modified.",)
         if isinstance(action, (ArticleAction, ArticleCreateAction, CategoryAction, CategoryCreateAction)):
-            return common + ("Knowledge base changes are visible to everyone the portal shows the article or category to; there is no private mode.",)
+            return common + ("Knowledge base changes are visible to everyone the portal shows the article or category to; there is no private mode.",
+                             "The API cannot publish or unpublish an article (IsPublished and IsPublic are ignored); publish in the portal.")
         return common + ("New-responsible notification is disabled.",)
 
     def _feed(self, action, ticket, metadata):
@@ -865,6 +866,11 @@ class WriteAdapter:
             method, path = "PATCH", f"/api/{app}/knowledgebase/{action.article_id}"
         elif isinstance(action, (ArticleLinkAction, ArticleUnlinkAction)):
             method, body = ("POST" if isinstance(action, ArticleLinkAction) else "DELETE"), None
+            linked = json.loads(prepared.baseline_json).get("linked") is True
+            if linked and method == "POST":
+                return WriteResult(outcome="applied", message="The article was already linked.")
+            if not linked and method == "DELETE":
+                return WriteResult(outcome="applied", message="The link did not exist.")
             if action.asset_id is not None:
                 if prepared.asset_app_id is None or prepared.asset_app_id != self.asset_app_id:
                     return WriteResult(outcome="rejected", message="Asset application binding does not match.")
@@ -882,12 +888,10 @@ class WriteAdapter:
             return WriteResult(outcome="unknown", message="The upstream outcome is unknown; do not retry.")
         status = response.status_code
         if isinstance(action, (ArticleLinkAction, ArticleUnlinkAction)):
+            # Observed live: a duplicate link or a missing unlink is 400 (asset) or 500 (related article);
+            # those are avoided by the link-state preflight above, so other statuses fall through as errors.
             if status == 200:
                 return WriteResult(outcome="applied", message="TeamDynamix accepted the change.", status_code=status)
-            if status == 204 and isinstance(action, ArticleLinkAction):
-                return WriteResult(outcome="applied", message="The article was already linked.", status_code=status)
-            if status == 404 and isinstance(action, ArticleUnlinkAction):
-                return WriteResult(outcome="applied", message="The link did not exist.", status_code=status)
         elif status in (200, 201):
             try:
                 record = response.json()
@@ -902,7 +906,7 @@ class WriteAdapter:
                                    message="The response did not confirm the target record; do not retry.")
             if isinstance(action, (ArticleCreateAction, ArticleEditAction)):
                 detail = {"article_id": record["ID"], "status": record.get("StatusName"), "is_published": record.get("IsPublished"),
-                          "is_public": record.get("IsPublic"), "revision": record.get("RevisionNumber")}
+                          "is_public": record.get("IsPublic"), "revision": record.get("RevisionNumber")}  # flags reported, never set
                 message = "TeamDynamix created the article." if status == 201 else "TeamDynamix accepted the change."
             else:
                 detail = {"category_id": record["ID"], "name": record.get("Name"), "parent_id": record.get("ParentID")}

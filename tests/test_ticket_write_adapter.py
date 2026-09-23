@@ -706,6 +706,8 @@ ARTICLE_ROUTES = {
     f"/api/{ASSET_APP}/assets/1973209": ASSET_REC,
     f"/api/people/{UID}": dict(UID=UID, IsActive=True, FullName="Person", OrgApplications=[dict(ID=42, IsActive=True)]),
     "/api/groups/77": dict(ID=77, IsActive=True, Name="Service Desk"),
+    f"/api/{ASSET_APP}/assets/1973209/articles": [],
+    f"/api/{PORTAL_APP}/knowledgebase/95821/related": [dict(ID=84764, Subject="Password reset")],
 }
 
 
@@ -730,7 +732,7 @@ def test_article_create_builds_a_sanitised_draft_payload():
         tags=["mfa", "auth"], owner_uid=UID, summary="How to reset")))
     payload = json.loads(prepared.payload_json)
     assert payload == dict(Subject="Reset MFA", Body="<p>Step one</p><p>Step &lt;two&gt;</p>", CategoryID=9208, Summary="How to reset",
-                           Tags=["mfa", "auth"], OwnerUid=UID, Status=1, IsPublished=False, IsPublic=False)
+                           Tags=["mfa", "auth"], OwnerUid=UID, Status=1)
     grouped = adapter.validate(parse_action(dict(kind="article_create", subject="G", body="b", category_id=9208, owning_group_id=77)))
     assert json.loads(grouped.payload_json)["OwningGroupID"] == 77
     assert {f.name: f.after for f in grouped.preview.fields}["Owning group"] == "Service Desk"
@@ -738,7 +740,8 @@ def test_article_create_builds_a_sanitised_draft_payload():
     assert prepared.preview.ticket_id == 0 and prepared.preview.action == "article_create"
     fields = {f.name: f.after for f in prepared.preview.fields}
     assert fields["Category"] == "Office Devices" and fields["Owner"] == "Person" and "Owning group" not in fields
-    assert fields["Status"] == "Not Submitted" and fields["Published"] == "False"
+    assert fields["Status"] == "Not Submitted" and "Published" not in fields
+    assert any("cannot publish" in n for n in prepared.preview.notices)
 
 
 def test_article_create_strips_scripts_and_says_so():
@@ -751,20 +754,19 @@ def test_article_create_strips_scripts_and_says_so():
         adapter.validate(parse_action(dict(kind="article_create", subject="S", body="b", category_id=999, owner_uid=UID)))
 
 
-def test_article_edit_builds_a_patch_with_baseline_and_publication_notices():
+def test_article_edit_builds_a_patch_with_baseline_and_archive_notice():
     adapter, _, _ = kb_adapter()
     prepared = adapter.validate(parse_action(dict(kind="article_edit", article_id=95821, status="archived",
-                                                  is_published=False, is_public=True, tags=["macos", "password"], body="New text")))
+                                                  tags=["macos", "password"], body="New text")))
     assert json.loads(prepared.payload_json) == [
         dict(op="replace", path="/Body", value="<p>New text</p>"), dict(op="replace", path="/Tags", value=["macos", "password"]),
-        dict(op="replace", path="/IsPublic", value=True), dict(op="replace", path="/IsPublished", value=False),
         dict(op="replace", path="/Status", value=5)]
     baseline = json.loads(prepared.baseline_json)
     assert baseline["ModifiedDate"] == "art-v1" and baseline["RevisionNumber"] == 4
     fields = {f.name: (f.before, f.after) for f in prepared.preview.fields}
-    assert fields["Status"] == ("Approved", "Archived") and fields["Published"] == ("True", "False")
+    assert fields["Status"] == ("Approved", "Archived")
     notices = " ".join(prepared.preview.notices)
-    assert "archives the article" in notices and "visible without signing in" in notices and "publishes" not in notices
+    assert "archives the article" in notices and "cannot publish" in notices
     assert prepared.preview.ticket_title == "Mac password"
 
 
@@ -780,12 +782,14 @@ def test_article_edit_verifies_category_owner_and_group():
         adapter.validate(parse_action(dict(kind="article_edit", article_id=1, subject="x")))
 
 
-def test_article_link_and_unlink_verify_both_ends():
+def test_article_link_and_unlink_verify_both_ends_and_record_the_current_link_state():
     adapter, _, _ = kb_adapter()
     to_asset = adapter.validate(parse_action(dict(kind="article_link", article_id=95821, asset_id=1973209)))
-    assert json.loads(to_asset.baseline_json)["target"]["ID"] == 1973209 and to_asset.preview.action == "article_link"
+    baseline = json.loads(to_asset.baseline_json)
+    assert baseline["target"]["ID"] == 1973209 and baseline["linked"] is False and to_asset.preview.action == "article_link"
     assert {f.name: f.after for f in to_asset.preview.fields} == {"Asset": "Micah Cooper MacBook"}
     to_article = adapter.validate(parse_action(dict(kind="article_unlink", article_id=95821, related_article_id=84764)))
+    assert json.loads(to_article.baseline_json)["linked"] is True
     assert {f.name: f.before for f in to_article.preview.fields} == {"Related article": "Password reset"}
     with pytest.raises(ValueError):
         adapter.validate(parse_action(dict(kind="article_link", article_id=95821, related_article_id=1)))
@@ -834,21 +838,28 @@ def test_article_create_and_edit_apply_and_confirm_the_article():
     assert adapter.apply_once(edit).outcome == "rejected"
 
 
-def test_article_links_use_the_right_endpoint_and_idempotent_statuses():
+def test_article_links_use_the_right_endpoint_and_skip_no_op_requests():
+    # Observed live 2026-09-22: repeating an asset link or unlinking a missing asset link returns 400 with no
+    # body; the related-article variants return 500. The link state is read during validation instead.
     adapter, calls, _ = kb_adapter()
     to_asset = adapter.validate(parse_action(dict(kind="article_link", article_id=95821, asset_id=1973209)))
     adapter.request = lambda *a, **k: (calls.append((a, k)) or SimpleNamespace(status_code=200, json=lambda: {"Message": "ok"}))
     assert adapter.apply_once(to_asset).outcome == "applied"
     assert calls[-1][0] == ("POST", f"https://tenant.example/TDWebApi/api/{ASSET_APP}/assets/1973209/articles/95821")
-    adapter.request = lambda *a, **k: SimpleNamespace(status_code=204)
-    assert adapter.apply_once(to_asset).message == "The article was already linked."
     unlink = adapter.validate(parse_action(dict(kind="article_unlink", article_id=95821, related_article_id=84764)))
-    adapter.request = lambda *a, **k: (calls.append((a, k)) or SimpleNamespace(status_code=200, json=lambda: {"Message": "ok"}))
     assert adapter.apply_once(unlink).outcome == "applied"
     assert calls[-1][0] == ("DELETE", f"https://tenant.example/TDWebApi/api/{PORTAL_APP}/knowledgebase/95821/related/84764")
-    adapter.request = lambda *a, **k: SimpleNamespace(status_code=404)
-    result = adapter.apply_once(unlink)
-    assert result.outcome == "applied" and result.message == "The link did not exist."
+    already, _, _ = kb_adapter(**{f"/api/{ASSET_APP}/assets/1973209/articles": [dict(ID=95821, Subject="Mac password")]})
+    sent = []
+    already.request = lambda *a, **k: (sent.append(a) or SimpleNamespace(status_code=500))
+    result = already.apply_once(already.validate(parse_action(dict(kind="article_link", article_id=95821, asset_id=1973209))))
+    assert result.outcome == "applied" and result.message == "The article was already linked." and sent == []
+    missing, _, _ = kb_adapter(**{f"/api/{PORTAL_APP}/knowledgebase/95821/related": []})
+    missing.request = lambda *a, **k: (sent.append(a) or SimpleNamespace(status_code=500))
+    result = missing.apply_once(missing.validate(parse_action(dict(kind="article_unlink", article_id=95821, related_article_id=84764))))
+    assert result.outcome == "applied" and result.message == "The link did not exist." and sent == []
+    adapter.request = lambda *a, **k: SimpleNamespace(status_code=400)
+    assert adapter.apply_once(to_asset).outcome == "rejected"
 
 
 def test_category_create_and_edit_apply():
