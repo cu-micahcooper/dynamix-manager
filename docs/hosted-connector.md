@@ -680,7 +680,14 @@ returns the current steps with the actions available to the caller (the
 workflow endpoint returns 404 when a ticket has none), `act_on_workflow_step`
 validates the step and action against that list before its one attempt and
 treats `IsSuccessful: false` as rejected, `reassign_workflow_step` verifies the
-assignee. Design notes:
+assignee. Live-verified 2026-09-23 on production (deployment `10acb37a`): all
+reads against the seven ticketing applications, saved-search paging (6 results,
+2 pages), PDF attachment text (1,141 characters from a Dell quote), templates and
+response templates, and on scratch ticket 30882747 (closed afterwards) tag, contact,
+SLA and classification writes each with a no-op repeat that sent nothing.
+`act_on_workflow_step`, `reassign_workflow_step`, `add_child_tickets` and
+`move_ticket` are contract-tested only; exercise them on scratch data before
+relying on them. Design notes:
 `docs/superpowers/specs/2026-09-23-ticket-features-design.md`.
 
 **Ticket cards are on demand.** Only `show_tickets(ticket_ids)` carries the

@@ -85,7 +85,10 @@ _CREATED_MESSAGES = {"create": "TeamDynamix created the ticket.", "article_creat
                      "category_create": "TeamDynamix created the category."}
 # Adapter messages for idempotent no-op successes that are safe to persist verbatim.
 _IDEMPOTENT_MESSAGES = frozenset({"The asset was already linked to the ticket.", "The article was already linked.",
-                                  "The link did not exist."})
+                                  "The link did not exist.", "The contact was already on the ticket.",
+                                  "The contact was not on the ticket.", "The tags were already as requested.",
+                                  "The tickets were already children of this ticket.",
+                                  "The ticket already has that classification."})
 _AUTH_MESSAGE = "Current write authorization is required."
 _DISABLED_MESSAGE = "Hosted ticket writes are disabled."
 _PREPARATION_MESSAGE = "The ticket change could not be safely prepared."

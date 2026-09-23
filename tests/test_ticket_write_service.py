@@ -745,3 +745,11 @@ def test_article_actions_submit_and_report_the_portal_item(setup):
     linked = setup.service.submit("principal", parse_action(dict(kind="article_link", article_id=95821, asset_id=1973209)), "kb-4")
     assert linked.outcome == "applied" and linked.message == "The article was already linked."
     assert setup.upstream.apply_count == before  # no request was sent for a link that already exists
+
+
+def test_relation_no_op_messages_survive_the_service(setup):
+    setup.upstream.records["/api/42/tickets/1001"]["Tags"] = ["vip"]
+    before = setup.upstream.apply_count
+    result = setup.service.submit("principal", parse_action(dict(kind="ticket_tags", ticket_id=1001, tags=["VIP"])), "tags-1")
+    assert result.outcome == "applied" and result.message == "The tags were already as requested."
+    assert setup.upstream.apply_count == before
