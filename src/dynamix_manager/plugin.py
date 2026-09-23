@@ -52,6 +52,8 @@ ASSET_APPLICATION_CLASS = "TDAssets"
 ASSET_APPLICATION_NAME = "InfoTech Assets/CIs"
 APPLICATION_CACHE_TTL = 3600
 ASSET_METADATA_KINDS = ("statuses", "models", "vendors")
+PORTAL_APPLICATION_CLASS = "TDClient"
+PORTAL_APPLICATION_NAME = "Client Portal"
 
 # Tenant application discovery is static per tenant; cache it so each request pays only
 # for its identity check and its own query. Keyed by (tenant API URL, application kind).
@@ -161,13 +163,20 @@ class Connection:
             apps = self.client.list_ticketing_applications(applications)
             matches = [a for a in apps if a.get("Name") == TICKET_APPLICATION_NAME]
             label = TICKET_APPLICATION_NAME
-        else:
+        elif kind == "assets":
             candidates = self.asset_applications(applications)
             if not candidates:
                 raise RuntimeError("This account has no TeamDynamix asset application; asset tools are unavailable.")
             preferred = [a for a in candidates if a.get("Name") == ASSET_APPLICATION_NAME]
             matches = preferred or candidates
             label = "an asset application (" + ", ".join(str(a.get("Name")) for a in candidates) + ")"
+        else:
+            candidates = self.portal_applications(applications)
+            if not candidates:
+                raise RuntimeError("This account has no TeamDynamix client portal application; knowledge base tools are unavailable.")
+            preferred = [a for a in candidates if a.get("Name") == PORTAL_APPLICATION_NAME]
+            matches = preferred or candidates
+            label = "a client portal application (" + ", ".join(str(a.get("Name")) for a in candidates) + ")"
         if len(matches) != 1:
             raise RuntimeError(f"Could not uniquely discover {label} in this tenant.")
         with _APPLICATIONS_LOCK:
@@ -190,6 +199,25 @@ class Connection:
     @property
     def asset_app_id(self):
         return int(self.asset_application["AppID"])
+
+    @staticmethod
+    def portal_applications(applications):
+        return [a for a in (applications or []) if isinstance(a, dict) and a.get("AppClass") == PORTAL_APPLICATION_CLASS]
+
+    @property
+    def portal_application(self):
+        self.ready()
+        return self._discover_application("portal")
+
+    @property
+    def portal_app_id(self):
+        return int(self.portal_application["AppID"])
+
+    def article_url(self, article_id):
+        return self.base_url.rsplit("/", 1)[0] + f"/TDClient/{self.portal_app_id}/Portal/KB/ArticleDet?ID={int(article_id)}"
+
+    def category_url(self, category_id):
+        return self.base_url.rsplit("/", 1)[0] + f"/TDClient/{self.portal_app_id}/Portal/KB/?CategoryID={int(category_id)}"
 
     def api_get(self, path, params=None):
         """Authenticated tenant GET; the TenantSession refuses anything outside /api/."""
@@ -326,6 +354,11 @@ def create_server(
             result.update(asset_app_id=int(asset_app["AppID"]), asset_app_name=asset_app.get("Name"))
         except RuntimeError as error:
             result.update(asset_app_id=None, asset_app_name=None, asset_warning=str(error))
+        try:
+            portal = c.portal_application
+            result.update(portal_app_id=int(portal["AppID"]), portal_app_name=portal.get("Name"))
+        except RuntimeError as error:
+            result.update(portal_app_id=None, portal_app_name=None, portal_warning=str(error))
         if capability_provider is not None:
             try:
                 capabilities = capability_provider()
