@@ -570,15 +570,19 @@ ticket was then closed through `update_ticket_status`.
 
 ### ChatGPT tool surface
 
-Personal mode exposes 29 tools: fifteen read tools (the original eight,
-`show_tickets`, and six asset reads: `search_assets`, `get_asset`, `asset_feed`,
-`ticket_assets`, `asset_tickets`, `asset_metadata`), nine direct-write tools
-(`add_ticket_comment`, `update_ticket_status`, `assign_ticket`, `edit_ticket`,
-`complete_ticket_task`, `create_ticket`, `add_asset_comment`,
-`link_asset_to_ticket`, `edit_asset`), bounded read-only `ticket_write_metadata`,
+Personal mode exposes 41 tools: twenty-one read tools (the original eight,
+`show_tickets`, six asset reads: `search_assets`, `get_asset`, `asset_feed`,
+`ticket_assets`, `asset_tickets`, `asset_metadata`, and six knowledge base
+reads: `search_articles`, `get_article`, `article_categories`,
+`related_articles`, `article_services`, `asset_articles`), fifteen direct-write
+tools (`add_ticket_comment`, `update_ticket_status`, `assign_ticket`,
+`edit_ticket`, `complete_ticket_task`, `create_ticket`, `add_asset_comment`,
+`link_asset_to_ticket`, `edit_asset`, `create_article`, `edit_article`,
+`link_article`, `unlink_article`, `create_article_category`,
+`edit_article_category`), bounded read-only `ticket_write_metadata`,
 `list_ticket_tasks` and `ticket_create_metadata`, and the grant-owner-only
 `ticket_write_result` and `resolve_ticket_write`. External issuer mode keeps the
-fifteen read-only tools.
+twenty-one read-only tools.
 
 **Assets.** The connector discovers the tenant's asset application by class
 (`TDAssets`), preferring "InfoTech Assets/CIs" when several exist (Cedarville has
@@ -607,6 +611,24 @@ that fix the 204 was classified unknown, which left the ticket write-locked
 (an unknown outcome holds its ticket lock until reconciled with authoritative
 evidence; see the submission contract below). The connector exposes no unlink,
 so a link is permanent from the connector's point of view.
+
+**Knowledge base.** The Client Portal application is discovered by class
+(`TDClient`; Cedarville has one, 2045) and reported by `connection_status`.
+Reads map `ArticleSearch` one-to-one, resolve `author` through the people API
+(reflected back in `resolved_people`), and return bodies as plain-text
+snippets of 400 characters; `get_article` gives the full text, or the raw HTML
+on request. Text search ranks archived articles with approved ones, so the
+search tool tells the model to filter by status and published flag for
+"what do we tell users" questions. Writes use the same pipeline:
+`create_article` defaults to an unpublished Not Submitted draft; `edit_article`
+is a JSON Patch with a revision-and-modified-date baseline and preview notices
+when a change publishes, makes public or archives; `link_article` and
+`unlink_article` relate an article to an asset or to another article; categories
+can be created and edited, never deleted. Article deletion is not exposed:
+archive plus unpublish instead. Bodies are sanitised before saving (script,
+iframe, object and embed elements and `on*` attributes are removed, and the
+preview says so); plain text is wrapped in paragraphs. Design:
+`docs/superpowers/specs/2026-09-22-knowledge-base-tools-design.md`.
 
 **Ticket cards are on demand.** Only `show_tickets(ticket_ids)` carries the
 widget `outputTemplate`, so ChatGPT renders the ticket viewer just when asked to

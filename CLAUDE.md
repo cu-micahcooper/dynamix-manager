@@ -64,6 +64,7 @@ src/dynamix_manager/   # main package
   hosted.py            # hosted ChatGPT connector: OAuth resource server, ASGI app
   personal_auth.py     # personal TDX login + local OAuth grants for the pilot
   hosted_vault.py      # encrypted personal-token vault (SQLite, see note below)
+  kb_text.py           # knowledge base body helpers: text extraction, HTML wrapping, sanitising
   ticket_writes/       # direct ticket-write tools, adapter, service, durable store
 tests/                 # pytest; mirrors src module names
 scripts/               # one-off data scripts (not part of package)

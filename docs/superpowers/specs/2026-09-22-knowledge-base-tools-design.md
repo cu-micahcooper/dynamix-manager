@@ -1,6 +1,6 @@
 # Knowledge base tools for the hosted connector — design
 
-Status: approved in chat 2026-09-22, not yet implemented. Source of API facts: the
+Status: implemented 2026-09-22 (commits 5cc9427..b59d6c2); live verification pending. Source of API facts: the
 tenant's OpenAPI document (`https://cedarville.teamdynamix.com/TDWebApi/swagger/v1/openapi.json`)
 plus a live read probe with the analytics service account on 2026-09-22.
 

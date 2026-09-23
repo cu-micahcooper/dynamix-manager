@@ -229,3 +229,26 @@ Source: `https://demotemplate.teamdynamix.com/TDWebApi/swagger/v1/openapi.json`
   live** returning the updated `Asset`, verified by `ID` and `AppID`; a no-op replace still
   bumps `ModifiedDate`). All three asset writes are exercised live. Asset create, delete
   and unlink (`DELETE .../tickets/{id}/assets/{assetId}`) are deliberately not exposed.
+
+## Knowledge base (Client Portal application 2045)
+
+Source: the tenant OpenAPI document plus a live read probe on 2026-09-22. All routes are
+`/api/2045/...` except the asset link, which lives in the asset application.
+
+| Operation | Documented | Adapter classification |
+| --- | --- | --- |
+| `POST .../knowledgebase/search` (`ArticleSearch`) | 200 `Article[]`; bodies are returned regardless of `IncludeArticleBodies` (observed live) | read |
+| `GET .../knowledgebase/{id}` | 200 current revision | read; baseline `ModifiedDate` + `RevisionNumber` |
+| `GET .../knowledgebase/categories`, `.../categories/{id}` | 200 tree / one category | read |
+| `GET .../knowledgebase/{id}/related`, `.../relatedservices` | 200 lists | read |
+| `GET /api/{assetApp}/assets/{id}/articles` | 200 `Article[]` | read (`.../knowledgebase/{id}/assetscis` hung >60 s live and is not used) |
+| `POST .../knowledgebase` (`Article`) | 201 created article | applied when 201 with `AppID` 2045 and integer `ID`; detail = article id, status, published, public, revision |
+| `PATCH .../knowledgebase/{id}` (JSON Patch) | 200 updated article | applied when 200 and `ID` matches; otherwise unknown |
+| `POST` / `DELETE /api/{assetApp}/assets/{id}/articles/{articleId}` | 200 message | link 200 applied, 204 applied ("already linked", by analogy with the ticket asset link); unlink 200 applied, 404 applied ("did not exist"); verify live |
+| `POST` / `DELETE .../knowledgebase/{id}/related/{relatedArticleId}` | 200 message | same rule as the asset link; verify live |
+| `POST .../knowledgebase/categories` (`ArticleCategory`) | 201 | applied when 201 with `AppID` 2045; detail = category id, name, parent |
+| `PUT .../knowledgebase/categories/{id}` (full `ArticleCategory`) | 200 | the adapter fetches the category, applies the requested fields and sends the full object minus read-only fields; applied when 200 and `ID` matches |
+
+Statuses: 1 Not Submitted, 2 Submitted, 3 Approved, 4 Rejected, 5 Archived. Article and
+category deletion, attachments and service/offering links are deliberately not exposed.
+Live write verification is pending; update this table with observed codes.
