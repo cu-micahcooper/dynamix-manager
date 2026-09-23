@@ -361,3 +361,9 @@ def test_show_tickets_is_bounded(arguments):
     with pytest.raises(Exception):
         call(server_for(c), "show_tickets", arguments)
     c.client.get_ticket.assert_not_called()
+
+
+def test_server_identifies_itself_as_dynamix():
+    server = server_for(connection())
+    assert server.name == "Dynamix"
+    assert "Dynamix" in server.instructions

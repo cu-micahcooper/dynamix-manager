@@ -620,3 +620,8 @@ def test_personal_environment_without_allowed_uid_runs_in_multi_user_mode(tmp_pa
     assert app.write_service.auth_provider.allowed_uid is None
     monkeypatch.setenv('TDX_HOSTED_ALLOWED_UID', '00000000-0000-0000-0000-000000000001')
     assert from_environment().write_service.auth_provider.allowed_uid == '00000000-0000-0000-0000-000000000001'
+
+
+def test_hosted_instructions_name_the_connector_dynamix():
+    from dynamix_manager import hosted
+    assert "call this connector Dynamix" in hosted.HOSTED_INSTRUCTIONS

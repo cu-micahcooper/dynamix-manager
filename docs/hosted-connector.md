@@ -570,6 +570,12 @@ ticket was then closed through `update_ticket_status`.
 
 ### ChatGPT tool surface
 
+**Name.** The MCP server identifies itself as "Dynamix" and its instructions say
+users call the connector Dynamix, matching the ChatGPT app name the owner uses
+in conversation. The ChatGPT app's display name is set in the app's settings at
+chatgpt.com and is what "@Dynamix" and "ask dynamix …" resolve against; the
+server name is not shown to users.
+
 Personal mode exposes 64 tools: thirty-three read tools (the original eight,
 `show_tickets`, six asset reads, six knowledge base reads, two report reads,
 and the ticket extras `saved_searches`, `run_saved_search`, `ticket_attachments`,
