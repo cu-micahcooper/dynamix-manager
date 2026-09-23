@@ -808,3 +808,56 @@ def test_article_actions_need_a_portal_application():
     adapter = WriteAdapter("https://tenant.example/TDWebApi", 42, "secret", read=lambda path: ARTICLE_ROUTES[path])
     with pytest.raises(ValueError, match="portal"):
         adapter.validate(parse_action(dict(kind="article_edit", article_id=95821, subject="x")))
+
+
+def test_article_create_and_edit_apply_and_confirm_the_article():
+    adapter, calls, _ = kb_adapter()
+    prepared = adapter.validate(parse_action(dict(kind="article_create", subject="Reset MFA", body="x", category_id=9208)))
+    created = dict(ARTICLE_REC, ID=170001, Subject="Reset MFA", Status=1, StatusName="Not Submitted", IsPublished=False, RevisionNumber=1)
+    adapter.request = lambda *a, **k: (calls.append((a, k)) or SimpleNamespace(status_code=201, json=lambda: created))
+    result = adapter.apply_once(prepared)
+    assert result.outcome == "applied" and result.status_code == 201
+    assert result.detail == {"article_id": 170001, "status": "Not Submitted", "is_published": False, "is_public": False, "revision": 1}
+    assert calls[-1][0] == ("POST", f"https://tenant.example/TDWebApi/api/{PORTAL_APP}/knowledgebase")
+    assert calls[-1][1]["json"]["Subject"] == "Reset MFA"
+    edit = adapter.validate(parse_action(dict(kind="article_edit", article_id=95821, subject="Renamed")))
+    adapter.request = lambda *a, **k: (calls.append((a, k)) or SimpleNamespace(status_code=200, json=lambda: dict(ARTICLE_REC, Subject="Renamed")))
+    result = adapter.apply_once(edit)
+    assert result.outcome == "applied" and result.detail["article_id"] == 95821 and result.detail["revision"] == 4
+    assert calls[-1][0] == ("PATCH", f"https://tenant.example/TDWebApi/api/{PORTAL_APP}/knowledgebase/95821")
+    adapter.request = lambda *a, **k: SimpleNamespace(status_code=200, json=lambda: dict(ARTICLE_REC, ID=1))
+    assert adapter.apply_once(edit).outcome == "unknown"
+    adapter.request = lambda *a, **k: SimpleNamespace(status_code=403, json=lambda: {})
+    assert adapter.apply_once(edit).outcome == "rejected"
+
+
+def test_article_links_use_the_right_endpoint_and_idempotent_statuses():
+    adapter, calls, _ = kb_adapter()
+    to_asset = adapter.validate(parse_action(dict(kind="article_link", article_id=95821, asset_id=1973209)))
+    adapter.request = lambda *a, **k: (calls.append((a, k)) or SimpleNamespace(status_code=200, json=lambda: {"Message": "ok"}))
+    assert adapter.apply_once(to_asset).outcome == "applied"
+    assert calls[-1][0] == ("POST", f"https://tenant.example/TDWebApi/api/{ASSET_APP}/assets/1973209/articles/95821")
+    adapter.request = lambda *a, **k: SimpleNamespace(status_code=204)
+    assert adapter.apply_once(to_asset).message == "The article was already linked."
+    unlink = adapter.validate(parse_action(dict(kind="article_unlink", article_id=95821, related_article_id=84764)))
+    adapter.request = lambda *a, **k: (calls.append((a, k)) or SimpleNamespace(status_code=200, json=lambda: {"Message": "ok"}))
+    assert adapter.apply_once(unlink).outcome == "applied"
+    assert calls[-1][0] == ("DELETE", f"https://tenant.example/TDWebApi/api/{PORTAL_APP}/knowledgebase/95821/related/84764")
+    adapter.request = lambda *a, **k: SimpleNamespace(status_code=404)
+    result = adapter.apply_once(unlink)
+    assert result.outcome == "applied" and result.message == "The link did not exist."
+
+
+def test_category_create_and_edit_apply():
+    adapter, calls, _ = kb_adapter()
+    created = adapter.validate(parse_action(dict(kind="category_create", name="Scratch", parent_id=10548)))
+    adapter.request = lambda *a, **k: (calls.append((a, k)) or SimpleNamespace(status_code=201, json=lambda: dict(CATEGORY_REC, ID=30001, Name="Scratch", ParentID=10548)))
+    result = adapter.apply_once(created)
+    assert result.outcome == "applied" and result.detail == {"category_id": 30001, "name": "Scratch", "parent_id": 10548}
+    assert calls[-1][0] == ("POST", f"https://tenant.example/TDWebApi/api/{PORTAL_APP}/knowledgebase/categories")
+    edited = adapter.validate(parse_action(dict(kind="category_edit", category_id=9208, name="Office devices")))
+    adapter.request = lambda *a, **k: (calls.append((a, k)) or SimpleNamespace(status_code=200, json=lambda: dict(CATEGORY_REC, Name="Office devices")))
+    result = adapter.apply_once(edited)
+    assert result.outcome == "applied" and result.detail["name"] == "Office devices"
+    assert calls[-1][0] == ("PUT", f"https://tenant.example/TDWebApi/api/{PORTAL_APP}/knowledgebase/categories/9208")
+    assert calls[-1][1]["json"]["ID"] == 9208

@@ -11,9 +11,9 @@ import requests
 
 from dynamix_manager.kb_text import ensure_html, sanitize_html
 
-from .models import (ARTICLE_STATUS_IDS, ArticleAction, ArticleCreateAction, ArticleLinkAction,
+from .models import (ARTICLE_STATUS_IDS, ArticleAction, ArticleCreateAction, ArticleEditAction, ArticleLinkAction,
                      ArticleUnlinkAction, AssetAction, AssetCommentAction, AssignAction, CategoryAction, CategoryCreateAction,
-                     ChangePreview, CommentAction, CreateAction, EditAction, EditAssetAction,
+                     CategoryEditAction, ChangePreview, CommentAction, CreateAction, EditAction, EditAssetAction,
                      LinkAssetAction, PreparedChange, PreviewField, StatusAction, TaskAction, WriteResult, parse_action)
 
 
@@ -854,6 +854,64 @@ class WriteAdapter:
         return WriteResult(outcome=outcome, status_code=status,
                            message="TeamDynamix rejected the change." if outcome == "rejected" else "The upstream outcome is unknown; do not retry.")
 
+    def _apply_kb(self, prepared):
+        action, app = prepared.action, prepared.portal_app_id
+        if app is None or app != self.portal_app_id:
+            return WriteResult(outcome="rejected", message="Client portal application binding does not match.")
+        body = json.loads(prepared.payload_json)
+        if isinstance(action, ArticleCreateAction):
+            method, path = "POST", f"/api/{app}/knowledgebase"
+        elif isinstance(action, ArticleEditAction):
+            method, path = "PATCH", f"/api/{app}/knowledgebase/{action.article_id}"
+        elif isinstance(action, (ArticleLinkAction, ArticleUnlinkAction)):
+            method, body = ("POST" if isinstance(action, ArticleLinkAction) else "DELETE"), None
+            if action.asset_id is not None:
+                if prepared.asset_app_id is None or prepared.asset_app_id != self.asset_app_id:
+                    return WriteResult(outcome="rejected", message="Asset application binding does not match.")
+                path = f"/api/{prepared.asset_app_id}/assets/{action.asset_id}/articles/{action.article_id}"
+            else:
+                path = f"/api/{app}/knowledgebase/{action.article_id}/related/{action.related_article_id}"
+        elif isinstance(action, CategoryCreateAction):
+            method, path = "POST", f"/api/{app}/knowledgebase/categories"
+        else:
+            method, path = "PUT", f"/api/{app}/knowledgebase/categories/{action.category_id}"
+        try:
+            response = self.request(method, self.base_url + path, headers=self._headers, json=body,
+                                    timeout=(5, 30), allow_redirects=False)
+        except Exception:
+            return WriteResult(outcome="unknown", message="The upstream outcome is unknown; do not retry.")
+        status = response.status_code
+        if isinstance(action, (ArticleLinkAction, ArticleUnlinkAction)):
+            if status == 200:
+                return WriteResult(outcome="applied", message="TeamDynamix accepted the change.", status_code=status)
+            if status == 204 and isinstance(action, ArticleLinkAction):
+                return WriteResult(outcome="applied", message="The article was already linked.", status_code=status)
+            if status == 404 and isinstance(action, ArticleUnlinkAction):
+                return WriteResult(outcome="applied", message="The link did not exist.", status_code=status)
+        elif status in (200, 201):
+            try:
+                record = response.json()
+                if not isinstance(record, dict) or record.get("AppID") != app or type(record.get("ID")) is not int:
+                    raise ValueError("Unrecognized response.")
+                if isinstance(action, ArticleEditAction) and record["ID"] != action.article_id:
+                    raise ValueError("Wrong article.")
+                if isinstance(action, CategoryEditAction) and record["ID"] != action.category_id:
+                    raise ValueError("Wrong category.")
+            except Exception:
+                return WriteResult(outcome="unknown", status_code=status,
+                                   message="The response did not confirm the target record; do not retry.")
+            if isinstance(action, (ArticleCreateAction, ArticleEditAction)):
+                detail = {"article_id": record["ID"], "status": record.get("StatusName"), "is_published": record.get("IsPublished"),
+                          "is_public": record.get("IsPublic"), "revision": record.get("RevisionNumber")}
+                message = "TeamDynamix created the article." if status == 201 else "TeamDynamix accepted the change."
+            else:
+                detail = {"category_id": record["ID"], "name": record.get("Name"), "parent_id": record.get("ParentID")}
+                message = "TeamDynamix created the category." if status == 201 else "TeamDynamix accepted the change."
+            return WriteResult(outcome="applied", message=message, status_code=status, detail=detail)
+        outcome = "rejected" if 400 <= status < 500 and status != 408 else "unknown"
+        return WriteResult(outcome=outcome, status_code=status,
+                           message="TeamDynamix rejected the change." if outcome == "rejected" else "The upstream outcome is unknown; do not retry.")
+
     def apply_once(self, prepared):
         if prepared.base_url != self.base_url or prepared.app_id != self.app_id:
             return WriteResult(outcome="rejected", message="Tenant or application binding does not match.")
@@ -862,6 +920,8 @@ class WriteAdapter:
             return self._apply_create(prepared)
         if isinstance(action, AssetAction):
             return self._apply_asset(prepared)
+        if isinstance(action, (ArticleAction, ArticleCreateAction, CategoryAction, CategoryCreateAction)):
+            return self._apply_kb(prepared)
         path = f"/api/{self.app_id}/tickets/{action.ticket_id}"
         feed = isinstance(action, (CommentAction, TaskAction))
         if isinstance(action, TaskAction):
