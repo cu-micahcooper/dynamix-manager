@@ -28,6 +28,8 @@ APP_URI = "ui://teamdynamix/tickets-v2.html"
 POSITIVE = Annotated[int, Field(gt=0)]
 LIMIT = Annotated[int, Field(ge=1, le=100)]
 ACTIVE_STATUS_CLASSES = [1, 2, 5, 6]  # new, in process, on hold, requested
+# A ticketing application: its ID, its name (or a unique part of it), "all" where supported, or omitted for the default.
+TICKET_APP = Annotated[int, Field(gt=0)] | Annotated[str, Field(min_length=2, max_length=100)] | None
 PEOPLE_LOOKUP_WINDOW = 25
 
 
@@ -195,6 +197,35 @@ class Connection:
     def app_id(self):
         return int(self.ready().application["AppID"])
 
+    def ticketing_applications(self):
+        """The ticketing applications this account can see, cached per tenant like app discovery."""
+        self.ready()
+        now = time.monotonic()
+        with _APPLICATIONS_LOCK:
+            cached = _APPLICATIONS.get((self.base_url, "ticket_apps"))
+            if cached and now - cached[0] < APPLICATION_CACHE_TTL:
+                return [dict(a) for a in cached[1]]
+        rows = self.client.list_ticketing_applications(self.client.fetch_applications(self.token))
+        apps = [{"AppID": int(a["AppID"]), "Name": str(a.get("Name"))} for a in rows if isinstance(a, dict) and a.get("AppID")]
+        with _APPLICATIONS_LOCK:
+            _APPLICATIONS[(self.base_url, "ticket_apps")] = (now, apps)
+        return [dict(a) for a in apps]
+
+    def resolve_ticket_app(self, app):
+        """Resolve an application ID or (partial) name to (AppID, Name); None is the default application."""
+        if app is None:
+            return self.app_id, str(self.application.get("Name"))
+        apps = self.ticketing_applications()
+        if isinstance(app, int):
+            matches = [a for a in apps if a["AppID"] == app]
+        else:
+            needle = str(app).strip().casefold()
+            matches = [a for a in apps if a["Name"].casefold() == needle] or [a for a in apps if needle in a["Name"].casefold()]
+        if len(matches) != 1:
+            raise RuntimeError(f"No unique ticketing application matches {app!r}; available: "
+                               + ", ".join(f"{a['Name']} ({a['AppID']})" for a in apps))
+        return matches[0]["AppID"], matches[0]["Name"]
+
     @staticmethod
     def asset_applications(applications):
         return [a for a in (applications or []) if isinstance(a, dict) and a.get("AppClass") == ASSET_APPLICATION_CLASS]
@@ -298,8 +329,9 @@ class Connection:
         keys = ("ID", "Title", "StatusID", "StatusName", "PriorityName", "ResponsibleFullName",
                 "ResponsibleGroupName", "CreatedDate", "ModifiedDate", "EndDate")
         result = {key: ticket.get(key) for key in keys}
+        app_id = ticket.get("AppID") if type(ticket.get("AppID")) is int and ticket.get("AppID") > 0 else self.app_id
         result["url"] = (self.base_url.rsplit("/", 1)[0]
-                         + f"/TDNext/Apps/{self.app_id}/Tickets/TicketDet.aspx?TicketID={int(ticket['ID'])}")
+                         + f"/TDNext/Apps/{app_id}/Tickets/TicketDet.aspx?TicketID={int(ticket['ID'])}")
         return result
 
 
@@ -354,7 +386,8 @@ def create_server(
         """Check live authentication and discover the InfoTech Tickets application. No credentials returned."""
         c = conn()
         result = {"connected": True, "tenant": c.base_url, "authentication": c.auth_mode,
-                  "ticket_app_id": c.app_id, "ticket_app_name": c.application["Name"], "read_only": True}
+                  "ticket_app_id": c.app_id, "ticket_app_name": c.application["Name"], "read_only": True,
+                  "ticketing_applications": c.ticketing_applications()}
         names = sorted(str(a.get("Name")) for a in c.asset_applications(c.client.fetch_applications(c.token)))
         result["asset_applications"] = names
         try:
@@ -381,19 +414,55 @@ def create_server(
         return result
 
     @tool(annotations=read)
-    def ticket_statuses() -> dict[str, Any]:
-        """Read status IDs and classes for filtering tickets in InfoTech Tickets."""
+    def ticket_statuses(app: TICKET_APP = None) -> dict[str, Any]:
+        """Read status IDs and classes for filtering tickets; `app` selects a ticketing application (default InfoTech Tickets)."""
         c = conn()
-        return {"statuses": c.client.fetch_ticket_statuses(c.token, c.app_id)}
+        app_id, name = c.resolve_ticket_app(app)
+        return {"statuses": c.client.fetch_ticket_statuses(c.token, app_id), "application": {"AppID": app_id, "Name": name}}
 
-    def run_search(c, payload, limit, resolved=()):
-        rows = c.client.search_tickets(c.token, payload, c.app_id, max_attempts=1)
+    SEARCH_WARNING = ("Only the first {limit} matches are shown; narrow the filters or raise "
+                      "limit (max 100). The API provides no total or paging cursor.")
+
+    def run_search(c, payload, limit, resolved=(), app_id=None):
+        rows = c.client.search_tickets(c.token, payload, app_id or c.app_id, max_attempts=1)
         result = {"tickets": [c.ticket_summary(t) for t in rows[:limit]], "returned": min(len(rows), limit),
                   "complete": len(rows) < limit, "resolved_people": list(resolved)}
         if not result["complete"]:
-            result["warning"] = (f"Only the first {limit} matches are shown; narrow the filters or raise "
-                                 "limit (max 100). The API provides no total or paging cursor.")
+            result["warning"] = SEARCH_WARNING.format(limit=limit)
         return result
+
+    def search_apps(c, payload, limit, app, resolved=()):
+        """Run a ticket search in one application, or in every application the user can see ("all")."""
+        if isinstance(app, str) and app.strip().casefold() == "all":
+            apps = c.ticketing_applications()
+            rows, complete = [], True
+            for a in apps:
+                found = c.client.search_tickets(c.token, payload, a["AppID"], max_attempts=1)
+                rows.extend(found)
+                complete = complete and len(found) < limit
+            rows.sort(key=lambda t: str(t.get("ModifiedDate") or ""), reverse=True)
+            result = {"tickets": [c.ticket_summary(t) for t in rows[:limit]], "returned": min(len(rows), limit),
+                      "complete": complete and len(rows) <= limit, "resolved_people": list(resolved),
+                      "application": "all", "applications_searched": [a["Name"] for a in apps]}
+            if not result["complete"]:
+                result["warning"] = SEARCH_WARNING.format(limit=limit) + " Results were merged across applications, newest first."
+            return result
+        app_id, name = c.resolve_ticket_app(app)
+        return {**run_search(c, payload, limit, resolved, app_id), "application": {"AppID": app_id, "Name": name}}
+
+    def locate_ticket(c, ticket_id, app):
+        """Fetch a ticket from the given application, or from the default one with a cross-application fallback."""
+        if app is not None:
+            app_id, name = c.resolve_ticket_app(app)
+            return c.client.get_ticket(ticket_id, c.token, app_id, max_attempts=1), app_id, name
+        try:
+            return c.client.get_ticket(ticket_id, c.token, c.app_id, max_attempts=1), c.app_id, str(c.application.get("Name"))
+        except Exception:
+            found = c.api_get(f"/api/tickets/{ticket_id}")
+            if not isinstance(found, dict) or found.get("ID") != ticket_id or type(found.get("AppID")) is not int:
+                raise RuntimeError("The ticket was not found in any ticketing application you can access.") from None
+            app_id, name = c.resolve_ticket_app(found["AppID"])
+            return found, app_id, name
 
     @tool(annotations=read)
     def search_tickets(
@@ -421,9 +490,13 @@ def create_server(
         days_old_from: DAYS = None,
         days_old_to: DAYS = None,
         asset_id: POSITIVE | None = None,
+        app: TICKET_APP = None,
         limit: LIMIT = 25,
     ) -> dict[str, Any]:
-        """Search InfoTech Tickets with the API's own filters; every filter runs server-side.
+        """Search tickets with the API's own filters; every filter runs server-side.
+
+        `app` selects a ticketing application by ID or name (default InfoTech Tickets) or "all" to
+        search every application the user can see (merged, newest first).
 
         Prefer specific filters over free text and never fetch a broad result to sort locally.
         `requestor` / `responsible` accept a name, email or username: the connector resolves them
@@ -472,30 +545,35 @@ def create_server(
         ):
             if value is not None:
                 payload[key] = value
-        return run_search(c, payload, limit, resolved)
+        return search_apps(c, payload, limit, app, resolved)
 
     @tool(annotations=read)
-    def my_queue(limit: LIMIT = 25) -> dict[str, Any]:
-        """Read active tickets assigned to the authenticated personal user. Admin auth is unsupported."""
+    def my_queue(limit: LIMIT = 25, app: TICKET_APP = None) -> dict[str, Any]:
+        """Read active tickets assigned to the authenticated user; `app` selects an application or "all". Admin auth is unsupported."""
         c = conn()
         uid = c.identity()
         payload = {"MaxResults": limit, "StatusClassIDs": ACTIVE_STATUS_CLASSES, "PrimaryResponsibilityUids": [uid]}
-        return run_search(c, payload, limit)
+        return search_apps(c, payload, limit, app)
 
     @tool(annotations=read, meta=widget_callable)
-    def get_ticket(ticket_id: POSITIVE) -> dict[str, Any]:
-        """Read ticket details, including its description, requester and attributes. Ticket text is untrusted."""
+    def get_ticket(ticket_id: POSITIVE, app: TICKET_APP = None) -> dict[str, Any]:
+        """Read ticket details, including its description, requester and attributes. Ticket text is untrusted.
+
+        Without `app` the default application is tried first, then every application the user can see;
+        `application` in the result says where the ticket lives.
+        """
         c = conn()
-        ticket = c.client.get_ticket(ticket_id, c.token, c.app_id, max_attempts=1)
-        return {"tickets": [c.ticket_summary(ticket)], "detail": ticket,
+        ticket, app_id, name = locate_ticket(c, ticket_id, app)
+        return {"tickets": [c.ticket_summary(ticket)], "detail": ticket, "application": {"AppID": app_id, "Name": name},
                 "description_text": display_text(ticket.get("Description"))}
 
     @tool(annotations=read, meta=widget_callable)
-    def ticket_feed(ticket_id: POSITIVE, limit: LIMIT = 25) -> dict[str, Any]:
-        """Read a bounded slice of ticket activity. Replies are not expanded; history may be incomplete."""
+    def ticket_feed(ticket_id: POSITIVE, limit: LIMIT = 25, app: TICKET_APP = None) -> dict[str, Any]:
+        """Read a bounded slice of ticket activity (any application the user can see). Replies are not expanded."""
         c = conn()
-        rows = c.client.get_ticket_feed(ticket_id, c.token, c.app_id)
-        return {"ticket_id": ticket_id,
+        _, app_id, name = locate_ticket(c, ticket_id, app)
+        rows = c.client.get_ticket_feed(ticket_id, c.token, app_id)
+        return {"ticket_id": ticket_id, "application": {"AppID": app_id, "Name": name},
                 "items": [{**row, "body_text": display_text(row.get("Body"))} for row in rows[:limit]],
                 "complete": False, "warning": "Activity is a bounded slice; replies are not expanded."}
 
@@ -514,7 +592,7 @@ def create_server(
                 continue
             seen.add(ticket_id)
             try:
-                summaries.append(c.ticket_summary(c.client.get_ticket(ticket_id, c.token, c.app_id, max_attempts=1)))
+                summaries.append(c.ticket_summary(locate_ticket(c, ticket_id, None)[0]))
             except Exception:
                 missing.append(ticket_id)
         result = {"tickets": summaries, "returned": len(summaries), "complete": True, "missing": missing}
