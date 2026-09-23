@@ -11,10 +11,11 @@ import requests
 
 from dynamix_manager.kb_text import ensure_html, sanitize_html
 
-from .models import (ARTICLE_STATUS_IDS, ArticleAction, ArticleCreateAction, ArticleEditAction, ArticleLinkAction,
-                     ArticleUnlinkAction, AssetAction, AssetCommentAction, AssignAction, CategoryAction, CategoryCreateAction,
-                     CategoryEditAction, ChangePreview, CommentAction, CreateAction, EditAction, EditAssetAction,
-                     LinkAssetAction, PreparedChange, PreviewField, StatusAction, TaskAction, WriteResult, parse_action)
+from .models import (ARTICLE_STATUS_IDS, CLASSIFICATION_NAMES, SLA_START_IDS, ArticleAction, ArticleCreateAction,
+                     ArticleEditAction, ArticleLinkAction, ArticleUnlinkAction, AssetAction, AssetCommentAction, AssignAction,
+                     CategoryAction, CategoryCreateAction, CategoryEditAction, ChangePreview, ChildTicketsAction, CommentAction,
+                     CreateAction, EditAction, EditAssetAction, LinkAssetAction, PreparedChange, PreviewField, StatusAction, TaskAction, TicketContactAction, TicketRelationAction, TicketSlaAction, TicketTagsAction,
+                     WriteResult, parse_action)
 
 
 def canonical_json(value):
@@ -568,7 +569,10 @@ class WriteAdapter:
 
     def _person_name(self, uid, label):
         value = str(uid)
-        user = self._get(f"/api/people/{value}")
+        try:
+            user = self._get(f"/api/people/{value}")
+        except ValueError:
+            raise ValueError(f"Selected {label} is not a verified active person.") from None
         if (not isinstance(user, dict) or str(user.get("UID", "")).lower() != value.lower()
                 or user.get("IsActive") is not True or not user.get("FullName")):
             raise ValueError(f"Selected {label} is not a verified active person.")
@@ -700,6 +704,118 @@ class WriteAdapter:
         return self._kb_prepared(action, {"ID": category["ID"], "ModifiedDate": category["ModifiedDate"]}, payload, fields,
                                  title=category["Name"])
 
+    def _relation_prepared(self, action, ticket, baseline, payload, fields, notices=()):
+        preview = ChangePreview(application=self.application_name, ticket_id=action.ticket_id, ticket_title=ticket["Title"],
+                                action=action.kind, fields=tuple(fields), notices=self._notices(action) + tuple(notices))
+        return PreparedChange(action=action, base_url=self.base_url, app_id=self.app_id, baseline_json=canonical_json(baseline),
+                              payload_json=canonical_json(payload), preview=preview)
+
+    def _validate_relation(self, action):
+        ticket = self.snapshot(action.ticket_id)
+        base = {"ID": ticket["ID"], "ModifiedDate": ticket["ModifiedDate"]}
+        if isinstance(action, TicketContactAction):
+            name = self._person_name(action.contact_uid, "contact")
+            current = self._get(f"/api/{self.app_id}/tickets/{action.ticket_id}/contacts")
+            linked = any(isinstance(row, dict) and str(row.get("UID", "")).lower() == str(action.contact_uid).lower()
+                         for row in (current if isinstance(current, list) else []))
+            field = PreviewField(name="Contact", before=name if action.remove else None, after=None if action.remove else name)
+            notices = (("The contact is already on the ticket; nothing will be sent.",) if linked and not action.remove
+                       else ("The contact is not on the ticket; nothing will be sent.",) if action.remove and not linked else ())
+            return self._relation_prepared(action, ticket, {**base, "linked": linked}, {}, [field], notices)
+        if isinstance(action, TicketTagsAction):
+            current = [str(t) for t in (ticket.get("Tags") or []) if isinstance(t, str)]
+            have = {t.casefold() for t in current}
+            if action.remove:
+                change = [t for t in action.tags if t.casefold() in have]
+                after = [t for t in current if t.casefold() not in {c.casefold() for c in change}]
+            else:
+                change = [t for t in action.tags if t.casefold() not in have]
+                after = current + change
+            field = PreviewField(name="Tags", before=", ".join(current) or None, after=", ".join(after) or None)
+            notices = () if change else ("The tags are already as requested; nothing will be sent.",)
+            return self._relation_prepared(action, ticket, {**base, "tags": current}, change, [field], notices)
+        if isinstance(action, ChildTicketsAction):
+            pending, attached, shown = [], [], []
+            for child_id in action.child_ticket_ids:
+                child = self.snapshot(child_id)
+                if child.get("ParentID") == action.ticket_id:
+                    attached.append(child_id)
+                else:
+                    pending.append(child_id)
+                    shown.append(f"{child_id} {child['Title']}")
+            notices = [f"Already children of this ticket, skipped: {', '.join(map(str, attached))}."] if attached else []
+            if not pending:
+                notices.append("Nothing will be sent.")
+            fields = [PreviewField(name="Children", before=None, after="; ".join(shown) or None)]
+            return self._relation_prepared(action, ticket, {**base, "attached": attached}, pending, fields, notices)
+        if isinstance(action, TicketSlaAction):
+            before = ticket.get("SlaName") or None
+            if action.sla_id is None:
+                payload = dict(Comments=action.comments, Notify=list(action.notify), ShouldCascade=action.cascade)
+                after = "(none)"
+            else:
+                slas = self._get(f"/api/{self.app_id}/tickets/slas")
+                match = [row for row in slas if isinstance(row, dict) and row.get("ID") == action.sla_id] if isinstance(slas, list) else []
+                if len(match) != 1 or match[0].get("IsActive") is not True or not match[0].get("Name"):
+                    raise ValueError("Selected SLA could not be verified as active.")
+                after = match[0]["Name"]
+                payload = dict(NewSlaID=action.sla_id, Comments=action.comments, Notify=list(action.notify),
+                               ShouldCascade=action.cascade, StartBasis=SLA_START_IDS[action.start_basis])
+            fields = [PreviewField(name="SLA", before=before, after=after)]
+            notices = ("The SLA change cascades to child tickets.",) if action.cascade else ()
+            return self._relation_prepared(action, ticket, {**base, "SlaID": ticket.get("SlaID")}, payload, fields, notices)
+        current_id = ticket.get("Classification")
+        before = ticket.get("ClassificationName") or CLASSIFICATION_NAMES.get(current_id)
+        after = CLASSIFICATION_NAMES[action.classification_id]
+        notices = () if current_id != action.classification_id else ("The ticket already has that classification; nothing will be sent.",)
+        return self._relation_prepared(action, ticket, {**base, "Classification": current_id}, {},
+                                       [PreviewField(name="Classification", before=before, after=after)], notices)
+
+    def _apply_relation(self, prepared):
+        action, ticket_id = prepared.action, prepared.action.ticket_id
+        baseline, payload = json.loads(prepared.baseline_json), json.loads(prepared.payload_json)
+        root = f"/api/{self.app_id}/tickets/{ticket_id}"
+        if isinstance(action, TicketContactAction):
+            if baseline.get("linked") and not action.remove:
+                return WriteResult(outcome="applied", message="The contact was already on the ticket.")
+            if action.remove and not baseline.get("linked"):
+                return WriteResult(outcome="applied", message="The contact was not on the ticket.")
+            method, path, body, confirm = ("DELETE" if action.remove else "POST"), f"{root}/contacts/{action.contact_uid}", None, False
+        elif isinstance(action, TicketTagsAction):
+            if not payload:
+                return WriteResult(outcome="applied", message="The tags were already as requested.")
+            method, path, body, confirm = ("DELETE" if action.remove else "POST"), f"{root}/tags", payload, False
+        elif isinstance(action, ChildTicketsAction):
+            if not payload:
+                return WriteResult(outcome="applied", message="The tickets were already children of this ticket.")
+            method, path, body, confirm = "POST", f"{root}/children", payload, False
+        elif isinstance(action, TicketSlaAction):
+            method, body, confirm = "PUT", payload, True
+            path = f"{root}/sla/delete" if action.sla_id is None else f"{root}/sla"
+        else:
+            if baseline.get("Classification") == action.classification_id:
+                return WriteResult(outcome="applied", message="The ticket already has that classification.")
+            method, path, body, confirm = "PUT", f"{root}/classification?newClassificationId={action.classification_id}", None, True
+        try:
+            response = self.request(method, self.base_url + path, headers=self._headers, json=body,
+                                    timeout=(5, 30), allow_redirects=False)
+        except Exception:
+            return WriteResult(outcome="unknown", message="The upstream outcome is unknown; do not retry.")
+        status = response.status_code
+        if status == 200:
+            if confirm:
+                try:
+                    ticket = response.json()
+                    if not isinstance(ticket, dict) or ticket.get("ID") != ticket_id or ticket.get("AppID") != self.app_id:
+                        raise ValueError("Unrecognized ticket response.")
+                except Exception:
+                    return WriteResult(outcome="unknown", status_code=status,
+                                       message="The response did not confirm the target ticket; do not retry.")
+            return WriteResult(outcome="applied", message="TeamDynamix accepted the change.", status_code=status)
+        outcome = "rejected" if 400 <= status < 500 and status != 408 else "unknown"
+        return WriteResult(outcome=outcome, status_code=status,
+                           message="TeamDynamix rejected the change." if outcome == "rejected" else "The upstream outcome is unknown; do not retry.")
+
     def validate(self, action):
         action = parse_action(action)
         if isinstance(action, CreateAction):
@@ -710,6 +826,8 @@ class WriteAdapter:
             return self._validate_article(action)
         if isinstance(action, (CategoryAction, CategoryCreateAction)):
             return self._validate_category(action)
+        if isinstance(action, TicketRelationAction):
+            return self._validate_relation(action)
         ticket, metadata = self.snapshot(action.ticket_id), self.metadata(action)
         if ticket.get("IsConvertedToTask") is True and isinstance(action, (AssignAction, StatusAction)):
             raise ValueError("Assignment and status changes on converted project tasks are unsupported.")
@@ -751,6 +869,10 @@ class WriteAdapter:
                              "Only the listed email recipients are requested through Notify.")
         if isinstance(action, AssetAction):
             return common + ("Asset changes are applied to the asset record only; linked tickets and CMDB relationships are not modified.",)
+        if isinstance(action, TicketSlaAction):
+            return common + ("SLA deadlines are recalculated by TeamDynamix from the chosen start basis.",)
+        if isinstance(action, TicketRelationAction):
+            return common
         if isinstance(action, (ArticleAction, ArticleCreateAction, CategoryAction, CategoryCreateAction)):
             return common + ("Knowledge base changes are visible to everyone the portal shows the article or category to; there is no private mode.",
                              "The API cannot publish or unpublish an article (IsPublished and IsPublic are ignored); publish in the portal.")
@@ -926,6 +1048,8 @@ class WriteAdapter:
             return self._apply_asset(prepared)
         if isinstance(action, (ArticleAction, ArticleCreateAction, CategoryAction, CategoryCreateAction)):
             return self._apply_kb(prepared)
+        if isinstance(action, TicketRelationAction):
+            return self._apply_relation(prepared)
         path = f"/api/{self.app_id}/tickets/{action.ticket_id}"
         feed = isinstance(action, (CommentAction, TaskAction))
         if isinstance(action, TaskAction):

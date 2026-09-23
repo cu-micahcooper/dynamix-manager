@@ -875,3 +875,109 @@ def test_category_create_and_edit_apply():
     assert result.outcome == "applied" and result.detail["name"] == "Office devices"
     assert calls[-1][0] == ("PUT", f"https://tenant.example/TDWebApi/api/{PORTAL_APP}/knowledgebase/categories/9208")
     assert calls[-1][1]["json"]["ID"] == 9208
+
+
+CONTACT_UID = "22222222-2222-4222-8222-222222222222"
+RELATION_ROUTES = {
+    "/api/42/tickets/1001/contacts": [dict(UID=UID, FullName="Person", PrimaryEmail="person@example.invalid")],
+    f"/api/people/{CONTACT_UID}": dict(UID=CONTACT_UID, IsActive=True, FullName="New Contact", PrimaryEmail="new@example.invalid"),
+    "/api/42/tickets/1002": dict(TICKET, ID=1002, Title="Child A", ParentID=0),
+    "/api/42/tickets/1003": dict(TICKET, ID=1003, Title="Child B", ParentID=1001),
+    "/api/42/tickets/slas": [dict(ID=1095, Name="7 day SLA M-F", IsActive=True), dict(ID=983, Name="3 Day SLA M-F", IsActive=False)],
+}
+
+
+def relation_adapter(**overrides):
+    adapter, calls, records = setup_adapter(**{**RELATION_ROUTES, **overrides})
+    records["/api/42/tickets/1001"] = dict(TICKET, Tags=["vip"], SlaID=1095, SlaName="7 day SLA M-F", Classification=46,
+                                           ClassificationName="Service Request", ParentID=0)
+    return adapter, calls, records
+
+
+def test_contact_add_and_remove_preflight_the_current_contacts():
+    adapter, calls, _ = relation_adapter()
+    add = adapter.validate(parse_action(dict(kind="ticket_contact", ticket_id=1001, contact_uid=CONTACT_UID)))
+    assert {f.name: f.after for f in add.preview.fields} == {"Contact": "New Contact"} and json.loads(add.baseline_json)["linked"] is False
+    adapter.request = lambda *a, **k: (calls.append((a, k)) or SimpleNamespace(status_code=200, json=lambda: {"Message": "ok"}))
+    assert adapter.apply_once(add).outcome == "applied"
+    assert calls[-1][0] == ("POST", f"https://tenant.example/TDWebApi/api/42/tickets/1001/contacts/{CONTACT_UID}")
+    existing = adapter.validate(parse_action(dict(kind="ticket_contact", ticket_id=1001, contact_uid=UID)))
+    sent = []
+    adapter.request = lambda *a, **k: (sent.append(a) or SimpleNamespace(status_code=500))
+    assert adapter.apply_once(existing).message == "The contact was already on the ticket." and sent == []
+    remove = adapter.validate(parse_action(dict(kind="ticket_contact", ticket_id=1001, contact_uid=UID, remove=True)))
+    adapter.request = lambda *a, **k: (calls.append((a, k)) or SimpleNamespace(status_code=200, json=lambda: {"Message": "ok"}))
+    assert adapter.apply_once(remove).outcome == "applied"
+    assert calls[-1][0] == ("DELETE", f"https://tenant.example/TDWebApi/api/42/tickets/1001/contacts/{UID}")
+    with pytest.raises(ValueError, match="person"):
+        adapter.validate(parse_action(dict(kind="ticket_contact", ticket_id=1001, contact_uid="33333333-3333-4333-8333-333333333333")))
+
+
+def test_tags_add_and_remove_send_only_the_difference():
+    adapter, calls, _ = relation_adapter()
+    add = adapter.validate(parse_action(dict(kind="ticket_tags", ticket_id=1001, tags=["vip", "follow-up"])))
+    assert json.loads(add.payload_json) == ["follow-up"]  # vip is already present
+    assert {f.name: (f.before, f.after) for f in add.preview.fields} == {"Tags": ("vip", "vip, follow-up")}
+    adapter.request = lambda *a, **k: (calls.append((a, k)) or SimpleNamespace(status_code=200, json=lambda: {"Message": "ok"}))
+    assert adapter.apply_once(add).outcome == "applied"
+    assert calls[-1][0] == ("POST", "https://tenant.example/TDWebApi/api/42/tickets/1001/tags") and calls[-1][1]["json"] == ["follow-up"]
+    noop = adapter.validate(parse_action(dict(kind="ticket_tags", ticket_id=1001, tags=["VIP"])))
+    sent = []
+    adapter.request = lambda *a, **k: (sent.append(a) or SimpleNamespace(status_code=500))
+    assert adapter.apply_once(noop).message == "The tags were already as requested." and sent == []
+    remove = adapter.validate(parse_action(dict(kind="ticket_tags", ticket_id=1001, tags=["vip", "absent"], remove=True)))
+    assert json.loads(remove.payload_json) == ["vip"]
+    adapter.request = lambda *a, **k: (calls.append((a, k)) or SimpleNamespace(status_code=200, json=lambda: {"Message": "ok"}))
+    assert adapter.apply_once(remove).outcome == "applied" and calls[-1][0][0] == "DELETE"
+
+
+def test_child_tickets_verify_each_child_and_skip_those_already_attached():
+    adapter, calls, _ = relation_adapter()
+    prepared = adapter.validate(parse_action(dict(kind="ticket_children", ticket_id=1001, child_ticket_ids=[1002, 1003])))
+    assert json.loads(prepared.payload_json) == [1002]
+    fields = {f.name: f.after for f in prepared.preview.fields}
+    assert fields["Children"] == "1002 Child A" and any("1003" in n for n in prepared.preview.notices)
+    adapter.request = lambda *a, **k: (calls.append((a, k)) or SimpleNamespace(status_code=200, json=lambda: None))
+    assert adapter.apply_once(prepared).outcome == "applied"
+    assert calls[-1][0] == ("POST", "https://tenant.example/TDWebApi/api/42/tickets/1001/children") and calls[-1][1]["json"] == [1002]
+    with pytest.raises(ValueError):
+        adapter.validate(parse_action(dict(kind="ticket_children", ticket_id=1001, child_ticket_ids=[1999])))
+    only_attached = adapter.validate(parse_action(dict(kind="ticket_children", ticket_id=1001, child_ticket_ids=[1003])))
+    sent = []
+    adapter.request = lambda *a, **k: (sent.append(a) or SimpleNamespace(status_code=500))
+    assert adapter.apply_once(only_attached).message == "The tickets were already children of this ticket." and sent == []
+
+
+def test_sla_assignment_and_removal_verify_the_sla_and_confirm_the_ticket():
+    adapter, calls, _ = relation_adapter()
+    with pytest.raises(ValueError, match="SLA"):
+        adapter.validate(parse_action(dict(kind="ticket_sla", ticket_id=1001, sla_id=983)))  # inactive
+    prepared = adapter.validate(parse_action(dict(kind="ticket_sla", ticket_id=1001, sla_id=1095, comments="Standard", cascade=True,
+                                                  start_basis="created")))
+    assert json.loads(prepared.payload_json) == dict(NewSlaID=1095, Comments="Standard", Notify=[], ShouldCascade=True, StartBasis=1)
+    assert {f.name: (f.before, f.after) for f in prepared.preview.fields}["SLA"] == ("7 day SLA M-F", "7 day SLA M-F")
+    adapter.request = lambda *a, **k: (calls.append((a, k)) or SimpleNamespace(status_code=200, json=lambda: dict(TICKET, SlaName="7 day SLA M-F")))
+    result = adapter.apply_once(prepared)
+    assert result.outcome == "applied" and calls[-1][0] == ("PUT", "https://tenant.example/TDWebApi/api/42/tickets/1001/sla")
+    removal = adapter.validate(parse_action(dict(kind="ticket_sla", ticket_id=1001, sla_id=None, comments="Not needed")))
+    assert json.loads(removal.payload_json) == dict(Comments="Not needed", Notify=[], ShouldCascade=False)
+    assert {f.name: f.after for f in removal.preview.fields}["SLA"] == "(none)"
+    adapter.request = lambda *a, **k: (calls.append((a, k)) or SimpleNamespace(status_code=200, json=lambda: dict(TICKET, SlaID=0)))
+    assert adapter.apply_once(removal).outcome == "applied" and calls[-1][0][1].endswith("/tickets/1001/sla/delete")
+    adapter.request = lambda *a, **k: SimpleNamespace(status_code=200, json=lambda: dict(TICKET, ID=1))
+    assert adapter.apply_once(removal).outcome == "unknown"
+
+
+def test_reclassify_puts_the_new_classification_and_confirms_the_ticket():
+    adapter, calls, _ = relation_adapter()
+    prepared = adapter.validate(parse_action(dict(kind="reclassify", ticket_id=1001, classification="incident")))
+    assert {f.name: (f.before, f.after) for f in prepared.preview.fields}["Classification"] == ("Service Request", "Incident")
+    adapter.request = lambda *a, **k: (calls.append((a, k)) or SimpleNamespace(status_code=200, json=lambda: dict(TICKET, Classification=32)))
+    assert adapter.apply_once(prepared).outcome == "applied"
+    method, url, kwargs = calls[-1][0][0], calls[-1][0][1], calls[-1][1]
+    assert method == "PUT" and url == "https://tenant.example/TDWebApi/api/42/tickets/1001/classification?newClassificationId=32"
+    assert kwargs["json"] is None
+    same = adapter.validate(parse_action(dict(kind="reclassify", ticket_id=1001, classification="service_request")))
+    sent = []
+    adapter.request = lambda *a, **k: (sent.append(a) or SimpleNamespace(status_code=500))
+    assert adapter.apply_once(same).message == "The ticket already has that classification." and sent == []

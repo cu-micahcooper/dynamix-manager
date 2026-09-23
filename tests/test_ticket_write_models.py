@@ -159,3 +159,31 @@ def test_article_actions_are_typed_bounded_and_carry_an_item_identity():
                 dict(kind="category_create", name="  ")):
         with pytest.raises(ValidationError):
             parse(bad)
+
+
+def test_ticket_relation_actions_are_typed_and_lock_the_ticket():
+    from dynamix_manager.ticket_writes.models import (ChildTicketsAction, ReclassifyAction, TicketContactAction, TicketSlaAction,
+                                                       TicketTagsAction)
+    contact = parse(dict(kind="ticket_contact", ticket_id=1001, contact_uid=ASSET_UID))
+    assert isinstance(contact, TicketContactAction) and contact.remove is False and contact.item == ("ticket", 1001)
+    assert parse(dict(kind="ticket_contact", ticket_id=1001, contact_uid=ASSET_UID, remove=True)).remove is True
+    tags = parse(dict(kind="ticket_tags", ticket_id=1001, tags=["vip", "Follow-Up"]))
+    assert isinstance(tags, TicketTagsAction) and tags.tags == ("vip", "Follow-Up") and tags.remove is False
+    children = parse(dict(kind="ticket_children", ticket_id=1001, child_ticket_ids=[1002, 1003]))
+    assert isinstance(children, ChildTicketsAction) and children.child_ticket_ids == (1002, 1003)
+    sla = parse(dict(kind="ticket_sla", ticket_id=1001, sla_id=1095, comments="Standard"))
+    assert isinstance(sla, TicketSlaAction) and sla.start_basis == "now" and sla.cascade is False and sla.notify == ()
+    assert parse(dict(kind="ticket_sla", ticket_id=1001, sla_id=None)).sla_id is None  # removal
+    reclass = parse(dict(kind="reclassify", ticket_id=1001, classification="incident"))
+    assert isinstance(reclass, ReclassifyAction) and reclass.classification_id == 32
+    assert parse(dict(kind="reclassify", ticket_id=1001, classification="major_incident")).classification_id == 77
+    for bad in (dict(kind="ticket_contact", ticket_id=1001), dict(kind="ticket_contact", ticket_id=1001, contact_uid="nope"),
+                dict(kind="ticket_tags", ticket_id=1001, tags=[]), dict(kind="ticket_tags", ticket_id=1001, tags=[" "]),
+                dict(kind="ticket_tags", ticket_id=1001, tags=["a" * 101]),
+                dict(kind="ticket_children", ticket_id=1001, child_ticket_ids=[]),
+                dict(kind="ticket_children", ticket_id=1001, child_ticket_ids=[1001]),
+                dict(kind="ticket_children", ticket_id=1001, child_ticket_ids=[1002, 1002]),
+                dict(kind="ticket_sla", ticket_id=1001), dict(kind="ticket_sla", ticket_id=1001, sla_id=1, start_basis="later"),
+                dict(kind="reclassify", ticket_id=1001, classification="ticket"), dict(kind="reclassify", ticket_id=1001, classification_id=32)):
+        with pytest.raises(ValidationError):
+            parse(bad)

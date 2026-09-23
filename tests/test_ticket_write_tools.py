@@ -87,7 +87,9 @@ def run(server, name, arguments):
     if name in {"add_ticket_comment", "update_ticket_status", "assign_ticket", "edit_ticket",
                 "complete_ticket_task", "create_ticket", "add_asset_comment", "link_asset_to_ticket",
                 "edit_asset", "create_article", "edit_article", "link_article", "unlink_article",
-                "create_article_category", "edit_article_category"} and isinstance(arguments, dict):
+                "create_article_category", "edit_article_category", "add_ticket_contact", "remove_ticket_contact",
+                "tag_ticket", "untag_ticket", "add_child_tickets", "set_ticket_sla", "remove_ticket_sla",
+                "reclassify_ticket"} and isinstance(arguments, dict):
         arguments = {"request_id": "request-1", **arguments}
     return asyncio.run(server.call_tool(name, arguments))
 
@@ -124,6 +126,8 @@ def test_registers_only_four_direct_tools_and_two_bounded_read_tools(tools_serve
         "assign_ticket", "edit_ticket", "complete_ticket_task", "create_ticket",
         "add_asset_comment", "link_asset_to_ticket", "edit_asset",
         "create_article", "edit_article", "link_article", "unlink_article", "create_article_category", "edit_article_category",
+        "add_ticket_contact", "remove_ticket_contact", "tag_ticket", "untag_ticket", "add_child_tickets", "set_ticket_sla",
+        "remove_ticket_sla", "reclassify_ticket",
         "ticket_write_metadata", "ticket_write_result", "list_ticket_tasks", "ticket_create_metadata",
         "resolve_ticket_write",
     }
@@ -359,7 +363,7 @@ def test_real_http_tools_list_mirrors_hosted_security_schemes_at_top_level():
             "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {},
         }, headers={"Accept": "application/json, text/event-stream"})
     tools = response.json()["result"]["tools"]
-    assert len(tools) == 50
+    assert len(tools) == 58
     for tool in tools:
         assert tool["securitySchemes"] == tool["_meta"]["securitySchemes"]
 
@@ -690,3 +694,26 @@ def test_create_article_category_submits_a_typed_action(tools_server):
     result = structured(run(server, "create_article_category", {"category": {"name": "Scratch", "parent_id": 10548}}))
     assert result["outcome"] == "applied" and service.actions[-1].kind == "category_create"
     assert service.actions[-1].parent_id == 10548 and service.actions[-1].is_public is False
+
+
+@pytest.mark.parametrize(("name", "arguments", "kind", "check"), [
+    ("add_ticket_contact", {"action": {"kind": "ticket_contact", "ticket_id": 1001, "contact_uid": ALAN["uid"]}}, "ticket_contact", lambda a: a.remove is False),
+    ("remove_ticket_contact", {"action": {"kind": "ticket_contact", "ticket_id": 1001, "contact_uid": ALAN["uid"], "remove": True}}, "ticket_contact", lambda a: a.remove is True),
+    ("tag_ticket", {"action": {"kind": "ticket_tags", "ticket_id": 1001, "tags": ["vip"]}}, "ticket_tags", lambda a: a.remove is False),
+    ("untag_ticket", {"action": {"kind": "ticket_tags", "ticket_id": 1001, "tags": ["vip"], "remove": True}}, "ticket_tags", lambda a: a.remove is True),
+    ("add_child_tickets", {"action": {"kind": "ticket_children", "ticket_id": 1001, "child_ticket_ids": [1002]}}, "ticket_children", lambda a: a.child_ticket_ids == (1002,)),
+    ("set_ticket_sla", {"action": {"kind": "ticket_sla", "ticket_id": 1001, "sla_id": 1095}}, "ticket_sla", lambda a: a.sla_id == 1095),
+    ("remove_ticket_sla", {"action": {"kind": "ticket_sla", "ticket_id": 1001, "sla_id": None}}, "ticket_sla", lambda a: a.sla_id is None),
+    ("reclassify_ticket", {"action": {"kind": "reclassify", "ticket_id": 1001, "classification": "incident"}}, "reclassify", lambda a: a.classification_id == 32),
+])
+def test_ticket_relation_tools_submit_typed_actions(name, arguments, kind, check, tools_server):
+    server, service = tools_server
+    result = structured(run(server, name, arguments))
+    assert result["outcome"] == "applied" and service.actions[-1].kind == kind and check(service.actions[-1])
+
+
+def test_contact_tools_refuse_the_wrong_direction(tools_server):
+    server, _ = tools_server
+    assert run(server, "add_ticket_contact", {"action": {"kind": "ticket_contact", "ticket_id": 1001, "contact_uid": ALAN["uid"], "remove": True}}).isError
+    assert run(server, "remove_ticket_sla", {"action": {"kind": "ticket_sla", "ticket_id": 1001, "sla_id": 5}}).isError
+    assert run(server, "untag_ticket", {"action": {"kind": "ticket_tags", "ticket_id": 1001, "tags": ["x"]}}).isError

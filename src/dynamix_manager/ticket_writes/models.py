@@ -219,6 +219,72 @@ class EditAssetAction(_AssetOnly):
         return self
 
 
+class TicketRelationAction(TicketAction):
+    """Marker base for ticket writes that add or remove relations or settings on an existing ticket."""
+
+
+class TicketContactAction(TicketRelationAction):
+    kind: Literal["ticket_contact"]
+    contact_uid: UUID
+    remove: Annotated[bool, Field(strict=True)] = False
+
+
+Tag = Annotated[str, Field(strict=True, min_length=1, max_length=100)]
+
+
+class TicketTagsAction(TicketRelationAction):
+    kind: Literal["ticket_tags"]
+    tags: Annotated[tuple[Tag, ...], Field(min_length=1, max_length=50)]
+    remove: Annotated[bool, Field(strict=True)] = False
+
+    @field_validator("tags")
+    @classmethod
+    def nonblank_tags(cls, value):
+        if any(not tag.strip() for tag in value):
+            raise ValueError("Tags must contain text.")
+        return value
+
+
+class ChildTicketsAction(TicketRelationAction):
+    kind: Literal["ticket_children"]
+    child_ticket_ids: Annotated[tuple[PositiveID, ...], Field(min_length=1, max_length=50)]
+
+    @model_validator(mode="after")
+    def distinct_children(self):
+        if len(set(self.child_ticket_ids)) != len(self.child_ticket_ids) or self.ticket_id in self.child_ticket_ids:
+            raise ValueError("Child ticket IDs must be distinct and different from the parent.")
+        return self
+
+
+SLA_START = Literal["now", "created"]
+SLA_START_IDS = {"now": 0, "created": 1}
+
+
+class TicketSlaAction(TicketRelationAction):
+    """Assign an SLA (sla_id) or remove the current one (sla_id null)."""
+
+    kind: Literal["ticket_sla"]
+    sla_id: PositiveID | None
+    comments: Annotated[str, Field(strict=True, max_length=20000)] = ""
+    notify: Annotated[tuple[Email, ...], Field(max_length=50)] = ()
+    cascade: Annotated[bool, Field(strict=True)] = False
+    start_basis: SLA_START = "now"
+
+
+CLASSIFICATION = Literal["incident", "problem", "change", "release", "service_request", "major_incident"]
+CLASSIFICATION_IDS = {"incident": 32, "problem": 33, "change": 34, "release": 35, "service_request": 46, "major_incident": 77}
+CLASSIFICATION_NAMES = {32: "Incident", 33: "Problem", 34: "Change", 35: "Release", 46: "Service Request", 77: "Major Incident"}
+
+
+class ReclassifyAction(TicketRelationAction):
+    kind: Literal["reclassify"]
+    classification: CLASSIFICATION
+
+    @property
+    def classification_id(self):
+        return CLASSIFICATION_IDS[self.classification]
+
+
 ARTICLE_STATUS = Literal["not_submitted", "submitted", "approved", "rejected", "archived"]
 ARTICLE_STATUS_IDS = {"not_submitted": 1, "submitted": 2, "approved": 3, "rejected": 4, "archived": 5}
 ArticleTitle = Annotated[str, Field(strict=True, min_length=1, max_length=300)]
@@ -374,7 +440,8 @@ class CategoryCreateAction(_NoTicket, _CategoryFields):
 Action = Annotated[CommentAction | StatusAction | AssignAction | EditAction | TaskAction | CreateAction
                    | AssetCommentAction | LinkAssetAction | EditAssetAction
                    | ArticleCreateAction | ArticleEditAction | ArticleLinkAction | ArticleUnlinkAction
-                   | CategoryCreateAction | CategoryEditAction,
+                   | CategoryCreateAction | CategoryEditAction
+                   | TicketContactAction | TicketTagsAction | ChildTicketsAction | TicketSlaAction | ReclassifyAction,
                    Field(discriminator="kind")]
 _actions = TypeAdapter(Action)
 

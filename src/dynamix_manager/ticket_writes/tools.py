@@ -13,8 +13,9 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 
 from .adapter import WriteAdapter
 from .models import (ARTICLE_STATUS, ArticleEditAction, ArticleLinkAction, ArticleUnlinkAction, AssetCommentAction,
-                     AssignAction, CategoryEditAction, CommentAction, EditAction, EditAssetAction, LinkAssetAction,
-                     StatusAction, TaskAction, parse_action)
+                     AssignAction, CategoryEditAction, ChildTicketsAction, CommentAction, EditAction, EditAssetAction,
+                     LinkAssetAction, ReclassifyAction, StatusAction, TaskAction, TicketContactAction, TicketSlaAction,
+                     TicketTagsAction, parse_action)
 from .service import WriteAuthorizationRequired, WritesDisabled
 from .store import EquivalentWriteBlocked, WriteBindingError, WriteStateError
 
@@ -487,6 +488,58 @@ def register_ticket_write_tools(server, tool, service, connection_provider):
         return _submit(service, action, request_id)
 
     @tool(annotations=prepare, meta=write_meta, structured_output=True)
+    def add_ticket_contact(action: TicketContactAction, request_id: REQUEST_ID) -> ResultOutput:
+        """Add a person (UID, resolve names via search_tickets/ticket_write_metadata first) as a ticket contact, on explicit request."""
+        if action.remove:
+            return _error("Use remove_ticket_contact to remove a contact.")
+        return _submit(service, action, request_id)
+
+    @tool(annotations=prepare, meta=write_meta, structured_output=True)
+    def remove_ticket_contact(action: TicketContactAction, request_id: REQUEST_ID) -> ResultOutput:
+        """Remove a contact (UID) from a ticket, on explicit request; set remove=true in the action."""
+        if not action.remove:
+            return _error("Set remove=true to remove a contact, or use add_ticket_contact.")
+        return _submit(service, action, request_id)
+
+    @tool(annotations=prepare, meta=write_meta, structured_output=True)
+    def tag_ticket(action: TicketTagsAction, request_id: REQUEST_ID) -> ResultOutput:
+        """Add tags to a ticket, on explicit request; tags already present are skipped."""
+        if action.remove:
+            return _error("Use untag_ticket to remove tags.")
+        return _submit(service, action, request_id)
+
+    @tool(annotations=prepare, meta=write_meta, structured_output=True)
+    def untag_ticket(action: TicketTagsAction, request_id: REQUEST_ID) -> ResultOutput:
+        """Remove tags from a ticket, on explicit request; set remove=true in the action."""
+        if not action.remove:
+            return _error("Set remove=true to remove tags, or use tag_ticket.")
+        return _submit(service, action, request_id)
+
+    @tool(annotations=prepare, meta=write_meta, structured_output=True)
+    def add_child_tickets(action: ChildTicketsAction, request_id: REQUEST_ID) -> ResultOutput:
+        """Make other tickets children of a parent ticket, on explicit request; the API has no unlink, so confirm first."""
+        return _submit(service, action, request_id)
+
+    @tool(annotations=prepare, meta=write_meta, structured_output=True)
+    def set_ticket_sla(action: TicketSlaAction, request_id: REQUEST_ID) -> ResultOutput:
+        """Assign or change a ticket's SLA (see ticket_slas for IDs), on explicit request; start_basis "now" or "created"."""
+        if action.sla_id is None:
+            return _error("Give sla_id, or use remove_ticket_sla to remove the SLA.")
+        return _submit(service, action, request_id)
+
+    @tool(annotations=prepare, meta=write_meta, structured_output=True)
+    def remove_ticket_sla(action: TicketSlaAction, request_id: REQUEST_ID) -> ResultOutput:
+        """Remove a ticket's current SLA (sla_id null), on explicit request."""
+        if action.sla_id is not None:
+            return _error("Set sla_id to null to remove the SLA, or use set_ticket_sla.")
+        return _submit(service, action, request_id)
+
+    @tool(annotations=prepare, meta=write_meta, structured_output=True)
+    def reclassify_ticket(action: ReclassifyAction, request_id: REQUEST_ID) -> ResultOutput:
+        """Change a ticket's classification (incident, problem, change, release, service_request, major_incident), on explicit request."""
+        return _submit(service, action, request_id)
+
+    @tool(annotations=prepare, meta=write_meta, structured_output=True)
     def create_ticket(ticket: CreateTicketRequest, request_id: REQUEST_ID) -> CreateResultOutput:
         """Create a ticket only on an explicit user request; no review page.
 
@@ -588,6 +641,14 @@ def register_ticket_write_tools(server, tool, service, connection_provider):
         "unlink_article",
         "create_article_category",
         "edit_article_category",
+        "add_ticket_contact",
+        "remove_ticket_contact",
+        "tag_ticket",
+        "untag_ticket",
+        "add_child_tickets",
+        "set_ticket_sla",
+        "remove_ticket_sla",
+        "reclassify_ticket",
         "list_ticket_tasks",
         "ticket_create_metadata",
         "ticket_write_metadata",

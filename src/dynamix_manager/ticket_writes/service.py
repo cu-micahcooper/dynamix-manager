@@ -18,6 +18,7 @@ from dynamix_manager.plugin import Connection
 from .adapter import WriteAdapter, canonical_json
 from .models import (
     ArticleAction,
+    TicketRelationAction,
     ArticleCreateAction,
     AssetAction,
     AssignAction,
@@ -69,7 +70,7 @@ class TicketWriteStatus:
 
 
 _ACTION_TYPES = (CommentAction, StatusAction, AssignAction, EditAction, TaskAction, CreateAction, AssetAction,
-                 ArticleAction, ArticleCreateAction, CategoryAction, CategoryCreateAction)
+                 ArticleAction, ArticleCreateAction, CategoryAction, CategoryCreateAction, TicketRelationAction)
 _UNKNOWN_MESSAGE = "The upstream outcome is unknown; do not retry."
 _PENDING_MESSAGE = ("The change was recorded but not yet sent to TeamDynamix; "
                     "resubmit it with the same request ID and arguments.")
