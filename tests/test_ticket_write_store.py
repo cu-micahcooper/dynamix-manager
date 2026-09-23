@@ -565,3 +565,24 @@ def test_asset_and_ticket_operations_lock_independently_by_item(store_setup):
     _, other_asset = submit(store, asset_change(asset_id=5), "a-3")
     assert other_asset.claimed
     assert asset_claim.record.prepared.asset_app_id == 928
+
+
+def prepared_for(action, *, payload=None, baseline="v1"):
+    parsed = parse_action(action)
+    return PreparedChange(action=parsed, base_url="https://tenant.example/TDWebApi", app_id=42, asset_app_id=928, portal_app_id=2045,
+                          baseline_json=json.dumps({"ModifiedDate": baseline}),
+                          payload_json=json.dumps(payload or {"k": action["kind"]}, sort_keys=True, separators=(",", ":")),
+                          preview=ChangePreview(application="Knowledge Base", ticket_id=0, ticket_title="t", action=action["kind"], fields=()))
+
+
+def test_article_and_category_items_lock_independently(store_setup):
+    store, _, _, _ = store_setup
+    article = prepared_for(dict(kind="article_edit", article_id=95821, subject="A"))
+    other_article = prepared_for(dict(kind="article_edit", article_id=84764, subject="B"))
+    category = prepared_for(dict(kind="category_edit", category_id=95821, name="C"))
+    first, fence = submit(store, article, "one")
+    assert fence.claimed
+    assert submit(store, other_article, "two")[1].claimed
+    assert submit(store, category, "three")[1].claimed  # same numeric ID, different domain
+    blocked = store.prepare_direct(binding(), prepared_for(dict(kind="article_edit", article_id=95821, tags=["x"]), payload={"k": "other"}), "four")
+    assert not store.claim_direct(blocked.operation_id, binding()).claimed

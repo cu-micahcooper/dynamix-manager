@@ -700,3 +700,36 @@ def test_asset_edit_conflicts_when_the_asset_changes_and_link_reports_the_ticket
     link = setup.service.submit("principal", parse_action(dict(kind="asset_link", asset_id=1973209, ticket_id=1001)), "link-1")
     assert link.outcome == "applied" and link.ticket_id == 1001 and link.item["id"] == 1973209
     assert link.ticket_url.endswith("TicketID=1001")
+
+
+PORTAL_APP = 2045
+
+
+def with_kb(setup):
+    from dynamix_manager.ticket_writes.adapter import WriteAdapter
+    setup.upstream.records[f"/api/{PORTAL_APP}/knowledgebase/95821"] = dict(
+        ID=95821, AppID=PORTAL_APP, Subject="Mac password", ModifiedDate="v1", RevisionNumber=4, Status=3,
+        StatusName="Approved", IsPublished=True, IsPublic=False)
+    setup.upstream.records[f"/api/{PORTAL_APP}/knowledgebase/categories"] = [
+        dict(ID=10548, AppID=PORTAL_APP, Name="Tech FAQ", ParentID=0, Subcategories=[])]
+
+    def adapter_factory(connection):
+        return WriteAdapter(connection.base_url, connection.app_id, connection.token, header_app_id=connection.header_app_id,
+                            read=setup.upstream.read, request=setup.upstream.request, asset_app_id=ASSET_APP, portal_app_id=PORTAL_APP)
+    setup.service.adapter_factory = adapter_factory
+    return setup
+
+
+def test_article_actions_submit_and_report_the_portal_item(setup):
+    setup = with_kb(setup)
+    setup.upstream.apply_result = SimpleNamespace(status_code=200, json=lambda: dict(
+        ID=95821, AppID=PORTAL_APP, StatusName="Approved", IsPublished=True, IsPublic=False, RevisionNumber=5))
+    result = setup.service.submit("principal", parse_action(dict(kind="article_edit", article_id=95821, subject="Renamed")), "kb-1")
+    assert result.outcome == "applied" and result.ticket_id == 0
+    assert result.item == {"type": "article", "id": 95821, "url": "https://tenant.example/TDClient/2045/Portal/KB/ArticleDet?ID=95821"}
+    assert result.detail["revision"] == 5
+    assert setup.service.result("principal", result.operation_id).item == result.item
+    setup.upstream.apply_result = SimpleNamespace(status_code=201, json=lambda: dict(ID=30001, AppID=PORTAL_APP, Name="Scratch", ParentID=10548))
+    created = setup.service.submit("principal", parse_action(dict(kind="category_create", name="Scratch", parent_id=10548)), "kb-2")
+    assert created.outcome == "applied"
+    assert created.item == {"type": "category", "id": 30001, "url": "https://tenant.example/TDClient/2045/Portal/KB/?CategoryID=30001"}

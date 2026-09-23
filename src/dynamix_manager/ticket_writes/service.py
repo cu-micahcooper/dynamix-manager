@@ -17,8 +17,12 @@ from dynamix_manager.plugin import Connection
 
 from .adapter import WriteAdapter, canonical_json
 from .models import (
+    ArticleAction,
+    ArticleCreateAction,
     AssetAction,
     AssignAction,
+    CategoryAction,
+    CategoryCreateAction,
     CommentAction,
     CreateAction,
     EditAction,
@@ -64,7 +68,8 @@ class TicketWriteStatus:
     item: dict | None = None  # non-ticket record the write applied to, e.g. an asset
 
 
-_ACTION_TYPES = (CommentAction, StatusAction, AssignAction, EditAction, TaskAction, CreateAction, AssetAction)
+_ACTION_TYPES = (CommentAction, StatusAction, AssignAction, EditAction, TaskAction, CreateAction, AssetAction,
+                 ArticleAction, ArticleCreateAction, CategoryAction, CategoryCreateAction)
 _UNKNOWN_MESSAGE = "The upstream outcome is unknown; do not retry."
 _PENDING_MESSAGE = ("The change was recorded but not yet sent to TeamDynamix; "
                     "resubmit it with the same request ID and arguments.")
@@ -393,13 +398,29 @@ class TicketWriteService:
 
     @staticmethod
     def _item(record):
-        if isinstance(record, DirectReplayResult) or not isinstance(record.prepared.action, AssetAction):
+        """The non-ticket record a write applied to (asset, article, category) with its web link."""
+        if isinstance(record, DirectReplayResult):
             return None
-        prepared = record.prepared
-        parsed = urlsplit(prepared.base_url)
-        url = (f"https://{parsed.netloc}/TDNext/Apps/{prepared.asset_app_id}/Assets/AssetDet?AssetID={prepared.action.asset_id}"
-               if prepared.asset_app_id else None)
-        return {"type": "asset", "id": prepared.action.asset_id, "url": url}
+        prepared, action = record.prepared, record.prepared.action
+        host = f"https://{urlsplit(prepared.base_url).netloc}"
+        detail = record.result.detail if record.result else None
+        if isinstance(action, AssetAction):
+            url = f"{host}/TDNext/Apps/{prepared.asset_app_id}/Assets/AssetDet?AssetID={action.asset_id}" if prepared.asset_app_id else None
+            return {"type": "asset", "id": action.asset_id, "url": url}
+        portal = prepared.portal_app_id
+        if isinstance(action, (ArticleAction, ArticleCreateAction)):
+            article_id = action.article_id if isinstance(action, ArticleAction) else (detail or {}).get("article_id")
+            if article_id is None:
+                return None
+            return {"type": "article", "id": article_id,
+                    "url": f"{host}/TDClient/{portal}/Portal/KB/ArticleDet?ID={article_id}" if portal else None}
+        if isinstance(action, (CategoryAction, CategoryCreateAction)):
+            category_id = action.category_id if isinstance(action, CategoryAction) else (detail or {}).get("category_id")
+            if category_id is None:
+                return None
+            return {"type": "category", "id": category_id,
+                    "url": f"{host}/TDClient/{portal}/Portal/KB/?CategoryID={category_id}" if portal else None}
+        return None
 
 
 def create_ticket_write_service(
