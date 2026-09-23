@@ -6,7 +6,7 @@ from html.parser import HTMLParser
 _BLOCK = {"p", "div", "br", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6", "table", "ul", "ol"}
 _HIDDEN = {"script", "style"}
 _ACTIVE = {"script", "iframe", "object", "embed"}
-_TAG = re.compile(r"<[a-zA-Z/!][^>]*>")
+_TAG = re.compile(r"</?(?:p|div|br|ul|ol|li|a|b|i|em|strong|h[1-6]|table|thead|tbody|tr|td|th|img|span|pre|code|blockquote|hr|u|s|sub|sup|figure|figcaption|section|dl|dt|dd)\b[^>]*>", re.IGNORECASE)
 _VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"}
 
 
@@ -45,7 +45,7 @@ def truncate(text, limit):
 
 
 def ensure_html(body):
-    """Pass HTML through; wrap plain-text paragraphs in <p> with escaping."""
+    """Pass HTML through (recognised by a common tag); wrap plain-text paragraphs in <p> with escaping."""
     body = str(body or "")
     if _TAG.search(body):
         return body

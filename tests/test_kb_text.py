@@ -18,6 +18,8 @@ def test_truncate_reports_whether_it_cut():
 def test_ensure_html_wraps_plain_text_paragraphs_and_escapes():
     assert ensure_html("First line\n\nSecond: 2 < 3 > 1") == "<p>First line</p><p>Second: 2 &lt; 3 &gt; 1</p>"
     assert ensure_html("<p>Already html</p>") == "<p>Already html</p>"
+    assert ensure_html("Press <Enter> then <Tab>") == "<p>Press &lt;Enter&gt; then &lt;Tab&gt;</p>"
+    assert ensure_html("Line<br>break") == "Line<br>break"
 
 
 def test_sanitize_html_removes_active_content_and_reports_it():

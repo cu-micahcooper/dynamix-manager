@@ -686,3 +686,125 @@ def test_asset_comment_preview_warns_that_asset_feeds_ignore_private_visibility(
     prepared = adapter.validate(parse_action(dict(kind="asset_comment", asset_id=1973209, comments="Racked")))
     assert any("do not honor private" in notice for notice in prepared.preview.notices)
     assert prepared.preview.visibility is None
+
+
+PORTAL_APP = 2045
+ARTICLE_REC = dict(ID=95821, AppID=PORTAL_APP, Subject="Mac password", Summary="Sync", Body="<p>Old</p>", CategoryID=9208,
+                   CategoryName="Office Devices", Tags=["macos"], Status=3, StatusName="Approved", IsPublished=True, IsPublic=False,
+                   RevisionNumber=4, ReviewDateUtc="2027-02-01T00:00:00Z", OwnerUid=UID, OwnerFullName="Person",
+                   OwningGroupID=None, ModifiedDate="art-v1")
+CATEGORY_REC = dict(ID=9208, AppID=PORTAL_APP, Name="Office Devices", Description="Desk gear", ParentID=0, Order=1.0,
+                    IsPublic=True, InheritPermissions=False, WhitelistGroups=False, ModifiedDate="cat-v1")
+CATEGORY_TREE = [dict(CATEGORY_REC, Subcategories=[]),
+                 dict(ID=10548, AppID=PORTAL_APP, Name="Tech FAQ", ParentID=0, Order=2.0, IsPublic=True, ModifiedDate="cat-v2", Subcategories=[])]
+ARTICLE_ROUTES = {
+    f"/api/{PORTAL_APP}/knowledgebase/95821": ARTICLE_REC,
+    f"/api/{PORTAL_APP}/knowledgebase/84764": dict(ARTICLE_REC, ID=84764, Subject="Password reset"),
+    f"/api/{PORTAL_APP}/knowledgebase/categories": CATEGORY_TREE,
+    f"/api/{PORTAL_APP}/knowledgebase/categories/9208": CATEGORY_REC,
+    f"/api/{PORTAL_APP}/knowledgebase/categories/10548": CATEGORY_TREE[1],
+    f"/api/{ASSET_APP}/assets/1973209": ASSET_REC,
+    f"/api/people/{UID}": dict(UID=UID, IsActive=True, FullName="Person", OrgApplications=[dict(ID=42, IsActive=True)]),
+    "/api/groups/77": dict(ID=77, IsActive=True, Name="Service Desk"),
+}
+
+
+def kb_adapter(**overrides):
+    from dynamix_manager.ticket_writes.adapter import WriteAdapter
+    records = {**ARTICLE_ROUTES, **overrides}
+    calls = []
+
+    def request(method, url, **kwargs):
+        calls.append((method, url, kwargs))
+        return SimpleNamespace(status_code=200, json=lambda: ARTICLE_REC.copy())
+
+    adapter = WriteAdapter("https://tenant.example/TDWebApi", 42, "secret", request=request,
+                           read=lambda path: records[path], asset_app_id=ASSET_APP, portal_app_id=PORTAL_APP)
+    return adapter, calls, records
+
+
+def test_article_create_builds_a_sanitised_draft_payload():
+    adapter, _, _ = kb_adapter()
+    prepared = adapter.validate(parse_action(dict(
+        kind="article_create", subject="Reset MFA", body="Step one\n\nStep <two>", category_id=9208,
+        tags=["mfa", "auth"], owner_uid=UID, owning_group_id=77, summary="How to reset")))
+    payload = json.loads(prepared.payload_json)
+    assert payload == dict(Subject="Reset MFA", Body="<p>Step one</p><p>Step &lt;two&gt;</p>", CategoryID=9208, Summary="How to reset",
+                           Tags=["mfa", "auth"], OwnerUid=UID, OwningGroupID=77, Status=1, IsPublished=False, IsPublic=False)
+    assert prepared.portal_app_id == PORTAL_APP and prepared.preview.application == "Knowledge Base"
+    assert prepared.preview.ticket_id == 0 and prepared.preview.action == "article_create"
+    fields = {f.name: f.after for f in prepared.preview.fields}
+    assert fields["Category"] == "Office Devices" and fields["Owner"] == "Person" and fields["Owning group"] == "Service Desk"
+    assert fields["Status"] == "Not Submitted" and fields["Published"] == "False"
+
+
+def test_article_create_strips_scripts_and_says_so():
+    adapter, _, _ = kb_adapter()
+    prepared = adapter.validate(parse_action(dict(kind="article_create", subject="S", category_id=9208,
+                                                  body='<p onclick="x()">Hi</p><script>evil()</script>')))
+    assert json.loads(prepared.payload_json)["Body"] == "<p>Hi</p>"
+    assert any("script or frame markup was removed" in n.lower() for n in prepared.preview.notices)
+    with pytest.raises(ValueError, match="category"):
+        adapter.validate(parse_action(dict(kind="article_create", subject="S", body="b", category_id=999)))
+
+
+def test_article_edit_builds_a_patch_with_baseline_and_publication_notices():
+    adapter, _, _ = kb_adapter()
+    prepared = adapter.validate(parse_action(dict(kind="article_edit", article_id=95821, status="archived",
+                                                  is_published=False, is_public=True, tags=["macos", "password"], body="New text")))
+    assert json.loads(prepared.payload_json) == [
+        dict(op="replace", path="/Body", value="<p>New text</p>"), dict(op="replace", path="/Tags", value=["macos", "password"]),
+        dict(op="replace", path="/IsPublic", value=True), dict(op="replace", path="/IsPublished", value=False),
+        dict(op="replace", path="/Status", value=5)]
+    baseline = json.loads(prepared.baseline_json)
+    assert baseline["ModifiedDate"] == "art-v1" and baseline["RevisionNumber"] == 4
+    fields = {f.name: (f.before, f.after) for f in prepared.preview.fields}
+    assert fields["Status"] == ("Approved", "Archived") and fields["Published"] == ("True", "False")
+    notices = " ".join(prepared.preview.notices)
+    assert "archives the article" in notices and "visible without signing in" in notices and "publishes" not in notices
+    assert prepared.preview.ticket_title == "Mac password"
+
+
+def test_article_edit_verifies_category_owner_and_group():
+    adapter, _, _ = kb_adapter()
+    prepared = adapter.validate(parse_action(dict(kind="article_edit", article_id=95821, category_id=9208, owner_uid=UID, owning_group_id=77)))
+    fields = {f.name: (f.before, f.after) for f in prepared.preview.fields}
+    assert fields["Category"] == ("Office Devices", "Office Devices") and fields["Owner"] == ("Person", "Person")
+    assert fields["Owning group"] == (None, "Service Desk")
+    with pytest.raises(ValueError):
+        adapter.validate(parse_action(dict(kind="article_edit", article_id=95821, owning_group_id=78)))
+    with pytest.raises(ValueError, match="article"):
+        adapter.validate(parse_action(dict(kind="article_edit", article_id=1, subject="x")))
+
+
+def test_article_link_and_unlink_verify_both_ends():
+    adapter, _, _ = kb_adapter()
+    to_asset = adapter.validate(parse_action(dict(kind="article_link", article_id=95821, asset_id=1973209)))
+    assert json.loads(to_asset.baseline_json)["target"]["ID"] == 1973209 and to_asset.preview.action == "article_link"
+    assert {f.name: f.after for f in to_asset.preview.fields} == {"Asset": "Micah Cooper MacBook"}
+    to_article = adapter.validate(parse_action(dict(kind="article_unlink", article_id=95821, related_article_id=84764)))
+    assert {f.name: f.before for f in to_article.preview.fields} == {"Related article": "Password reset"}
+    with pytest.raises(ValueError):
+        adapter.validate(parse_action(dict(kind="article_link", article_id=95821, related_article_id=1)))
+
+
+def test_category_create_and_edit_payloads():
+    adapter, _, _ = kb_adapter()
+    created = adapter.validate(parse_action(dict(kind="category_create", name="Scratch", parent_id=10548, description="Test")))
+    assert json.loads(created.payload_json) == dict(Name="Scratch", ParentID=10548, Description="Test", IsPublic=False, InheritPermissions=False)
+    assert {f.name: f.after for f in created.preview.fields}["Parent"] == "Tech FAQ"
+    edited = adapter.validate(parse_action(dict(kind="category_edit", category_id=9208, name="Office devices", parent_id=10548)))
+    payload = json.loads(edited.payload_json)
+    assert payload["Name"] == "Office devices" and payload["ParentID"] == 10548 and payload["Description"] == "Desk gear"
+    assert payload["ID"] == 9208 and "Subcategories" not in payload and "ModifiedDate" not in payload
+    assert json.loads(edited.baseline_json)["ModifiedDate"] == "cat-v1"
+    assert edited.preview.ticket_title == "Office Devices" and edited.preview.action == "category_edit"
+    with pytest.raises(ValueError, match="parent"):
+        adapter.validate(parse_action(dict(kind="category_edit", category_id=9208, parent_id=9208)))
+
+
+def test_article_actions_need_a_portal_application():
+    from dynamix_manager.ticket_writes.adapter import WriteAdapter
+    adapter = WriteAdapter("https://tenant.example/TDWebApi", 42, "secret", read=lambda path: ARTICLE_ROUTES[path])
+    with pytest.raises(ValueError, match="portal"):
+        adapter.validate(parse_action(dict(kind="article_edit", article_id=95821, subject="x")))

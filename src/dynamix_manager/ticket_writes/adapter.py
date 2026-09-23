@@ -9,9 +9,12 @@ from uuid import UUID
 
 import requests
 
-from .models import (AssetAction, AssetCommentAction, AssignAction, ChangePreview, CommentAction, CreateAction,
-                     EditAction, EditAssetAction, LinkAssetAction, PreparedChange, PreviewField, StatusAction,
-                     TaskAction, WriteResult, parse_action)
+from dynamix_manager.kb_text import ensure_html, sanitize_html
+
+from .models import (ARTICLE_STATUS_IDS, ArticleAction, ArticleCreateAction, ArticleLinkAction,
+                     ArticleUnlinkAction, AssetAction, AssetCommentAction, AssignAction, CategoryAction, CategoryCreateAction,
+                     ChangePreview, CommentAction, CreateAction, EditAction, EditAssetAction,
+                     LinkAssetAction, PreparedChange, PreviewField, StatusAction, TaskAction, WriteResult, parse_action)
 
 
 def canonical_json(value):
@@ -20,7 +23,7 @@ def canonical_json(value):
 
 class WriteAdapter:
     def __init__(self, base_url, app_id, token, *, request=None, read=None,
-                 application_name="InfoTech Tickets", header_app_id=None, asset_app_id=None):
+                 application_name="InfoTech Tickets", header_app_id=None, asset_app_id=None, portal_app_id=None):
         base_url = base_url.rstrip("/")
         parsed = urlsplit(base_url)
         if (parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password
@@ -32,6 +35,9 @@ class WriteAdapter:
         if asset_app_id is not None and (type(asset_app_id) is not int or asset_app_id <= 0):
             raise ValueError("The asset application ID must be positive.")
         self.asset_app_id = asset_app_id
+        if portal_app_id is not None and (type(portal_app_id) is not int or portal_app_id <= 0):
+            raise ValueError("The client portal application ID must be positive.")
+        self.portal_app_id = portal_app_id
         self._headers = {"Authorization": f"Bearer {token}", "X-TDClient-ID": str(header_app_id or app_id),
                          "Accept": "application/json"}
         # requests.request creates a fresh Session with zero retry adapters. Do not use
@@ -48,8 +54,12 @@ class WriteAdapter:
             asset_app_id = connection.asset_app_id
         except Exception:
             asset_app_id = None  # asset tools then fail closed with a clear message
+        try:
+            portal_app_id = connection.portal_app_id
+        except Exception:
+            portal_app_id = None  # knowledge base tools then fail closed with a clear message
         return cls(connection.base_url, connection.app_id, connection.token,
-                   header_app_id=connection.header_app_id, asset_app_id=asset_app_id)
+                   header_app_id=connection.header_app_id, asset_app_id=asset_app_id, portal_app_id=portal_app_id)
 
     def _read(self, path):
         if not path.startswith("/api/"):
@@ -507,12 +517,199 @@ class WriteAdapter:
             fields.append(PreviewField(name=wire, before=None if before is None else str(before), after=None if after is None else str(after)))
         return self._asset_prepared(action, asset, payload, fields, title=asset["Name"])
 
+    _ARTICLE_STATUS_NAMES = {1: "Not Submitted", 2: "Submitted", 3: "Approved", 4: "Rejected", 5: "Archived"}
+    # (action field, wire field, preview label, baseline display field or None)
+    _ARTICLE_FIELDS = (("subject", "Subject", "Subject", None), ("summary", "Summary", "Summary", None),
+                       ("body", "Body", "Body", None), ("tags", "Tags", "Tags", None),
+                       ("category_id", "CategoryID", "Category", "CategoryName"), ("owner_uid", "OwnerUid", "Owner", "OwnerFullName"),
+                       ("owning_group_id", "OwningGroupID", "Owning group", "OwningGroupName"),
+                       ("review_date", "ReviewDateUtc", "Review date", None), ("is_public", "IsPublic", "Public", None),
+                       ("is_published", "IsPublished", "Published", None), ("status", "Status", "Status", "StatusName"),
+                       ("notify_owner", "NotifyOwner", "Notify owner", None),
+                       ("notify_owner_of_review_date", "NotifyOwnerOfReviewDate", "Notify owner of review date", None),
+                       ("order", "Order", "Order", None))
+    _CATEGORY_READ_ONLY = ("Subcategories", "ModifiedDate", "CreatedDate", "CreatedUid", "CreatedFullName",
+                           "ModifiedUid", "ModifiedFullName", "AppName", "ParentName")
+
+    def _require_portal_app(self):
+        if self.portal_app_id is None:
+            raise ValueError("No client portal application is available for this account.")
+        return self.portal_app_id
+
+    def _article_snapshot(self, article_id):
+        app = self._require_portal_app()
+        try:
+            article = self._get(f"/api/{app}/knowledgebase/{article_id}")
+        except ValueError:
+            raise ValueError("The article could not be read.") from None
+        if (not isinstance(article, dict) or article.get("ID") != article_id or article.get("AppID") != app
+                or not isinstance(article.get("Subject"), str) or not article.get("ModifiedDate")):
+            raise ValueError("A matching article baseline is required.")
+        return article
+
+    def _category_tree(self):
+        app = self._require_portal_app()
+        tree = self._get(f"/api/{app}/knowledgebase/categories")
+        flat = {}
+
+        def walk(nodes):
+            for node in nodes if isinstance(nodes, list) else []:
+                if isinstance(node, dict) and type(node.get("ID")) is int and node.get("Name"):
+                    flat[node["ID"]] = node
+                    walk(node.get("Subcategories"))
+
+        walk(tree)
+        return flat
+
+    def _category_name(self, category_id, label="category"):
+        node = self._category_tree().get(category_id)
+        if node is None:
+            raise ValueError(f"Selected {label} was not found in the knowledge base.")
+        return node["Name"]
+
+    def _person_name(self, uid, label):
+        value = str(uid)
+        user = self._get(f"/api/people/{value}")
+        if (not isinstance(user, dict) or str(user.get("UID", "")).lower() != value.lower()
+                or user.get("IsActive") is not True or not user.get("FullName")):
+            raise ValueError(f"Selected {label} is not a verified active person.")
+        return user["FullName"]
+
+    def _group_name(self, group_id):
+        group = self._get(f"/api/groups/{group_id}")
+        if not isinstance(group, dict) or group.get("ID") != group_id or group.get("IsActive") is not True or not group.get("Name"):
+            raise ValueError("Selected group is not verified active.")
+        return group["Name"]
+
+    def _kb_prepared(self, action, baseline, payload, fields, *, title, notices=()):
+        preview = ChangePreview(application="Knowledge Base", ticket_id=0, ticket_title=title, action=action.kind,
+                                fields=tuple(fields), notices=self._notices(action) + tuple(notices))
+        return PreparedChange(action=action, base_url=self.base_url, app_id=self.app_id, asset_app_id=self.asset_app_id,
+                              portal_app_id=self.portal_app_id, baseline_json=canonical_json(baseline),
+                              payload_json=canonical_json(payload), preview=preview)
+
+    def _article_body(self, body, notices):
+        html, changed = sanitize_html(ensure_html(body))
+        if changed:
+            notices.append("Script or frame markup was removed from the body before saving.")
+        if not html.strip():
+            raise ValueError("The article body is empty after sanitising.")
+        return html
+
+    def _article_value(self, name, value, notices):
+        """Resolve one article field to (wire value, preview text)."""
+        if name == "body":
+            return self._article_body(value, notices), "(updated body)"
+        if name == "tags":
+            return list(value), ", ".join(value)
+        if name == "category_id":
+            return value, self._category_name(value)
+        if name == "owner_uid":
+            return str(value), self._person_name(value, "owner")
+        if name == "owning_group_id":
+            return value, self._group_name(value)
+        if name == "status":
+            return ARTICLE_STATUS_IDS[value], self._ARTICLE_STATUS_NAMES[ARTICLE_STATUS_IDS[value]]
+        return value, str(value)
+
+    def _validate_article(self, action):
+        self._require_portal_app()
+        notices = []
+        if isinstance(action, ArticleCreateAction):
+            payload, fields = {}, []
+            given = action.model_fields_set | {"status", "is_published", "is_public"}
+            for name, wire, label, _ in self._ARTICLE_FIELDS:
+                if name not in given or getattr(action, name) is None:
+                    continue
+                wire_value, shown = self._article_value(name, getattr(action, name), notices)
+                payload[wire] = wire_value
+                fields.append(PreviewField(name=label, before=None, after=shown))
+            if action.is_published:
+                notices.append("This publishes the article in the portal on creation.")
+            if action.is_public:
+                notices.append("This makes the article visible without signing in.")
+            return self._kb_prepared(action, {"category": payload["CategoryID"]}, payload, fields, title=action.subject, notices=notices)
+        article = self._article_snapshot(action.article_id)
+        if isinstance(action, (ArticleLinkAction, ArticleUnlinkAction)):
+            removing = isinstance(action, ArticleUnlinkAction)
+            if action.asset_id is not None:
+                target = self._asset_snapshot(action.asset_id)
+                label, name = "Asset", target["Name"]
+            else:
+                target = self._article_snapshot(action.related_article_id)
+                label, name = "Related article", target["Subject"]
+            field = PreviewField(name=label, before=name if removing else None, after=None if removing else name)
+            return self._kb_prepared(action, {"article": article, "target": target}, {}, [field], title=article["Subject"])
+        payload, fields = [], []
+        for name, wire, label, before_key in self._ARTICLE_FIELDS:
+            if name not in action.model_fields_set:
+                continue
+            wire_value, shown = self._article_value(name, getattr(action, name), notices)
+            before = article.get(before_key) if before_key else article.get(wire)
+            if name == "body":
+                before = "(current body)"
+            elif name == "tags" and isinstance(before, list):
+                before = ", ".join(map(str, before))
+            payload.append(dict(op="replace", path=f"/{wire}", value=wire_value))
+            fields.append(PreviewField(name=label, before=None if before is None else str(before), after=shown))
+        if action.is_published is True and article.get("IsPublished") is not True:
+            notices.append("This publishes the article in the portal.")
+        if action.is_public is True and article.get("IsPublic") is not True:
+            notices.append("This makes the article visible without signing in.")
+        if action.status == "archived" and article.get("Status") != 5:
+            notices.append("This archives the article.")
+        baseline = {"ID": article["ID"], "ModifiedDate": article["ModifiedDate"], "RevisionNumber": article.get("RevisionNumber"),
+                    "Status": article.get("Status"), "IsPublished": article.get("IsPublished"), "IsPublic": article.get("IsPublic")}
+        return self._kb_prepared(action, baseline, payload, fields, title=article["Subject"], notices=notices)
+
+    def _validate_category(self, action):
+        app = self._require_portal_app()
+        if isinstance(action, CategoryCreateAction):
+            payload = dict(Name=action.name, IsPublic=action.is_public, InheritPermissions=action.inherit_permissions)
+            fields = [PreviewField(name="Name", before=None, after=action.name),
+                      PreviewField(name="Public", before=None, after=str(action.is_public))]
+            if action.description is not None:
+                payload["Description"] = action.description
+                fields.append(PreviewField(name="Description", before=None, after=action.description))
+            if action.parent_id:
+                payload["ParentID"] = action.parent_id
+                fields.append(PreviewField(name="Parent", before=None, after=self._category_name(action.parent_id, "parent category")))
+            if action.order is not None:
+                payload["Order"] = action.order
+                fields.append(PreviewField(name="Order", before=None, after=str(action.order)))
+            return self._kb_prepared(action, {"parent": action.parent_id}, payload, fields, title=action.name)
+        category = self._get(f"/api/{app}/knowledgebase/categories/{action.category_id}")
+        if (not isinstance(category, dict) or category.get("ID") != action.category_id or category.get("AppID") != app
+                or not category.get("Name") or not category.get("ModifiedDate")):
+            raise ValueError("A matching category baseline is required.")
+        payload = {k: v for k, v in category.items() if k not in self._CATEGORY_READ_ONLY}
+        fields = []
+        for name, wire, label in (("name", "Name", "Name"), ("description", "Description", "Description"),
+                                  ("parent_id", "ParentID", "Parent"), ("order", "Order", "Order"), ("is_public", "IsPublic", "Public")):
+            if name not in action.model_fields_set:
+                continue
+            value = getattr(action, name)
+            before, after = category.get(wire), value
+            if name == "parent_id":
+                if value == action.category_id:
+                    raise ValueError("A category cannot be its own parent category.")
+                before = category.get("ParentName")
+                after = self._category_name(value, "parent category") if value else "(top level)"
+            payload[wire] = value
+            fields.append(PreviewField(name=label, before=None if before is None else str(before), after=str(after)))
+        return self._kb_prepared(action, {"ID": category["ID"], "ModifiedDate": category["ModifiedDate"]}, payload, fields,
+                                 title=category["Name"])
+
     def validate(self, action):
         action = parse_action(action)
         if isinstance(action, CreateAction):
             return self._validate_create(action)
         if isinstance(action, AssetAction):
             return self._validate_asset(action)
+        if isinstance(action, (ArticleAction, ArticleCreateAction)):
+            return self._validate_article(action)
+        if isinstance(action, (CategoryAction, CategoryCreateAction)):
+            return self._validate_category(action)
         ticket, metadata = self.snapshot(action.ticket_id), self.metadata(action)
         if ticket.get("IsConvertedToTask") is True and isinstance(action, (AssignAction, StatusAction)):
             raise ValueError("Assignment and status changes on converted project tasks are unsupported.")
@@ -554,6 +751,8 @@ class WriteAdapter:
                              "Only the listed email recipients are requested through Notify.")
         if isinstance(action, AssetAction):
             return common + ("Asset changes are applied to the asset record only; linked tickets and CMDB relationships are not modified.",)
+        if isinstance(action, (ArticleAction, ArticleCreateAction, CategoryAction, CategoryCreateAction)):
+            return common + ("Knowledge base changes are visible to everyone the portal shows the article or category to; there is no private mode.",)
         return common + ("New-responsible notification is disabled.",)
 
     def _feed(self, action, ticket, metadata):
