@@ -83,7 +83,8 @@ class FakeConnection:
 def run(server, name, arguments):
     if name in {"add_ticket_comment", "update_ticket_status", "assign_ticket", "edit_ticket",
                 "complete_ticket_task", "create_ticket", "add_asset_comment", "link_asset_to_ticket",
-                "edit_asset"} and isinstance(arguments, dict):
+                "edit_asset", "create_article", "edit_article", "link_article", "unlink_article",
+                "create_article_category", "edit_article_category"} and isinstance(arguments, dict):
         arguments = {"request_id": "request-1", **arguments}
     return asyncio.run(server.call_tool(name, arguments))
 
@@ -116,6 +117,7 @@ def test_registers_only_four_direct_tools_and_two_bounded_read_tools(tools_serve
         "add_ticket_comment", "update_ticket_status",
         "assign_ticket", "edit_ticket", "complete_ticket_task", "create_ticket",
         "add_asset_comment", "link_asset_to_ticket", "edit_asset",
+        "create_article", "edit_article", "link_article", "unlink_article", "create_article_category", "edit_article_category",
         "ticket_write_metadata", "ticket_write_result", "list_ticket_tasks", "ticket_create_metadata",
         "resolve_ticket_write",
     }
@@ -351,7 +353,7 @@ def test_real_http_tools_list_mirrors_hosted_security_schemes_at_top_level():
             "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {},
         }, headers={"Accept": "application/json, text/event-stream"})
     tools = response.json()["result"]["tools"]
-    assert len(tools) == 35
+    assert len(tools) == 41
     for tool in tools:
         assert tool["securitySchemes"] == tool["_meta"]["securitySchemes"]
 
@@ -638,3 +640,41 @@ def test_asset_write_tools_submit_typed_actions(name, action, tools_server):
     assert service.actions[-1].asset_id == 1973209
     with pytest.raises(Exception):
         run(server, name, {"action": {"kind": "comment", "ticket_id": 1, "comments": "x"}})
+
+
+@pytest.mark.parametrize(("name", "action"), [
+    ("edit_article", {"kind": "article_edit", "article_id": 95821, "subject": "Renamed"}),
+    ("link_article", {"kind": "article_link", "article_id": 95821, "asset_id": 1973209}),
+    ("unlink_article", {"kind": "article_unlink", "article_id": 95821, "related_article_id": 84764}),
+    ("edit_article_category", {"kind": "category_edit", "category_id": 9208, "name": "Office devices"}),
+])
+def test_knowledge_base_write_tools_submit_typed_actions(name, action, tools_server):
+    from dynamix_manager.ticket_writes.models import ArticleAction, CategoryAction
+    server, service = tools_server
+    result = structured(run(server, name, {"action": action}))
+    assert result["outcome"] == "applied"
+    assert isinstance(service.actions[-1], (ArticleAction, CategoryAction)) and service.actions[-1].kind == action["kind"]
+
+
+def test_create_article_resolves_the_owner_and_defaults_to_a_draft(tools_server):
+    server, service = tools_server
+    FakeConnection.people = {"Alan McCain": [ALAN], "McCain": [ALAN, MICAH]}
+    result = structured(run(server, "create_article", {"article": {
+        "subject": "Reset MFA", "body": "Step one", "category_id": 9212, "owner": "Alan McCain", "tags": ["mfa"]}}))
+    action = service.actions[-1]
+    assert action.kind == "article_create" and str(action.owner_uid) == ALAN["uid"] and action.status == "not_submitted"
+    assert action.is_published is False and result["resolved_people"] == [{"role": "owner", "search": "Alan McCain", "matched": [ALAN]}]
+    without_owner = structured(run(server, "create_article", {"article": {"subject": "S", "body": "b", "category_id": 1}}))
+    assert without_owner["resolved_people"] == [] and service.actions[-1].owner_uid is None
+    count = len(service.actions)
+    ambiguous = run(server, "create_article", {"article": {"subject": "S", "body": "b", "category_id": 1, "owner": "McCain"}})
+    assert ambiguous.isError and "ambiguous" in ambiguous.content[0].text.lower() and len(service.actions) == count
+    with pytest.raises(Exception):
+        run(server, "create_article", {"article": {"subject": "S", "body": "b", "category_id": 1, "owner": "X Y", "owner_uid": ALAN["uid"]}})
+
+
+def test_create_article_category_submits_a_typed_action(tools_server):
+    server, service = tools_server
+    result = structured(run(server, "create_article_category", {"category": {"name": "Scratch", "parent_id": 10548}}))
+    assert result["outcome"] == "applied" and service.actions[-1].kind == "category_create"
+    assert service.actions[-1].parent_id == 10548 and service.actions[-1].is_public is False

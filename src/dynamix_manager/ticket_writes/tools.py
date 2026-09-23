@@ -12,8 +12,9 @@ from mcp.types import CallToolResult, TextContent, ToolAnnotations
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from .adapter import WriteAdapter
-from .models import (AssetCommentAction, AssignAction, CommentAction, EditAction, EditAssetAction,
-                     LinkAssetAction, StatusAction, TaskAction, parse_action)
+from .models import (ARTICLE_STATUS, ArticleEditAction, ArticleLinkAction, ArticleUnlinkAction, AssetCommentAction,
+                     AssignAction, CategoryEditAction, CommentAction, EditAction, EditAssetAction, LinkAssetAction,
+                     StatusAction, TaskAction, parse_action)
 from .service import WriteAuthorizationRequired, WritesDisabled
 from .store import EquivalentWriteBlocked, WriteBindingError, WriteStateError
 
@@ -88,6 +89,47 @@ class CreateTicketRequest(BaseModel):
         if self.responsible is not None and self.responsible_uid is not None:
             raise ValueError("Give responsible (name/email) or responsible_uid, not both.")
         return self
+
+
+class CreateArticleRequest(BaseModel):
+    """Article creation as the model states it; the owner is resolved to a UID before submission."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    subject: Annotated[str, Field(strict=True, min_length=1, max_length=300)]
+    body: Annotated[str, Field(strict=True, min_length=1, max_length=200000)]
+    category_id: TICKET_ID
+    summary: Annotated[str, Field(strict=True, max_length=2000)] | None = None
+    tags: Annotated[list[Annotated[str, Field(strict=True, min_length=1, max_length=100)]], Field(max_length=50)] | None = None
+    owner: PERSON | None = None
+    owner_uid: UUID | None = None
+    owning_group_id: TICKET_ID | None = None
+    review_date: Annotated[str, Field(strict=True, min_length=10, max_length=35)] | None = None
+    is_public: Annotated[bool, Field(strict=True)] = False
+    is_published: Annotated[bool, Field(strict=True)] = False
+    status: ARTICLE_STATUS = "not_submitted"
+    notify_owner: Annotated[bool, Field(strict=True)] | None = None
+    notify_owner_of_review_date: Annotated[bool, Field(strict=True)] | None = None
+    order: Annotated[float, Field(strict=True, ge=0)] | None = None
+
+    @model_validator(mode="after")
+    def one_way_to_name_the_owner(self):
+        if self.owner is not None and self.owner_uid is not None:
+            raise ValueError("Give owner (name/email) or owner_uid, not both.")
+        return self
+
+
+class CreateCategoryRequest(BaseModel):
+    """Knowledge base category creation; parent_id 0 or omitted means top level."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    name: Annotated[str, Field(strict=True, min_length=1, max_length=200)]
+    description: Annotated[str, Field(strict=True, max_length=2000)] | None = None
+    parent_id: Annotated[int, Field(strict=True, ge=0)] | None = None
+    order: Annotated[float, Field(strict=True, ge=0)] | None = None
+    is_public: Annotated[bool, Field(strict=True)] = False
+    inherit_permissions: Annotated[bool, Field(strict=True)] = False
 
 
 class MetadataOutput(_Output):
@@ -377,6 +419,70 @@ def register_ticket_write_tools(server, tool, service, connection_provider):
         return _submit(service, action, request_id)
 
     @tool(annotations=prepare, meta=write_meta, structured_output=True)
+    def create_article(article: CreateArticleRequest, request_id: REQUEST_ID) -> CreateResultOutput:
+        """Create a knowledge base article only on an explicit user request; defaults to an unpublished draft.
+
+        Resolve category_id with article_categories. `owner` is resolved through the people API
+        (state who matched and continue). Body may be HTML or plain text; scripts are stripped.
+        Set is_published/is_public/status only when the user asked to publish. Generate a unique
+        request_id and reuse it with identical arguments for recovery for 30 days.
+        """
+        connection = connection_provider()
+        resolved, uids = [], {}
+        if article.owner is not None:
+            try:
+                entry, chosen = connection.resolve_person("owner", article.owner)
+            except Exception:
+                return _error("The people lookup is unavailable; nothing was created.")
+            resolved.append(entry)
+            if len(chosen) != 1:
+                candidates = ", ".join(f"{m.get('name')} <{m.get('email')}>" for m in entry["matched"][:10])
+                return _error(f"The owner {article.owner!r} is ambiguous: {candidates}. Nothing was created; retry with owner_uid."
+                              if entry["matched"] else f"No person matched the owner {article.owner!r}. Nothing was created.")
+            uids["owner_uid"] = chosen[0]
+        given = article.model_dump(exclude_unset=True, exclude={"owner"})
+        try:
+            parsed = parse_action({**given, **uids, "kind": "article_create"})
+        except Exception:
+            return _error("Invalid article creation request.")
+        return _submit(service, parsed, request_id, extra={"resolved_people": resolved})
+
+    @tool(annotations=prepare, meta=write_meta, structured_output=True)
+    def edit_article(action: ArticleEditAction, request_id: REQUEST_ID) -> ResultOutput:
+        """Change article fields (subject, summary, body, tags, category, owner, group, review date, public,
+        published, status, notifications, order) only on an explicit user request.
+
+        Publishing, making public or archiving are stated in the preview notices; confirm intent first.
+        The article is snapshotted so a concurrent revision conflicts. Generate a unique request_id
+        and reuse it with identical arguments for recovery for 30 days.
+        """
+        return _submit(service, action, request_id)
+
+    @tool(annotations=prepare, meta=write_meta, structured_output=True)
+    def link_article(action: ArticleLinkAction, request_id: REQUEST_ID) -> ResultOutput:
+        """Relate an article to an asset (asset_id) or to another article (related_article_id), on explicit request."""
+        return _submit(service, action, request_id)
+
+    @tool(annotations=prepare, meta=write_meta, structured_output=True)
+    def unlink_article(action: ArticleUnlinkAction, request_id: REQUEST_ID) -> ResultOutput:
+        """Remove an article's relation to an asset or another article, on explicit user request."""
+        return _submit(service, action, request_id)
+
+    @tool(annotations=prepare, meta=write_meta, structured_output=True)
+    def create_article_category(category: CreateCategoryRequest, request_id: REQUEST_ID) -> ResultOutput:
+        """Create a knowledge base category (name, optional parent, description, order, public) on explicit request."""
+        try:
+            parsed = parse_action({**category.model_dump(exclude_unset=True), "kind": "category_create"})
+        except Exception:
+            return _error("Invalid category creation request.")
+        return _submit(service, parsed, request_id)
+
+    @tool(annotations=prepare, meta=write_meta, structured_output=True)
+    def edit_article_category(action: CategoryEditAction, request_id: REQUEST_ID) -> ResultOutput:
+        """Rename, move, reorder, describe or change visibility of a knowledge base category, on explicit request."""
+        return _submit(service, action, request_id)
+
+    @tool(annotations=prepare, meta=write_meta, structured_output=True)
     def create_ticket(ticket: CreateTicketRequest, request_id: REQUEST_ID) -> CreateResultOutput:
         """Create a ticket only on an explicit user request; no review page.
 
@@ -472,6 +578,12 @@ def register_ticket_write_tools(server, tool, service, connection_provider):
         "add_asset_comment",
         "link_asset_to_ticket",
         "edit_asset",
+        "create_article",
+        "edit_article",
+        "link_article",
+        "unlink_article",
+        "create_article_category",
+        "edit_article_category",
         "list_ticket_tasks",
         "ticket_create_metadata",
         "ticket_write_metadata",
