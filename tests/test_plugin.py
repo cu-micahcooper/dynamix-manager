@@ -160,7 +160,7 @@ def test_read_tools_and_ui_resource_without_credentials():
 
     async def check():
         tools = await server.list_tools()
-        assert len(tools) == 23
+        assert len(tools) == 30
         assert all(t.annotations.readOnlyHint for t in tools)
         by_name = {t.name: t for t in tools}
         # Only the on-demand card tool renders the widget; lookups stay text-only.
