@@ -570,11 +570,12 @@ ticket was then closed through `update_ticket_status`.
 
 ### ChatGPT tool surface
 
-Personal mode exposes 41 tools: twenty-one read tools (the original eight,
+Personal mode exposes 43 tools: twenty-three read tools (the original eight,
 `show_tickets`, six asset reads: `search_assets`, `get_asset`, `asset_feed`,
-`ticket_assets`, `asset_tickets`, `asset_metadata`, and six knowledge base
+`ticket_assets`, `asset_tickets`, `asset_metadata`, six knowledge base
 reads: `search_articles`, `get_article`, `article_categories`,
-`related_articles`, `article_services`, `asset_articles`), fifteen direct-write
+`related_articles`, `article_services`, `asset_articles`, and two report
+reads: `list_reports`, `run_report`), fifteen direct-write
 tools (`add_ticket_comment`, `update_ticket_status`, `assign_ticket`,
 `edit_ticket`, `complete_ticket_task`, `create_ticket`, `add_asset_comment`,
 `link_asset_to_ticket`, `edit_asset`, `create_article`, `edit_article`,
@@ -582,7 +583,7 @@ tools (`add_ticket_comment`, `update_ticket_status`, `assign_ticket`,
 `edit_article_category`), bounded read-only `ticket_write_metadata`,
 `list_ticket_tasks` and `ticket_create_metadata`, and the grant-owner-only
 `ticket_write_result` and `resolve_ticket_write`. External issuer mode keeps the
-twenty-one read-only tools.
+twenty-three read-only tools.
 
 **Assets.** The connector discovers the tenant's asset application by class
 (`TDAssets`), preferring "InfoTech Assets/CIs" when several exist (Cedarville has
@@ -637,6 +638,19 @@ day on scratch category 28469 and article 173058: category create and edit,
 article create, field edits, status to Approved and Archived, asset and
 related-article link and unlink with read-back on both sides. Design:
 `docs/superpowers/specs/2026-09-22-knowledge-base-tools-design.md`.
+
+**Reports.** `list_reports` maps `ReportSearch` server-side (name text,
+application, owner resolved through the people API) over the Report Builder
+reports the signed-in user can see (147 for the owner on 2026-09-23).
+`run_report` fetches one report with data (`GET /api/reports/{id}?withData=true`,
+optional `dataSortExpression` validated to a column name plus ASC/DESC) and
+returns the report's displayed columns plus rows keyed by header text, limited
+to at most 200 rows per call with `total_rows` reporting the full size; cells
+are passed through the same text scrubber as ticket bodies. The API returns
+the whole result set regardless of the limit (the survey report is ~6,800
+rows), so the limit bounds the tool output, not the tenant call. Rate limits
+are per user: 45/min for listing, 30/min for running. No TDNext URL is
+emitted because the report viewer's URL shape has not been verified.
 
 **Ticket cards are on demand.** Only `show_tickets(ticket_ids)` carries the
 widget `outputTemplate`, so ChatGPT renders the ticket viewer just when asked to
