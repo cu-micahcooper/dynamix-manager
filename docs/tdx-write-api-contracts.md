@@ -232,23 +232,24 @@ Source: `https://demotemplate.teamdynamix.com/TDWebApi/swagger/v1/openapi.json`
 
 ## Knowledge base (Client Portal application 2045)
 
-Source: the tenant OpenAPI document plus a live read probe on 2026-09-22. All routes are
-`/api/2045/...` except the asset link, which lives in the asset application.
+Source: the tenant OpenAPI document plus live verification on 2026-09-22 (scratch category
+28469 under Tech FAQ, scratch article 173058, both left for the owner to delete in TDNext).
+All routes are `/api/2045/...` except the asset link, which lives in the asset application.
 
-| Operation | Documented | Adapter classification |
+| Operation | Observed live | Adapter classification |
 | --- | --- | --- |
-| `POST .../knowledgebase/search` (`ArticleSearch`) | 200 `Article[]`; bodies are returned regardless of `IncludeArticleBodies` (observed live) | read |
-| `GET .../knowledgebase/{id}` | 200 current revision | read; baseline `ModifiedDate` + `RevisionNumber` |
-| `GET .../knowledgebase/categories`, `.../categories/{id}` | 200 tree / one category | read |
-| `GET .../knowledgebase/{id}/related`, `.../relatedservices` | 200 lists | read |
-| `GET /api/{assetApp}/assets/{id}/articles` | 200 `Article[]` | read (`.../knowledgebase/{id}/assetscis` hung >60 s live and is not used) |
-| `POST .../knowledgebase` (`Article`) | 201 created article | applied when 201 with `AppID` 2045 and integer `ID`; detail = article id, status, published, public, revision |
-| `PATCH .../knowledgebase/{id}` (JSON Patch) | 200 updated article | applied when 200 and `ID` matches; otherwise unknown |
-| `POST` / `DELETE /api/{assetApp}/assets/{id}/articles/{articleId}` | 200 message | link 200 applied, 204 applied ("already linked", by analogy with the ticket asset link); unlink 200 applied, 404 applied ("did not exist"); verify live |
-| `POST` / `DELETE .../knowledgebase/{id}/related/{relatedArticleId}` | 200 message | same rule as the asset link; verify live |
+| `POST .../knowledgebase/search` (`ArticleSearch`) | 200; bodies returned regardless of `IncludeArticleBodies`; text search ranks archived with approved | read |
+| `GET .../knowledgebase/{id}` | 200 | read; baseline `ModifiedDate` + `RevisionNumber` (PATCH does not bump the revision) |
+| `GET .../knowledgebase/categories`, `.../categories/{id}` | 200 (76 categories) | read |
+| `GET .../knowledgebase/{id}/related`, `.../relatedservices` | 200 | read; also the link-state preflight for related links |
+| `GET /api/928/assets/{id}/articles` | 200 | read; also the link-state preflight for asset links (`.../knowledgebase/{id}/assetscis` hung >60 s and is not used) |
+| `POST .../knowledgebase` (`Article`) | **400 "Exactly one of OwningGroupID or OwnerUID must be provided."** without an owner; 201 with one | the action requires exactly one; `create_article` defaults the owner to the signed-in user |
+| `PATCH .../knowledgebase/{id}` (JSON Patch) | 200; `Status`, `Subject`, `Summary`, `Tags`, `Body` take effect; **`IsPublished` and `IsPublic` are ignored** (also by PUT, for both a user token and the service account) | applied when 200 and `ID` matches; publish flags are not offered |
+| `POST` / `DELETE /api/928/assets/{id}/articles/{articleId}` | 200; **repeat link 400, missing unlink 400** (empty body) | preflight: existing link → applied "already linked" with no request; missing unlink → applied "did not exist"; 200 applied; 4xx rejected |
+| `POST` / `DELETE .../knowledgebase/{id}/related/{relatedArticleId}` | 200; **repeat link 500, missing unlink 500** | same preflight rule, which is what keeps a 500 from locking the article behind an unknown outcome |
 | `POST .../knowledgebase/categories` (`ArticleCategory`) | 201 | applied when 201 with `AppID` 2045; detail = category id, name, parent |
-| `PUT .../knowledgebase/categories/{id}` (full `ArticleCategory`) | 200 | the adapter fetches the category, applies the requested fields and sends the full object minus read-only fields; applied when 200 and `ID` matches |
+| `PUT .../knowledgebase/categories/{id}` (full `ArticleCategory`) | 200 | fetch, apply requested fields, send the object minus read-only fields; applied when 200 and `ID` matches |
 
-Statuses: 1 Not Submitted, 2 Submitted, 3 Approved, 4 Rejected, 5 Archived. Article and
-category deletion, attachments and service/offering links are deliberately not exposed.
-Live write verification is pending; update this table with observed codes.
+Statuses: 1 Not Submitted, 2 Submitted, 3 Approved, 4 Rejected, 5 Archived. A newly created
+article reported `IsPublic: true` and `InheritPermissions: true` regardless of the request.
+Article and category deletion, attachments and service/offering links are deliberately not exposed.

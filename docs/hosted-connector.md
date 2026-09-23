@@ -620,14 +620,22 @@ snippets of 400 characters; `get_article` gives the full text, or the raw HTML
 on request. Text search ranks archived articles with approved ones, so the
 search tool tells the model to filter by status and published flag for
 "what do we tell users" questions. Writes use the same pipeline:
-`create_article` defaults to an unpublished Not Submitted draft; `edit_article`
-is a JSON Patch with a revision-and-modified-date baseline and preview notices
-when a change publishes, makes public or archives; `link_article` and
-`unlink_article` relate an article to an asset or to another article; categories
-can be created and edited, never deleted. Article deletion is not exposed:
-archive plus unpublish instead. Bodies are sanitised before saving (script,
+`create_article` makes a Not Submitted draft owned by the signed-in user unless
+an owner or owning group is named (TeamDynamix requires exactly one);
+`edit_article` is a JSON Patch with a revision-and-modified-date baseline and a
+preview notice when a change archives; `link_article` and `unlink_article`
+relate an article to an asset or to another article and read the current link
+state first, so a repeat is a no-op instead of the 400 or 500 the tenant
+returns; categories can be created and edited, never deleted. Article deletion
+is not exposed: archive instead. **Publishing is not possible through the API**:
+live on 2026-09-22 both PATCH and PUT returned 200 and left `IsPublished` and
+`IsPublic` unchanged, so the tools do not offer those flags and every preview
+says to publish in the portal. Bodies are sanitised before saving (script,
 iframe, object and embed elements and `on*` attributes are removed, and the
-preview says so); plain text is wrapped in paragraphs. Design:
+preview says so); plain text is wrapped in paragraphs. Live-verified the same
+day on scratch category 28469 and article 173058: category create and edit,
+article create, field edits, status to Approved and Archived, asset and
+related-article link and unlink with read-back on both sides. Design:
 `docs/superpowers/specs/2026-09-22-knowledge-base-tools-design.md`.
 
 **Ticket cards are on demand.** Only `show_tickets(ticket_ids)` carries the

@@ -1,6 +1,6 @@
 # Knowledge base tools for the hosted connector — design
 
-Status: implemented 2026-09-22 (commits 5cc9427..b59d6c2); live verification pending. Source of API facts: the
+Status: implemented and live-verified 2026-09-22 (commits 5cc9427..6ec1893). Deviations found live: creation requires exactly one owner; IsPublished/IsPublic are ignored by the API (flags removed); duplicate links return 400/500 (link-state preflight added). See docs/tdx-write-api-contracts.md. Source of API facts: the
 tenant's OpenAPI document (`https://cedarville.teamdynamix.com/TDWebApi/swagger/v1/openapi.json`)
 plus a live read probe with the analytics service account on 2026-09-22.
 
