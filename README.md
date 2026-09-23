@@ -126,3 +126,34 @@ jupyter lab --version
 ```
 
 If any verification step fails, re-run `./scripts/bootstrap_env.sh` to ensure dependencies sync and rerun the failing command.
+
+
+## Personal ticket workbench
+
+The local web app presents your assigned tickets one at a time, with conversation history alongside suggested next steps and an editable update. Every submission requires an exact preview and an explicit **Submit and next** action.
+
+```bash
+python3 -m venv .venv-workbench
+.venv-workbench/bin/python -m pip install -e '.[dev,web]'
+.venv-workbench/bin/python -m dynamix_manager.workbench --port 8765
+```
+
+Open `http://127.0.0.1:8765`. Choose **Explore with sample tickets** for fictional tickets, simulated AI suggestions, and local-only submissions. Public replies and internal notes have separate saved drafts. You can skip tickets and return later.
+
+For live reads, configure `TDX_BASE_URL` (HTTPS URL ending in `/TDWebApi`) and `TDX_APP_ID` in the server environment or local `.env`, then enter your personal TeamDynamix credentials or bearer token. Select **Remember my TeamDynamix login on this computer** during sign-in to save your verified personal credentials in owner-only `.env` entries named `WORKBENCH_PERSONAL_*`. After logout or restart, choose **Sign in with saved login**. **Forget saved login** removes those entries. The app never silently uses the analytics account credentials from `.env`. Administrator web-service credentials are not supported by this app. An institutional browser login does not necessarily grant API access.
+
+Live AI requires an OpenAI Platform API key and model ID. Enter these through **AI settings** to save them in the project’s local, owner-only `.env` file (retained across sign-out and restart), or set `OPENAI_API_KEY` and `OPENAI_MODEL` in the backend environment. Selected ticket text, its applicable history, and your drafting instructions are sent to OpenAI only when you request suggestions. Public drafting excludes internal conversation entries. Attachments and other tickets are excluded. Generated wording never replaces your edits until you choose **Use this draft**.
+
+Drafts and submission records are sensitive local data kept in `.workbench/`, which is gitignored. Passwords and tokens are held in server memory and, when explicitly remembered, the local `.env` file; they are never saved in this database or returned to the browser. Keep the server bound to loopback. Do not expose it through a public tunnel.
+
+An uncertain submission stops the queue and blocks resubmission. Inspect the original ticket, check the outcome, and only acknowledge uncertainty after checking for an accepted update. Automatic retries could duplicate a message. Live submission availability is shown by the app and depends on verified tenant API behavior; demo success is not evidence of live write success.
+
+Validation:
+
+```bash
+.venv-workbench/bin/python -m pytest -q
+.venv-workbench/bin/python -m ruff check src/dynamix_manager/workbench tests/test_workbench*.py
+node --test tests/frontend/workbench.test.cjs
+```
+
+The workbench can override the analytics app ID with `WORKBENCH_TDX_APP_ID` or the non-secret `tdx_app_id` in `.workbench/config.json`. The current local configuration selects ticketing app 634; live submissions were enabled after user approval, with mandatory preview and explicit submission. The standard note/status API contract was checked against the tenant documentation; no real update was sent.
