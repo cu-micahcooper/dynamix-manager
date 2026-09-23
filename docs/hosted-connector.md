@@ -651,6 +651,10 @@ the whole result set regardless of the limit (the survey report is ~6,800
 rows), so the limit bounds the tool output, not the tenant call. Rate limits
 are per user: 45/min for listing, 30/min for running. No TDNext URL is
 emitted because the report viewer's URL shape has not been verified.
+Live-verified 2026-09-23 on production (deployment `e5a748b0`): name search,
+owner-resolved listing (99 reports owned by the connector owner), and the
+survey report (6,793 rows) sorted by completion date. An unknown sort column
+is silently ignored by TeamDynamix rather than rejected.
 
 **Ticket cards are on demand.** Only `show_tickets(ticket_ids)` carries the
 widget `outputTemplate`, so ChatGPT renders the ticket viewer just when asked to
