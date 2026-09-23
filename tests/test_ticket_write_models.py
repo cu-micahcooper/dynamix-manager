@@ -120,3 +120,36 @@ def test_asset_actions_are_typed_bounded_and_carry_an_item_identity():
                 dict(kind="asset_comment", asset_id=0, comments="x"), dict(kind="asset_link", asset_id=1)):
         with pytest.raises(ValidationError):
             parse(bad)
+
+
+def test_article_actions_are_typed_bounded_and_carry_an_item_identity():
+    from dynamix_manager.ticket_writes.models import (ArticleCreateAction, ArticleEditAction, ArticleLinkAction,
+                                                       ArticleUnlinkAction, CategoryCreateAction, CategoryEditAction)
+    create = parse(dict(kind="article_create", subject="Reset MFA", body="Step one", category_id=9212))
+    assert isinstance(create, ArticleCreateAction) and create.item == ("create", None) and create.ticket_id == 0
+    assert create.status == "not_submitted" and create.is_published is False and create.is_public is False
+    assert create.model_dump(mode="json") == {"kind": "article_create", "subject": "Reset MFA", "body": "Step one", "category_id": 9212}
+    edit = parse(dict(kind="article_edit", article_id=95821, status="archived", is_published=False, tags=["macos"]))
+    assert isinstance(edit, ArticleEditAction) and edit.item == ("article", 95821) and edit.ticket_id == 0
+    assert edit.model_dump(mode="json") == {"kind": "article_edit", "article_id": 95821, "status": "archived", "is_published": False, "tags": ["macos"]}
+    link = parse(dict(kind="article_link", article_id=95821, asset_id=1973209))
+    assert isinstance(link, ArticleLinkAction) and link.item == ("article", 95821)
+    unlink = parse(dict(kind="article_unlink", article_id=95821, related_article_id=84764))
+    assert isinstance(unlink, ArticleUnlinkAction) and unlink.related_article_id == 84764
+    category = parse(dict(kind="category_create", name="Scratch", parent_id=10548))
+    assert isinstance(category, CategoryCreateAction) and category.item == ("create", None) and category.is_public is False
+    cat_edit = parse(dict(kind="category_edit", category_id=9107, name="Adobe apps"))
+    assert isinstance(cat_edit, CategoryEditAction) and cat_edit.item == ("category", 9107) and cat_edit.ticket_id == 0
+    for bad in (dict(kind="article_create", subject=" ", body="x", category_id=1),
+                dict(kind="article_create", subject="s", body="", category_id=1),
+                dict(kind="article_create", subject="s", body="x", category_id=1, status="published"),
+                dict(kind="article_create", subject="s", body="x", category_id=1, tags=["a" * 101]),
+                dict(kind="article_edit", article_id=95821),
+                dict(kind="article_edit", article_id=95821, review_date="soon"),
+                dict(kind="article_link", article_id=95821),
+                dict(kind="article_link", article_id=95821, asset_id=1, related_article_id=2),
+                dict(kind="article_link", article_id=95821, related_article_id=95821),
+                dict(kind="category_edit", category_id=9107),
+                dict(kind="category_create", name="  ")):
+        with pytest.raises(ValidationError):
+            parse(bad)

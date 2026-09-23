@@ -219,8 +219,159 @@ class EditAssetAction(_AssetOnly):
         return self
 
 
+ARTICLE_STATUS = Literal["not_submitted", "submitted", "approved", "rejected", "archived"]
+ARTICLE_STATUS_IDS = {"not_submitted": 1, "submitted": 2, "approved": 3, "rejected": 4, "archived": 5}
+ArticleTitle = Annotated[str, Field(strict=True, min_length=1, max_length=300)]
+ArticleBody = Annotated[str, Field(strict=True, min_length=1, max_length=200000)]
+Tags = Annotated[tuple[Annotated[str, Field(strict=True, min_length=1, max_length=100)], ...], Field(max_length=50)]
+IsoDate = Annotated[str, Field(strict=True, min_length=10, max_length=35), AfterValidator(_iso_date)]
+
+
+def _nonblank(value):
+    if value is not None and not value.strip():
+        raise ValueError("Text fields must contain text.")
+    return value
+
+
+class _NoTicket(ImmutableModel):
+    """Knowledge base actions touch no ticket; ``ticket_id`` is 0 for the shared write pipeline."""
+
+    @property
+    def ticket_id(self):
+        return 0
+
+    @model_serializer(mode="wrap")
+    def serialize_explicit(self, handler):
+        return {key: value for key, value in handler(self).items() if key in self.model_fields_set}
+
+
+class ArticleAction(_NoTicket):
+    """Base for actions on an existing knowledge base article."""
+
+    article_id: PositiveID
+
+    @property
+    def item(self):
+        return ("article", self.article_id)
+
+
+class _ArticleFields(ImmutableModel):
+    subject: ArticleTitle | None = None
+    summary: Annotated[str, Field(strict=True, max_length=2000)] | None = None
+    body: ArticleBody | None = None
+    tags: Tags | None = None
+    category_id: PositiveID | None = None
+    owner_uid: UUID | None = None
+    owning_group_id: PositiveID | None = None
+    review_date: IsoDate | None = None
+    is_public: Annotated[bool, Field(strict=True)] | None = None
+    is_published: Annotated[bool, Field(strict=True)] | None = None
+    status: ARTICLE_STATUS | None = None
+    notify_owner: Annotated[bool, Field(strict=True)] | None = None
+    notify_owner_of_review_date: Annotated[bool, Field(strict=True)] | None = None
+    order: Annotated[float, Field(strict=True, ge=0)] | None = None
+
+    @field_validator("subject", "body", "summary")
+    @classmethod
+    def nonblank(cls, value):
+        return _nonblank(value)
+
+
+class ArticleEditAction(ArticleAction, _ArticleFields):
+    kind: Literal["article_edit"]
+    EDITABLE: ClassVar[tuple[str, ...]] = ("subject", "summary", "body", "tags", "category_id", "owner_uid", "owning_group_id",
+                                           "review_date", "is_public", "is_published", "status", "notify_owner",
+                                           "notify_owner_of_review_date", "order")
+
+    @model_validator(mode="after")
+    def at_least_one_field(self):
+        if not (self.model_fields_set & set(self.EDITABLE)):
+            raise ValueError("Select at least one article field to change.")
+        return self
+
+
+class _ArticleTarget(ArticleAction):
+    asset_id: PositiveID | None = None
+    related_article_id: PositiveID | None = None
+
+    @model_validator(mode="after")
+    def exactly_one_target(self):
+        if (self.asset_id is None) == (self.related_article_id is None):
+            raise ValueError("Give exactly one of asset_id or related_article_id.")
+        if self.related_article_id == self.article_id:
+            raise ValueError("An article cannot be related to itself.")
+        return self
+
+
+class ArticleLinkAction(_ArticleTarget):
+    kind: Literal["article_link"]
+
+
+class ArticleUnlinkAction(_ArticleTarget):
+    kind: Literal["article_unlink"]
+
+
+class ArticleCreateAction(_NoTicket, _ArticleFields):
+    kind: Literal["article_create"]
+    subject: ArticleTitle
+    body: ArticleBody
+    category_id: PositiveID
+    is_public: Annotated[bool, Field(strict=True)] = False
+    is_published: Annotated[bool, Field(strict=True)] = False
+    status: ARTICLE_STATUS = "not_submitted"
+
+    @property
+    def item(self):
+        return ("create", None)
+
+
+class CategoryAction(_NoTicket):
+    category_id: PositiveID
+
+    @property
+    def item(self):
+        return ("category", self.category_id)
+
+
+class _CategoryFields(ImmutableModel):
+    name: Annotated[str, Field(strict=True, min_length=1, max_length=200)] | None = None
+    description: Annotated[str, Field(strict=True, max_length=2000)] | None = None
+    parent_id: Annotated[int, Field(strict=True, ge=0)] | None = None  # 0 = top level
+    order: Annotated[float, Field(strict=True, ge=0)] | None = None
+    is_public: Annotated[bool, Field(strict=True)] | None = None
+
+    @field_validator("name")
+    @classmethod
+    def nonblank(cls, value):
+        return _nonblank(value)
+
+
+class CategoryEditAction(CategoryAction, _CategoryFields):
+    kind: Literal["category_edit"]
+    EDITABLE: ClassVar[tuple[str, ...]] = ("name", "description", "parent_id", "order", "is_public")
+
+    @model_validator(mode="after")
+    def at_least_one_field(self):
+        if not (self.model_fields_set & set(self.EDITABLE)):
+            raise ValueError("Select at least one category field to change.")
+        return self
+
+
+class CategoryCreateAction(_NoTicket, _CategoryFields):
+    kind: Literal["category_create"]
+    name: Annotated[str, Field(strict=True, min_length=1, max_length=200)]
+    is_public: Annotated[bool, Field(strict=True)] = False
+    inherit_permissions: Annotated[bool, Field(strict=True)] = False
+
+    @property
+    def item(self):
+        return ("create", None)
+
+
 Action = Annotated[CommentAction | StatusAction | AssignAction | EditAction | TaskAction | CreateAction
-                   | AssetCommentAction | LinkAssetAction | EditAssetAction,
+                   | AssetCommentAction | LinkAssetAction | EditAssetAction
+                   | ArticleCreateAction | ArticleEditAction | ArticleLinkAction | ArticleUnlinkAction
+                   | CategoryCreateAction | CategoryEditAction,
                    Field(discriminator="kind")]
 _actions = TypeAdapter(Action)
 
@@ -251,6 +402,7 @@ class PreparedChange(ImmutableModel):
     base_url: str
     app_id: PositiveID
     asset_app_id: PositiveID | None = None
+    portal_app_id: PositiveID | None = None
     baseline_json: str
     payload_json: str
     preview: ChangePreview
