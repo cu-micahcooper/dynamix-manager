@@ -570,20 +570,20 @@ ticket was then closed through `update_ticket_status`.
 
 ### ChatGPT tool surface
 
-Personal mode exposes 43 tools: twenty-three read tools (the original eight,
-`show_tickets`, six asset reads: `search_assets`, `get_asset`, `asset_feed`,
-`ticket_assets`, `asset_tickets`, `asset_metadata`, six knowledge base
-reads: `search_articles`, `get_article`, `article_categories`,
-`related_articles`, `article_services`, `asset_articles`, and two report
-reads: `list_reports`, `run_report`), fifteen direct-write
-tools (`add_ticket_comment`, `update_ticket_status`, `assign_ticket`,
-`edit_ticket`, `complete_ticket_task`, `create_ticket`, `add_asset_comment`,
-`link_asset_to_ticket`, `edit_asset`, `create_article`, `edit_article`,
-`link_article`, `unlink_article`, `create_article_category`,
-`edit_article_category`), bounded read-only `ticket_write_metadata`,
-`list_ticket_tasks` and `ticket_create_metadata`, and the grant-owner-only
-`ticket_write_result` and `resolve_ticket_write`. External issuer mode keeps the
-twenty-three read-only tools.
+Personal mode exposes 64 tools: thirty-three read tools (the original eight,
+`show_tickets`, six asset reads, six knowledge base reads, two report reads,
+and the ticket extras `saved_searches`, `run_saved_search`, `ticket_attachments`,
+`read_attachment`, `ticket_templates`, `get_ticket_template`,
+`response_templates`, `ticket_contacts`, `ticket_slas`, `ticket_workflow`),
+twenty-six direct-write tools (the nine ticket and asset writes, six knowledge
+base writes, and the ticket relation writes `add_ticket_contact`,
+`remove_ticket_contact`, `tag_ticket`, `untag_ticket`, `add_child_tickets`,
+`set_ticket_sla`, `remove_ticket_sla`, `reclassify_ticket`,
+`act_on_workflow_step`, `reassign_workflow_step`, `move_ticket`), bounded
+read-only `ticket_write_metadata`, `list_ticket_tasks` and
+`ticket_create_metadata`, and the grant-owner-only `ticket_write_result` and
+`resolve_ticket_write`. External issuer mode keeps the thirty-three read-only
+tools.
 
 **Assets.** The connector discovers the tenant's asset application by class
 (`TDAssets`), preferring "InfoTech Assets/CIs" when several exist (Cedarville has
@@ -655,6 +655,33 @@ Live-verified 2026-09-23 on production (deployment `e5a748b0`): name search,
 owner-resolved listing (99 reports owned by the connector owner), and the
 survey report (6,793 rows) sorted by completion date. An unknown sort column
 is silently ignored by TeamDynamix rather than rejected.
+
+**Ticketing applications.** Every ticket read takes an optional `app`: an
+application ID, a unique part of its name, or (for `search_tickets` and
+`my_queue`) `"all"`, which runs the search in every ticketing application the
+user can see and merges the results newest first. Without `app`, `get_ticket`,
+`ticket_feed`, `show_tickets` and the other per-ticket reads try InfoTech
+Tickets and then fall back to `GET /api/tickets/{id}`, which finds the ticket
+in any application the user can access; the result's `application` says where
+it lives and ticket URLs point at the ticket's own application.
+`connection_status` lists the user's ticketing applications (Cedarville has
+seven). Writes still target InfoTech Tickets only; `move_ticket` is the one
+write that touches another application, and it verifies the destination's
+type, form and status first.
+
+**Ticket extras.** Saved searches run with the API's paging (`total`, `pages`);
+`read_attachment` returns text for text-like files and PDFs (pypdf, up to 5 MB,
+20,000 characters) and metadata only for binaries; templates and response
+templates are read-only, the latter with their canned text so the model can
+adapt one into `add_ticket_comment`. Relation writes (contacts, tags, children,
+SLA, classification) read the current state first so repeats are no-ops;
+`add_child_tickets` has no API inverse and says so. Workflow: `ticket_workflow`
+returns the current steps with the actions available to the caller (the
+workflow endpoint returns 404 when a ticket has none), `act_on_workflow_step`
+validates the step and action against that list before its one attempt and
+treats `IsSuccessful: false` as rejected, `reassign_workflow_step` verifies the
+assignee. Design notes:
+`docs/superpowers/specs/2026-09-23-ticket-features-design.md`.
 
 **Ticket cards are on demand.** Only `show_tickets(ticket_ids)` carries the
 widget `outputTemplate`, so ChatGPT renders the ticket viewer just when asked to

@@ -1,6 +1,6 @@
 # Ticket features for the hosted connector — design notes
 
-Status: prepared 2026-09-23, not yet approved or implemented. Written so the work can be picked
+Status: approved ("go") and implemented 2026-09-23 (commits 07fb1d8..50e16ac); configuration-item ticket links were dropped as redundant with link_asset_to_ticket. Live verification recorded in docs/hosted-connector.md. Written so the work can be picked
 up cold. Source of API facts: the tenant OpenAPI document
 (`https://cedarville.teamdynamix.com/TDWebApi/swagger/v1/openapi.json`). Nothing here has been
 exercised live yet; every status code below is "documented, verify live".
