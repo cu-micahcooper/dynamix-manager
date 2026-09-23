@@ -159,3 +159,20 @@ def test_ticket_contacts_slas_and_workflow_reads():
     c.routes[("GET", "/api/tickets/3")] = ticket(3, 1729)
     none = call(c, "ticket_workflow", {"ticket_id": 3})
     assert none["workflow"] is None and none["application"]["AppID"] == 1729
+
+
+def test_ticket_feed_expands_replies_for_entries_that_have_them():
+    c = connection()
+    c.client.get_ticket_feed.side_effect = lambda ticket_id, token, app_id: [
+        {"ID": 9, "Body": "<p>Question</p>", "RepliesCount": 2, "Replies": []},
+        {"ID": 10, "Body": "<p>No replies</p>", "RepliesCount": 0, "Replies": []}]
+    c.routes[("GET", "/api/feed/9")] = {"ID": 9, "Body": "<p>Question</p>", "RepliesCount": 2, "Replies": [
+        {"ID": 91, "Body": "<p>First <b>answer</b></p>", "CreatedFullName": "Alan McCain", "CreatedDate": "2026-09-01T00:00:00Z", "CreatedUid": "u"},
+        {"ID": 92, "Body": "Thanks", "CreatedFullName": "Micah Cooper", "CreatedDate": "2026-09-02T00:00:00Z", "CreatedUid": "v"}]}
+    feed = call(c, "ticket_feed", {"ticket_id": 1})
+    assert feed["items"][0]["replies"] == [
+        {"ID": 91, "CreatedFullName": "Alan McCain", "CreatedDate": "2026-09-01T00:00:00Z", "body_text": "First answer"},
+        {"ID": 92, "CreatedFullName": "Micah Cooper", "CreatedDate": "2026-09-02T00:00:00Z", "body_text": "Thanks"}]
+    assert feed["items"][1]["replies"] == []
+    assert "not expanded" not in feed["warning"]
+    assert sum(1 for m, p, _ in c.calls if p == "/api/feed/9") == 1 and not any(p == "/api/feed/10" for _, p, _ in c.calls)

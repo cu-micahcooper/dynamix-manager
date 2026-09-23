@@ -462,6 +462,26 @@ def create_server(
         app_id, name = c.resolve_ticket_app(app)
         return {**run_search(c, payload, limit, resolved, app_id), "application": {"AppID": app_id, "Name": name}}
 
+    REPLY_KEYS = ("ID", "CreatedFullName", "CreatedDate")
+    REPLY_FETCH_LIMIT = 10
+
+    def with_replies(c, rows):
+        """Attach each feed entry's replies as readable text; TDX only returns them from GET /api/feed/{id}."""
+        fetched = 0
+        result = []
+        for row in rows:
+            replies = [r for r in (row.get("Replies") or []) if isinstance(r, dict)]
+            if not replies and row.get("RepliesCount") and fetched < REPLY_FETCH_LIMIT and type(row.get("ID")) is int:
+                fetched += 1
+                try:
+                    full = c.api_get(f"/api/feed/{row['ID']}")
+                    replies = [r for r in (full.get("Replies") or []) if isinstance(r, dict)] if isinstance(full, dict) else []
+                except Exception:
+                    replies = []
+            result.append({**row, "body_text": display_text(row.get("Body")),
+                           "replies": [{**{k: r.get(k) for k in REPLY_KEYS}, "body_text": display_text(r.get("Body"))} for r in replies]})
+        return result
+
     def locate_ticket(c, ticket_id, app):
         """Fetch a ticket from the given application, or from the default one with a cross-application fallback."""
         if app is not None:
@@ -581,13 +601,13 @@ def create_server(
 
     @tool(annotations=read, meta=widget_callable)
     def ticket_feed(ticket_id: POSITIVE, limit: LIMIT = 25, app: TICKET_APP = None) -> dict[str, Any]:
-        """Read a bounded slice of ticket activity (any application the user can see). Replies are not expanded."""
+        """Read a bounded slice of ticket activity (any application the user can see), with replies expanded."""
         c = conn()
         _, app_id, name = locate_ticket(c, ticket_id, app)
         rows = c.client.get_ticket_feed(ticket_id, c.token, app_id)
         return {"ticket_id": ticket_id, "application": {"AppID": app_id, "Name": name},
-                "items": [{**row, "body_text": display_text(row.get("Body"))} for row in rows[:limit]],
-                "complete": False, "warning": "Activity is a bounded slice; replies are not expanded."}
+                "items": with_replies(c, rows[:limit]), "complete": False,  # the feed API returns a bounded, unpaged slice
+                "warning": f"Activity is a bounded slice; replies are expanded for the first {REPLY_FETCH_LIMIT} entries that have them."}
 
     @tool(annotations=read, meta=card_meta)
     def show_tickets(ticket_ids: Annotated[list[POSITIVE], Field(min_length=1, max_length=10)]) -> dict[str, Any]:
@@ -897,10 +917,9 @@ def create_server(
         """Read a bounded slice of an asset's activity feed."""
         c = conn()
         rows = c.api_get(f"/api/{c.asset_app_id}/assets/{asset_id}/feed")
-        rows = rows if isinstance(rows, list) else []
-        return {"asset_id": asset_id,
-                "items": [{**row, "body_text": display_text(row.get("Body"))} for row in rows[:limit]],
-                "complete": len(rows) <= limit, "warning": "Activity is a bounded slice; replies are not expanded."}
+        rows = [r for r in rows if isinstance(r, dict)] if isinstance(rows, list) else []
+        return {"asset_id": asset_id, "items": with_replies(c, rows[:limit]), "complete": len(rows) <= limit,
+                "warning": f"Activity is a bounded slice; replies are expanded for the first {REPLY_FETCH_LIMIT} entries that have them."}
 
     @tool(annotations=read)
     def ticket_assets(ticket_id: POSITIVE) -> dict[str, Any]:
