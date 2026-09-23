@@ -21,6 +21,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 from pydantic import AfterValidator, Field
 
+from dynamix_manager.kb_text import html_to_text, truncate
 from dynamix_manager.tdx_client import TeamDynamixClient, build_auth_headers, uses_admin_auth
 
 APP_URI = "ui://teamdynamix/tickets-v2.html"
@@ -54,6 +55,10 @@ APPLICATION_CACHE_TTL = 3600
 ASSET_METADATA_KINDS = ("statuses", "models", "vendors")
 PORTAL_APPLICATION_CLASS = "TDClient"
 PORTAL_APPLICATION_NAME = "Client Portal"
+ARTICLE_STATUSES = {"not_submitted": 1, "submitted": 2, "approved": 3, "rejected": 4, "archived": 5}
+ARTICLE_KEYS = ("ID", "Subject", "Summary", "StatusName", "IsPublished", "IsPublic", "CategoryID", "CategoryName",
+                "Tags", "OwnerFullName", "OwningGroupName", "ModifiedDate", "RevisionNumber", "ReviewDateUtc")
+SNIPPET_LIMIT = 400
 
 # Tenant application discovery is static per tenant; cache it so each request pays only
 # for its identity check and its own query. Keyed by (tenant API URL, application kind).
@@ -659,6 +664,135 @@ def create_server(
                  and type(r.get("ID")) is int and isinstance(r.get("Name"), str) and r.get("IsActive") is True]
         results = [{key: r.get(key) for key in keys} for r in valid[:limit]]
         return {"kind": kind, "results": results, "returned": len(results), "complete": len(valid) <= limit}
+
+    def article_summary(c, article, *, snippet=True):
+        row = {key: article.get(key) for key in ARTICLE_KEYS}
+        row["url"] = c.article_url(article["ID"])
+        if snippet:
+            row["body_text"], row["body_truncated"] = truncate(html_to_text(article.get("Body")), SNIPPET_LIMIT)
+        return row
+
+    def article_rows(rows):
+        return [r for r in rows if isinstance(r, dict) and type(r.get("ID")) is int] if isinstance(rows, list) else []
+
+    @tool(annotations=read)
+    def search_articles(
+        text: Annotated[str, Field(max_length=500)] = "",
+        category_id: POSITIVE | None = None,
+        author: PERSON = None,
+        author_uid: UUID | None = None,
+        status: Literal["not_submitted", "submitted", "approved", "rejected", "archived"] | None = None,
+        is_published: bool | None = None,
+        is_public: bool | None = None,
+        include_shortcuts: bool | None = None,
+        limit: LIMIT = 25,
+    ) -> dict[str, Any]:
+        """Search knowledge base articles with the API's own filters; every filter runs server-side.
+
+        Text search ranks archived articles with approved ones, so pass status="approved" and
+        is_published=true for "what do we tell users" questions. `author` is resolved through the
+        people API first (state who matched and continue; ambiguity runs no search). Bodies come
+        back as plain-text snippets; use get_article for the full text.
+        """
+        c = conn()
+        payload = {"ReturnCount": limit}
+        if author_uid is not None:
+            payload["AuthorUID"] = str(author_uid)
+        found, resolved, warnings = resolve_people(c, (("author", author),))
+        if warnings:
+            return {"articles": [], "returned": 0, "complete": True, "resolved_people": resolved,
+                    "warning": " ".join(warnings) + " No article search was run."}
+        if "author" in found:
+            payload["AuthorUID"] = found["author"][0]
+        for key, value in (("SearchText", text or None), ("Status", ARTICLE_STATUSES.get(status) if status else None),
+                           ("IsPublished", is_published), ("IsPublic", is_public), ("CategoryID", category_id),
+                           ("IncludeShortcuts", include_shortcuts)):
+            if value is not None:
+                payload[key] = value
+        rows = article_rows(c.api_post(f"/api/{c.portal_app_id}/knowledgebase/search", payload))
+        result = {"articles": [article_summary(c, a) for a in rows[:limit]], "returned": min(len(rows), limit),
+                  "complete": len(rows) < limit, "resolved_people": resolved}
+        if not result["complete"]:
+            result["warning"] = f"Only the first {limit} matches are shown; narrow the filters or raise limit (max 100)."
+        return result
+
+    @tool(annotations=read)
+    def get_article(article_id: POSITIVE, format: Literal["text", "html"] = "text") -> dict[str, Any]:
+        """Read one knowledge base article: fields, tags, attachments, and the body as text (or raw HTML)."""
+        c = conn()
+        article = c.api_get(f"/api/{c.portal_app_id}/knowledgebase/{article_id}")
+        if not isinstance(article, dict) or article.get("ID") != article_id:
+            raise RuntimeError("The article could not be read.")
+        body = article.get("Body")
+        record = {k: v for k, v in article.items() if k not in ("Body", "Attachments", "Attributes")}
+        result = {"article": record, "url": c.article_url(article_id),
+                  "attachments": [{"ID": a.get("ID"), "Name": a.get("Name"), "Size": a.get("Size")}
+                                  for a in (article.get("Attachments") or []) if isinstance(a, dict)],
+                  "attributes": [{"Name": a.get("Name"), "Value": a.get("ValueText")}
+                                 for a in (article.get("Attributes") or []) if isinstance(a, dict)]}
+        if format == "html":
+            result["body_html"] = body
+        else:
+            result["body_text"] = html_to_text(body)
+        return result
+
+    @tool(annotations=read)
+    def article_categories(parent_id: POSITIVE | None = None) -> dict[str, Any]:
+        """List knowledge base categories as a flattened tree (depth, parent), optionally under one parent."""
+        c = conn()
+        tree = c.api_get(f"/api/{c.portal_app_id}/knowledgebase/categories")
+        rows = []
+
+        def walk(nodes, depth):
+            for node in nodes if isinstance(nodes, list) else []:
+                if not isinstance(node, dict) or type(node.get("ID")) is not int:
+                    continue
+                rows.append({"ID": node["ID"], "Name": node.get("Name"), "ParentID": node.get("ParentID") or None,
+                             "ParentName": node.get("ParentName"), "IsPublic": node.get("IsPublic"),
+                             "Order": node.get("Order"), "depth": depth, "url": c.category_url(node["ID"])})
+                walk(node.get("Subcategories"), depth + 1)
+
+        def find(nodes, wanted):
+            for node in nodes if isinstance(nodes, list) else []:
+                if isinstance(node, dict) and node.get("ID") == wanted:
+                    return node.get("Subcategories") or []
+                inner = find(node.get("Subcategories") if isinstance(node, dict) else None, wanted)
+                if inner is not None:
+                    return inner
+            return None
+
+        if parent_id is None:
+            walk(tree, 0)
+        else:
+            subtree = find(tree, parent_id)
+            if subtree is None:
+                raise RuntimeError("The parent category was not found.")
+            walk(subtree, 1)
+        return {"categories": rows, "returned": len(rows), "complete": True}
+
+    @tool(annotations=read)
+    def related_articles(article_id: POSITIVE) -> dict[str, Any]:
+        """List knowledge base articles related to an article (no bodies)."""
+        c = conn()
+        rows = article_rows(c.api_get(f"/api/{c.portal_app_id}/knowledgebase/{article_id}/related"))
+        return {"article_id": article_id, "articles": [article_summary(c, a, snippet=False) for a in rows],
+                "returned": len(rows), "complete": True}
+
+    @tool(annotations=read)
+    def article_services(article_id: POSITIVE) -> dict[str, Any]:
+        """List the services and offerings related to a knowledge base article."""
+        c = conn()
+        rows = c.api_get(f"/api/{c.portal_app_id}/knowledgebase/{article_id}/relatedservices")
+        rows = [r for r in rows if isinstance(r, dict)] if isinstance(rows, list) else []
+        return {"article_id": article_id, "services": rows, "returned": len(rows), "complete": True}
+
+    @tool(annotations=read)
+    def asset_articles(asset_id: POSITIVE) -> dict[str, Any]:
+        """List knowledge base articles linked to an asset (no bodies)."""
+        c = conn()
+        rows = article_rows(c.api_get(f"/api/{c.asset_app_id}/assets/{asset_id}/articles"))
+        return {"asset_id": asset_id, "articles": [article_summary(c, a, snippet=False) for a in rows],
+                "returned": len(rows), "complete": True}
 
     @tool(annotations=read)
     def survey_report(limit: LIMIT = 25) -> dict[str, Any]:
