@@ -258,6 +258,17 @@ ChatGPT is cut over.
   unauthenticated `/mcp` 401, `/writes/review` 410, and a DCR + authorize round
   trip rendered the multi-user login page with read-and-modify consent and "Keep
   me connected" unchecked.
+- **Deploying (2026-09-22 onward).** The CLI's browser login belongs to a different
+  Railway account, so production deploys use a project token scoped to
+  teamdynamix-connector / production, kept in the git-ignored `.env` as
+  `RAILWAY_TOKEN`. Build a clean bundle (`git archive HEAD pyproject.toml README.md
+  LICENSE railway.toml deploy/ src/`) into a scratch directory and run
+  `railway up --path-as-root <dir> -s connector -e production -d` with that
+  variable set. `railway whoami` reports Unauthorized under a project token; that
+  is expected. Always confirm `railway status` names this project first: without
+  a valid link the CLI silently creates a new project named after the upload
+  directory in whichever account is logged in (this happened once, producing a
+  failed "bundle" project in the personal account).
 
 Cutover checklist: (1) in ChatGPT, point the TeamDynamix connector at the new
 `/mcp` URL (or create a new connector) and note the callback URL it shows;
@@ -703,7 +714,11 @@ encrypted audit row. The tool carries write hints and its description tells the
 model to ask the user to look before calling it; it is never a retry shortcut.
 To make the stuck operation findable, a lock or equivalence conflict now
 returns `detail.blocking_operation_id`, but only when the blocking operation
-belongs to the same grant owner; another user's operation stays anonymous.
+belongs to the same grant owner; another user's operation stays anonymous. Live-verified on production (deployment `e242682a`, commit `f89c086`) against
+the locked scratch ticket: a new comment returned `conflict` naming the stuck
+link operation; `ticket_write_result` showed it unknown; resolving it as
+applied released the lock; a repeat resolve was refused; and the same comment
+under a new request ID then applied (201).
 
 ### Durable operation limits
 
