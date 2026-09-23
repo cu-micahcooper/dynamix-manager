@@ -14,8 +14,8 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 from .adapter import WriteAdapter
 from .models import (ARTICLE_STATUS, ArticleEditAction, ArticleLinkAction, ArticleUnlinkAction, AssetCommentAction,
                      AssignAction, CategoryEditAction, ChildTicketsAction, CommentAction, EditAction, EditAssetAction,
-                     LinkAssetAction, ReclassifyAction, StatusAction, TaskAction, TicketContactAction, TicketSlaAction,
-                     TicketTagsAction, parse_action)
+                     LinkAssetAction, MoveTicketAction, ReclassifyAction, StatusAction, TaskAction, TicketContactAction,
+                     TicketSlaAction, TicketTagsAction, WorkflowReassignAction, WorkflowStepAction, parse_action)
 from .service import WriteAuthorizationRequired, WritesDisabled
 from .store import EquivalentWriteBlocked, WriteBindingError, WriteStateError
 
@@ -540,6 +540,30 @@ def register_ticket_write_tools(server, tool, service, connection_provider):
         return _submit(service, action, request_id)
 
     @tool(annotations=prepare, meta=write_meta, structured_output=True)
+    def act_on_workflow_step(action: WorkflowStepAction, request_id: REQUEST_ID) -> ResultOutput:
+        """Perform a workflow action (approve, reject, ...) on a current step, only on explicit user request.
+
+        Read ticket_workflow first: the step must be current and the action must be listed for you there.
+        The preview names the step and action; workflow actions cannot be undone from the API.
+        """
+        return _submit(service, action, request_id)
+
+    @tool(annotations=prepare, meta=write_meta, structured_output=True)
+    def reassign_workflow_step(action: WorkflowReassignAction, request_id: REQUEST_ID) -> ResultOutput:
+        """Reassign a current workflow step to a person (user_uid) or group (group_id), on explicit user request."""
+        return _submit(service, action, request_id)
+
+    @tool(annotations=prepare, meta=write_meta, structured_output=True)
+    def move_ticket(action: MoveTicketAction, request_id: REQUEST_ID) -> ResultOutput:
+        """Move a ticket to another ticketing application, on explicit user request.
+
+        Resolve the destination with connection_status (ticketing_applications) and its type, form and
+        status IDs with ticket_create_metadata/ticket_statuses for that app. The ticket keeps its ID; the
+        result's detail reports the new application and URL.
+        """
+        return _submit(service, action, request_id)
+
+    @tool(annotations=prepare, meta=write_meta, structured_output=True)
     def create_ticket(ticket: CreateTicketRequest, request_id: REQUEST_ID) -> CreateResultOutput:
         """Create a ticket only on an explicit user request; no review page.
 
@@ -649,6 +673,9 @@ def register_ticket_write_tools(server, tool, service, connection_provider):
         "set_ticket_sla",
         "remove_ticket_sla",
         "reclassify_ticket",
+        "act_on_workflow_step",
+        "reassign_workflow_step",
+        "move_ticket",
         "list_ticket_tasks",
         "ticket_create_metadata",
         "ticket_write_metadata",

@@ -981,3 +981,72 @@ def test_reclassify_puts_the_new_classification_and_confirms_the_ticket():
     sent = []
     adapter.request = lambda *a, **k: (sent.append(a) or SimpleNamespace(status_code=500))
     assert adapter.apply_once(same).message == "The ticket already has that classification." and sent == []
+
+
+WORKFLOW = dict(ID=77, Name="Purchase approval", Status=1, IsComplete=False, CurrentStepIDs=["step-2"], TicketId=1001,
+                Steps=[dict(ID="step-1", Name="Request", IsCurrent=False, TypeName="Start"),
+                       dict(ID="step-2", Name="Manager approval", IsCurrent=True, TypeName="Approval")], History=[])
+WORKFLOW_ROUTES = {
+    "/api/42/tickets/1001/workflow": WORKFLOW,
+    "/api/42/tickets/1001/workflow/actions?stepId=step-2": [dict(ID="act-approve", Name="Approve", Tooltip="Approve the purchase"),
+                                                            dict(ID="act-reject", Name="Reject", Tooltip="")],
+    "/api/applications": [dict(AppID=42, Name="InfoTech Tickets", AppClass="TDTickets"), dict(AppID=1072, Name="CTL Tickets", AppClass="TDTickets"),
+                          dict(AppID=928, Name="Assets", AppClass="TDAssets")],
+    "/api/1072/tickets/types": [dict(ID=5, Name="Classroom", IsActive=True, CategoryName="Support")],
+    "/api/1072/tickets/forms": [dict(ID=8, Name="CTL Form", IsActive=True)],
+    "/api/1072/tickets/statuses": [dict(ID=30, Name="New", IsActive=True, StatusClass=1, RequireGoesOffHold=False)],
+}
+
+
+def test_workflow_action_validates_the_current_step_and_action_then_reads_the_result():
+    adapter, calls, records = setup_adapter(**WORKFLOW_ROUTES)
+    prepared = adapter.validate(parse_action(dict(kind="workflow_action", ticket_id=1001, step_id="step-2", action_id="act-approve", comments="Looks good")))
+    assert json.loads(prepared.payload_json) == dict(StepID="step-2", ActionID="act-approve", Comments="Looks good")
+    assert {f.name: f.after for f in prepared.preview.fields} == {"Workflow step": "Manager approval", "Action": "Approve"}
+    assert prepared.preview.ticket_title == "Before"
+    adapter.request = lambda *a, **k: (calls.append((a, k)) or SimpleNamespace(status_code=200, json=lambda: dict(IsSuccessful=True, WasWorkflowUpdated=True, Message="Done", Errors=[])))
+    result = adapter.apply_once(prepared)
+    assert result.outcome == "applied" and calls[-1][0] == ("POST", "https://tenant.example/TDWebApi/api/42/tickets/1001/workflow/approve")
+    assert result.detail == {"workflow_updated": True}
+    adapter.request = lambda *a, **k: SimpleNamespace(status_code=200, json=lambda: dict(IsSuccessful=False, WasWorkflowUpdated=False, Message="private reason", Errors=["x"]))
+    rejected = adapter.apply_once(prepared)
+    assert rejected.outcome == "rejected" and "private reason" not in rejected.message
+    for bad in (dict(step_id="step-1", action_id="act-approve"), dict(step_id="step-2", action_id="act-nope")):
+        with pytest.raises(ValueError):
+            adapter.validate(parse_action(dict(kind="workflow_action", ticket_id=1001, **bad)))
+    records["/api/42/tickets/1001/workflow"] = ValueError("404")
+    with pytest.raises(ValueError, match="workflow"):
+        adapter.validate(parse_action(dict(kind="workflow_action", ticket_id=1001, step_id="step-2", action_id="act-approve")))
+
+
+def test_workflow_reassign_verifies_step_and_assignee():
+    adapter, calls, _ = setup_adapter(**WORKFLOW_ROUTES)
+    prepared = adapter.validate(parse_action(dict(kind="workflow_reassign", ticket_id=1001, step_id="step-2", user_uid=UID)))
+    assert json.loads(prepared.payload_json) == dict(StepID="step-2", UserId=UID)
+    assert {f.name: f.after for f in prepared.preview.fields} == {"Workflow step": "Manager approval", "Assign to": "Person"}
+    adapter.request = lambda *a, **k: (calls.append((a, k)) or SimpleNamespace(status_code=200, json=lambda: None))
+    assert adapter.apply_once(prepared).outcome == "applied" and calls[-1][0][1].endswith("/workflow/reassign")
+    grouped = adapter.validate(parse_action(dict(kind="workflow_reassign", ticket_id=1001, step_id="step-2", group_id=4)))
+    assert json.loads(grouped.payload_json) == dict(StepID="step-2", GroupId=4)
+    with pytest.raises(ValueError):
+        adapter.validate(parse_action(dict(kind="workflow_reassign", ticket_id=1001, step_id="step-1", user_uid=UID)))
+
+
+def test_move_ticket_verifies_destination_metadata_and_confirms_the_new_application():
+    adapter, calls, _ = setup_adapter(**WORKFLOW_ROUTES)
+    prepared = adapter.validate(parse_action(dict(kind="move", ticket_id=1001, new_app_id=1072, new_type_id=5, new_form_id=8,
+                                                  new_status_id=30, comments="Belongs to CTL")))
+    assert json.loads(prepared.payload_json) == dict(NewAppID=1072, NewTicketTypeID=5, NewFormID=8, NewStatusID=30,
+                                                     Comments="Belongs to CTL", IsRichHtml=False)
+    fields = {f.name: (f.before, f.after) for f in prepared.preview.fields}
+    assert fields["Application"] == ("InfoTech Tickets", "CTL Tickets") and fields["Type"] == (None, "Classroom")
+    assert fields["Form"] == (None, "CTL Form") and fields["Status"] == (None, "New")
+    adapter.request = lambda *a, **k: (calls.append((a, k)) or SimpleNamespace(status_code=200, json=lambda: dict(TICKET, AppID=1072)))
+    result = adapter.apply_once(prepared)
+    assert result.outcome == "applied" and calls[-1][0] == ("POST", "https://tenant.example/TDWebApi/api/42/tickets/1001/application")
+    assert result.detail == {"app_id": 1072, "app_name": "CTL Tickets", "url": "https://tenant.example/TDNext/Apps/1072/Tickets/TicketDet.aspx?TicketID=1001"}
+    adapter.request = lambda *a, **k: SimpleNamespace(status_code=200, json=lambda: dict(TICKET, AppID=42))
+    assert adapter.apply_once(prepared).outcome == "unknown"
+    for bad in (dict(new_app_id=928, new_type_id=5), dict(new_app_id=1072, new_type_id=99), dict(new_app_id=42, new_type_id=5)):
+        with pytest.raises(ValueError):
+            adapter.validate(parse_action(dict(kind="move", ticket_id=1001, **bad)))

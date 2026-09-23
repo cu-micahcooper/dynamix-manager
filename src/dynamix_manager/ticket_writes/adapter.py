@@ -14,8 +14,9 @@ from dynamix_manager.kb_text import ensure_html, sanitize_html
 from .models import (ARTICLE_STATUS_IDS, CLASSIFICATION_NAMES, SLA_START_IDS, ArticleAction, ArticleCreateAction,
                      ArticleEditAction, ArticleLinkAction, ArticleUnlinkAction, AssetAction, AssetCommentAction, AssignAction,
                      CategoryAction, CategoryCreateAction, CategoryEditAction, ChangePreview, ChildTicketsAction, CommentAction,
-                     CreateAction, EditAction, EditAssetAction, LinkAssetAction, PreparedChange, PreviewField, StatusAction, TaskAction, TicketContactAction, TicketRelationAction, TicketSlaAction, TicketTagsAction,
-                     WriteResult, parse_action)
+                     CreateAction, EditAction, EditAssetAction, LinkAssetAction, MoveTicketAction, PreparedChange, PreviewField,
+                     StatusAction, TaskAction, TicketContactAction, TicketRelationAction, TicketSlaAction, TicketTagsAction,
+                     WorkflowReassignAction, WorkflowStepAction, WriteResult, parse_action)
 
 
 def canonical_json(value):
@@ -710,9 +711,60 @@ class WriteAdapter:
         return PreparedChange(action=action, base_url=self.base_url, app_id=self.app_id, baseline_json=canonical_json(baseline),
                               payload_json=canonical_json(payload), preview=preview)
 
+    def _workflow_step(self, ticket_id, step_id):
+        workflow = self._get(f"/api/{self.app_id}/tickets/{ticket_id}/workflow")
+        if not isinstance(workflow, dict) or workflow.get("TicketId") not in (None, ticket_id) or not isinstance(workflow.get("Steps"), list):
+            raise ValueError("The ticket has no workflow to act on.")
+        if step_id not in (workflow.get("CurrentStepIDs") or []):
+            raise ValueError("The step is not a current step of the ticket's workflow.")
+        steps = [s for s in workflow["Steps"] if isinstance(s, dict) and s.get("ID") == step_id]
+        if len(steps) != 1 or not steps[0].get("Name"):
+            raise ValueError("The workflow step could not be verified.")
+        return workflow, steps[0]
+
+    def _ticketing_applications(self):
+        apps = self._get("/api/applications")
+        return {int(a["AppID"]): str(a.get("Name")) for a in (apps if isinstance(apps, list) else [])
+                if isinstance(a, dict) and a.get("AppClass") == "TDTickets" and type(a.get("AppID")) is int}
+
     def _validate_relation(self, action):
         ticket = self.snapshot(action.ticket_id)
         base = {"ID": ticket["ID"], "ModifiedDate": ticket["ModifiedDate"]}
+        if isinstance(action, WorkflowStepAction):
+            workflow, step = self._workflow_step(action.ticket_id, action.step_id)
+            actions = self._get(f"/api/{self.app_id}/tickets/{action.ticket_id}/workflow/actions?stepId={action.step_id}")
+            match = [a for a in actions if isinstance(a, dict) and a.get("ID") == action.action_id] if isinstance(actions, list) else []
+            if len(match) != 1 or not match[0].get("Name"):
+                raise ValueError("The action is not available to you on that workflow step.")
+            payload = dict(StepID=action.step_id, ActionID=action.action_id, Comments=action.comments)
+            fields = [PreviewField(name="Workflow step", before=None, after=step["Name"]),
+                      PreviewField(name="Action", before=None, after=match[0]["Name"])]
+            return self._relation_prepared(action, ticket, {**base, "workflow": workflow.get("ID"), "step": action.step_id}, payload, fields)
+        if isinstance(action, WorkflowReassignAction):
+            workflow, step = self._workflow_step(action.ticket_id, action.step_id)
+            if action.user_uid is not None:
+                assignee = self._person_name(action.user_uid, "assignee")
+                payload = dict(StepID=action.step_id, UserId=str(action.user_uid))
+            else:
+                assignee = self._group_name(action.group_id)
+                payload = dict(StepID=action.step_id, GroupId=action.group_id)
+            fields = [PreviewField(name="Workflow step", before=None, after=step["Name"]), PreviewField(name="Assign to", before=None, after=assignee)]
+            return self._relation_prepared(action, ticket, {**base, "workflow": workflow.get("ID"), "step": action.step_id}, payload, fields)
+        if isinstance(action, MoveTicketAction):
+            apps = self._ticketing_applications()
+            if action.new_app_id not in apps or action.new_app_id == self.app_id:
+                raise ValueError("The destination must be another ticketing application you can access.")
+            fields = [PreviewField(name="Application", before=apps.get(self.app_id), after=apps[action.new_app_id]),
+                      PreviewField(name="Type", before=None, after=self._named_option(f"/api/{action.new_app_id}/tickets/types", action.new_type_id, "ticket type"))]
+            payload = dict(NewAppID=action.new_app_id, NewTicketTypeID=action.new_type_id, Comments=action.comments, IsRichHtml=False)
+            if action.new_form_id is not None:
+                fields.append(PreviewField(name="Form", before=None, after=self._named_option(f"/api/{action.new_app_id}/tickets/forms", action.new_form_id, "form")))
+                payload["NewFormID"] = action.new_form_id
+            if action.new_status_id is not None:
+                fields.append(PreviewField(name="Status", before=None, after=self._named_option(f"/api/{action.new_app_id}/tickets/statuses", action.new_status_id, "status")))
+                payload["NewStatusID"] = action.new_status_id
+            notices = ("The ticket leaves this application; its ID stays the same and the result reports the new location.",)
+            return self._relation_prepared(action, ticket, {**base, "AppID": self.app_id, "new_app_name": apps[action.new_app_id]}, payload, fields, notices)
         if isinstance(action, TicketContactAction):
             name = self._person_name(action.contact_uid, "contact")
             current = self._get(f"/api/{self.app_id}/tickets/{action.ticket_id}/contacts")
@@ -792,6 +844,12 @@ class WriteAdapter:
         elif isinstance(action, TicketSlaAction):
             method, body, confirm = "PUT", payload, True
             path = f"{root}/sla/delete" if action.sla_id is None else f"{root}/sla"
+        elif isinstance(action, WorkflowStepAction):
+            method, path, body, confirm = "POST", f"{root}/workflow/approve", payload, False
+        elif isinstance(action, WorkflowReassignAction):
+            method, path, body, confirm = "POST", f"{root}/workflow/reassign", payload, False
+        elif isinstance(action, MoveTicketAction):
+            method, path, body, confirm = "POST", f"{root}/application", payload, False
         else:
             if baseline.get("Classification") == action.classification_id:
                 return WriteResult(outcome="applied", message="The ticket already has that classification.")
@@ -803,6 +861,30 @@ class WriteAdapter:
             return WriteResult(outcome="unknown", message="The upstream outcome is unknown; do not retry.")
         status = response.status_code
         if status == 200:
+            if isinstance(action, WorkflowStepAction):
+                try:
+                    outcome = response.json()
+                    successful = outcome.get("IsSuccessful") is True
+                    updated = outcome.get("WasWorkflowUpdated") is True
+                except Exception:
+                    return WriteResult(outcome="unknown", status_code=status, message="The workflow result could not be read; do not retry.")
+                if not successful:
+                    return WriteResult(outcome="rejected", status_code=status,
+                                       message="TeamDynamix reported the workflow action did not succeed; nothing was changed.")
+                return WriteResult(outcome="applied", message="TeamDynamix accepted the change.", status_code=status,
+                                   detail={"workflow_updated": updated})
+            if isinstance(action, MoveTicketAction):
+                try:
+                    ticket = response.json()
+                    if not isinstance(ticket, dict) or ticket.get("ID") != ticket_id or ticket.get("AppID") != action.new_app_id:
+                        raise ValueError("The ticket did not move.")
+                except Exception:
+                    return WriteResult(outcome="unknown", status_code=status,
+                                       message="The response did not confirm the ticket in its new application; do not retry.")
+                host = f"https://{urlsplit(self.base_url).netloc}"
+                return WriteResult(outcome="applied", message="TeamDynamix accepted the change.", status_code=status,
+                                   detail={"app_id": action.new_app_id, "app_name": baseline.get("new_app_name"),
+                                           "url": f"{host}/TDNext/Apps/{action.new_app_id}/Tickets/TicketDet.aspx?TicketID={ticket_id}"})
             if confirm:
                 try:
                     ticket = response.json()
@@ -871,6 +953,8 @@ class WriteAdapter:
             return common + ("Asset changes are applied to the asset record only; linked tickets and CMDB relationships are not modified.",)
         if isinstance(action, TicketSlaAction):
             return common + ("SLA deadlines are recalculated by TeamDynamix from the chosen start basis.",)
+        if isinstance(action, WorkflowStepAction):
+            return common + ("Workflow actions may advance or complete the approval; they cannot be undone from the API.",)
         if isinstance(action, TicketRelationAction):
             return common
         if isinstance(action, (ArticleAction, ArticleCreateAction, CategoryAction, CategoryCreateAction)):

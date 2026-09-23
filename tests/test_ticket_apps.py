@@ -129,3 +129,33 @@ def test_feed_and_cards_follow_the_ticket_to_its_application():
     cards = call(c, "show_tickets", {"ticket_ids": [1, 2, 4]})
     assert [t["ID"] for t in cards["tickets"]] == [1, 2] and cards["missing"] == [4]
     assert cards["tickets"][1]["url"].startswith("https://example.test/TDNext/Apps/1072/")
+
+
+def test_ticket_contacts_slas_and_workflow_reads():
+    c = connection()
+    c.routes[("GET", "/api/634/tickets/1/contacts")] = [{"UID": "u1", "FullName": "Payable Accounts", "PrimaryEmail": "ap@example.test",
+                                                         "Title": "", "DefaultAccountName": "None", "HomePhone": "secret"}]
+    contacts = call(c, "ticket_contacts", {"ticket_id": 1})
+    assert contacts["contacts"] == [{"UID": "u1", "FullName": "Payable Accounts", "PrimaryEmail": "ap@example.test", "Title": "", "DefaultAccountName": "None"}]
+    assert contacts["application"]["AppID"] == 634
+    c.routes[("GET", "/api/1072/tickets/slas")] = [{"ID": 1095, "Name": "7 day", "IsActive": True, "ResponseDurationMinutes": 60,
+                                                    "ResolutionDurationMinutes": 10080, "Description": "d", "ShouldUseOperationalHours": True}]
+    slas = call(c, "ticket_slas", {"app": "CTL"})
+    assert slas["slas"][0] == {"ID": 1095, "Name": "7 day", "Description": "d", "ResponseDurationMinutes": 60, "ResolutionDurationMinutes": 10080,
+                               "ShouldUseOperationalHours": True}
+    c.routes[("GET", "/api/634/tickets/1/workflow")] = {"ID": 77, "Name": "Purchase approval", "Status": 1, "IsComplete": False,
+                                                        "CurrentStepIDs": ["step-2"], "Steps": [
+                                                            {"ID": "step-1", "Name": "Request", "IsCurrent": False, "TypeName": "Start"},
+                                                            {"ID": "step-2", "Name": "Manager approval", "IsCurrent": True, "TypeName": "Approval"}],
+                                                        "History": [{"ActionName": "Submitted", "PersonFullName": "A", "ActionDateUtc": "2026-09-01T00:00:00Z",
+                                                                     "StepID": "step-1", "Comments": "<p>hi</p>", "PersonUid": "x"}]}
+    c.routes[("GET", "/api/634/tickets/1/workflow/actions")] = [{"ID": "act-approve", "Name": "Approve", "Tooltip": "t"}]
+    wf = call(c, "ticket_workflow", {"ticket_id": 1})
+    assert wf["workflow"]["Name"] == "Purchase approval" and [s["ID"] for s in wf["steps"]] == ["step-1", "step-2"]
+    assert wf["current_steps"] == [{"ID": "step-2", "Name": "Manager approval", "actions": [{"ID": "act-approve", "Name": "Approve", "Tooltip": "t"}]}]
+    assert c.calls[-1][2]["params"] == {"stepId": "step-2"}
+    assert wf["history"] == [{"ActionName": "Submitted", "PersonFullName": "A", "ActionDateUtc": "2026-09-01T00:00:00Z", "StepID": "step-1", "comments_text": "hi"}]
+    c.routes[("GET", "/api/1729/tickets/3/workflow")] = RuntimeError("404")
+    c.routes[("GET", "/api/tickets/3")] = ticket(3, 1729)
+    none = call(c, "ticket_workflow", {"ticket_id": 3})
+    assert none["workflow"] is None and none["application"]["AppID"] == 1729

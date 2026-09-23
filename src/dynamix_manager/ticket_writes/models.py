@@ -285,6 +285,42 @@ class ReclassifyAction(TicketRelationAction):
         return CLASSIFICATION_IDS[self.classification]
 
 
+StepID = Annotated[str, Field(strict=True, min_length=1, max_length=100)]
+
+
+class WorkflowStepAction(TicketRelationAction):
+    """Perform one action (approve, reject, ...) on a current step of the ticket's workflow."""
+
+    kind: Literal["workflow_action"]
+    step_id: StepID
+    action_id: StepID
+    comments: Annotated[str, Field(strict=True, max_length=20000)] = ""
+
+
+class WorkflowReassignAction(TicketRelationAction):
+    kind: Literal["workflow_reassign"]
+    step_id: StepID
+    user_uid: UUID | None = None
+    group_id: PositiveID | None = None
+
+    @model_validator(mode="after")
+    def exactly_one_assignee(self):
+        if (self.user_uid is None) == (self.group_id is None):
+            raise ValueError("Give exactly one of user_uid or group_id.")
+        return self
+
+
+class MoveTicketAction(TicketRelationAction):
+    """Move a ticket into another ticketing application with a type (and optional form/status) that exist there."""
+
+    kind: Literal["move"]
+    new_app_id: PositiveID
+    new_type_id: PositiveID
+    new_form_id: PositiveID | None = None
+    new_status_id: PositiveID | None = None
+    comments: Annotated[str, Field(strict=True, max_length=20000)] = ""
+
+
 ARTICLE_STATUS = Literal["not_submitted", "submitted", "approved", "rejected", "archived"]
 ARTICLE_STATUS_IDS = {"not_submitted": 1, "submitted": 2, "approved": 3, "rejected": 4, "archived": 5}
 ArticleTitle = Annotated[str, Field(strict=True, min_length=1, max_length=300)]
@@ -441,7 +477,8 @@ Action = Annotated[CommentAction | StatusAction | AssignAction | EditAction | Ta
                    | AssetCommentAction | LinkAssetAction | EditAssetAction
                    | ArticleCreateAction | ArticleEditAction | ArticleLinkAction | ArticleUnlinkAction
                    | CategoryCreateAction | CategoryEditAction
-                   | TicketContactAction | TicketTagsAction | ChildTicketsAction | TicketSlaAction | ReclassifyAction,
+                   | TicketContactAction | TicketTagsAction | ChildTicketsAction | TicketSlaAction | ReclassifyAction
+                   | WorkflowStepAction | WorkflowReassignAction | MoveTicketAction,
                    Field(discriminator="kind")]
 _actions = TypeAdapter(Action)
 

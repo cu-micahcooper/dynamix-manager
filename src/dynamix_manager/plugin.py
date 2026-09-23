@@ -612,6 +612,52 @@ def create_server(
         return result
 
     @tool(annotations=read)
+    def ticket_contacts(ticket_id: POSITIVE, app: TICKET_APP = None) -> dict[str, Any]:
+        """List the people added as contacts on a ticket (UID, name, email, title, department)."""
+        c = conn()
+        _, app_id, name = locate_ticket(c, ticket_id, app)
+        rows = c.api_get(f"/api/{app_id}/tickets/{ticket_id}/contacts")
+        rows = [r for r in rows if isinstance(r, dict) and r.get("UID")] if isinstance(rows, list) else []
+        return {"ticket_id": ticket_id, "contacts": [{k: r.get(k) for k in ("UID", "FullName", "PrimaryEmail", "Title", "DefaultAccountName")} for r in rows],
+                "returned": len(rows), "complete": True, "application": {"AppID": app_id, "Name": name}}
+
+    @tool(annotations=read)
+    def ticket_slas(app: TICKET_APP = None) -> dict[str, Any]:
+        """List the active service level agreements of a ticketing application (for set_ticket_sla)."""
+        c = conn()
+        app_id, name = c.resolve_ticket_app(app)
+        rows = c.api_get(f"/api/{app_id}/tickets/slas")
+        rows = [r for r in rows if isinstance(r, dict) and type(r.get("ID")) is int and r.get("IsActive") is not False] if isinstance(rows, list) else []
+        keys = ("ID", "Name", "Description", "ResponseDurationMinutes", "ResolutionDurationMinutes", "ShouldUseOperationalHours")
+        return {"slas": [{k: r.get(k) for k in keys} for r in rows], "returned": len(rows), "complete": True,
+                "application": {"AppID": app_id, "Name": name}}
+
+    @tool(annotations=read)
+    def ticket_workflow(ticket_id: POSITIVE, app: TICKET_APP = None) -> dict[str, Any]:
+        """Read a ticket's workflow: steps, the current steps with the actions available to you, and history."""
+        c = conn()
+        _, app_id, name = locate_ticket(c, ticket_id, app)
+        application = {"AppID": app_id, "Name": name}
+        try:
+            workflow = c.api_get(f"/api/{app_id}/tickets/{ticket_id}/workflow")
+        except Exception:
+            workflow = None
+        if not isinstance(workflow, dict) or type(workflow.get("ID")) is not int:
+            return {"ticket_id": ticket_id, "workflow": None, "steps": [], "current_steps": [], "history": [], "application": application}
+        steps = [{k: s.get(k) for k in ("ID", "Name", "IsCurrent", "TypeName")} for s in (workflow.get("Steps") or []) if isinstance(s, dict)]
+        current = []
+        for step_id in workflow.get("CurrentStepIDs") or []:
+            step = next((s for s in steps if s["ID"] == step_id), {"ID": step_id, "Name": None})
+            actions = c.api_get(f"/api/{app_id}/tickets/{ticket_id}/workflow/actions", params={"stepId": step_id})
+            actions = [{k: a.get(k) for k in ("ID", "Name", "Tooltip")} for a in actions if isinstance(a, dict)] if isinstance(actions, list) else []
+            current.append({"ID": step_id, "Name": step.get("Name"), "actions": actions})
+        history = [{**{k: h.get(k) for k in ("ActionName", "PersonFullName", "ActionDateUtc", "StepID")}, "comments_text": display_text(h.get("Comments"))}
+                   for h in (workflow.get("History") or []) if isinstance(h, dict)]
+        summary = {k: workflow.get(k) for k in ("ID", "Name", "Status", "IsComplete", "StartDateUtc", "CompletedDateUtc")}
+        return {"ticket_id": ticket_id, "workflow": summary, "steps": steps, "current_steps": current, "history": history,
+                "application": application}
+
+    @tool(annotations=read)
     def saved_searches(app: TICKET_APP = None) -> dict[str, Any]:
         """List the ticket saved searches (TDNext) visible to the user in a ticketing application."""
         c = conn()

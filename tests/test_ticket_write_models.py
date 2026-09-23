@@ -187,3 +187,20 @@ def test_ticket_relation_actions_are_typed_and_lock_the_ticket():
                 dict(kind="reclassify", ticket_id=1001, classification="ticket"), dict(kind="reclassify", ticket_id=1001, classification_id=32)):
         with pytest.raises(ValidationError):
             parse(bad)
+
+
+def test_workflow_and_move_actions_are_typed():
+    from dynamix_manager.ticket_writes.models import MoveTicketAction, WorkflowReassignAction, WorkflowStepAction
+    act = parse(dict(kind="workflow_action", ticket_id=1001, step_id="step-1", action_id="approve-1", comments="OK"))
+    assert isinstance(act, WorkflowStepAction) and act.item == ("ticket", 1001)
+    reassign = parse(dict(kind="workflow_reassign", ticket_id=1001, step_id="step-1", user_uid=ASSET_UID))
+    assert isinstance(reassign, WorkflowReassignAction) and reassign.group_id is None
+    move = parse(dict(kind="move", ticket_id=1001, new_app_id=1072, new_type_id=5, comments="Belongs to CTL"))
+    assert isinstance(move, MoveTicketAction) and move.new_form_id is None and move.new_status_id is None
+    for bad in (dict(kind="workflow_action", ticket_id=1001, step_id="", action_id="a"),
+                dict(kind="workflow_action", ticket_id=1001, step_id="s"),
+                dict(kind="workflow_reassign", ticket_id=1001, step_id="s"),
+                dict(kind="workflow_reassign", ticket_id=1001, step_id="s", user_uid=ASSET_UID, group_id=4),
+                dict(kind="move", ticket_id=1001, new_app_id=1072), dict(kind="move", ticket_id=1001, new_type_id=5)):
+        with pytest.raises(ValidationError):
+            parse(bad)

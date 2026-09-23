@@ -89,7 +89,7 @@ def run(server, name, arguments):
                 "edit_asset", "create_article", "edit_article", "link_article", "unlink_article",
                 "create_article_category", "edit_article_category", "add_ticket_contact", "remove_ticket_contact",
                 "tag_ticket", "untag_ticket", "add_child_tickets", "set_ticket_sla", "remove_ticket_sla",
-                "reclassify_ticket"} and isinstance(arguments, dict):
+                "reclassify_ticket", "act_on_workflow_step", "reassign_workflow_step", "move_ticket"} and isinstance(arguments, dict):
         arguments = {"request_id": "request-1", **arguments}
     return asyncio.run(server.call_tool(name, arguments))
 
@@ -127,7 +127,8 @@ def test_registers_only_four_direct_tools_and_two_bounded_read_tools(tools_serve
         "add_asset_comment", "link_asset_to_ticket", "edit_asset",
         "create_article", "edit_article", "link_article", "unlink_article", "create_article_category", "edit_article_category",
         "add_ticket_contact", "remove_ticket_contact", "tag_ticket", "untag_ticket", "add_child_tickets", "set_ticket_sla",
-        "remove_ticket_sla", "reclassify_ticket",
+        "remove_ticket_sla", "reclassify_ticket", "act_on_workflow_step", "reassign_workflow_step", "move_ticket",
+        "ticket_contacts", "ticket_slas", "ticket_workflow",
         "ticket_write_metadata", "ticket_write_result", "list_ticket_tasks", "ticket_create_metadata",
         "resolve_ticket_write",
     }
@@ -363,7 +364,7 @@ def test_real_http_tools_list_mirrors_hosted_security_schemes_at_top_level():
             "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {},
         }, headers={"Accept": "application/json, text/event-stream"})
     tools = response.json()["result"]["tools"]
-    assert len(tools) == 58
+    assert len(tools) == 64
     for tool in tools:
         assert tool["securitySchemes"] == tool["_meta"]["securitySchemes"]
 
@@ -717,3 +718,13 @@ def test_contact_tools_refuse_the_wrong_direction(tools_server):
     assert run(server, "add_ticket_contact", {"action": {"kind": "ticket_contact", "ticket_id": 1001, "contact_uid": ALAN["uid"], "remove": True}}).isError
     assert run(server, "remove_ticket_sla", {"action": {"kind": "ticket_sla", "ticket_id": 1001, "sla_id": 5}}).isError
     assert run(server, "untag_ticket", {"action": {"kind": "ticket_tags", "ticket_id": 1001, "tags": ["x"]}}).isError
+
+
+@pytest.mark.parametrize(("name", "action"), [
+    ("act_on_workflow_step", {"kind": "workflow_action", "ticket_id": 1001, "step_id": "s", "action_id": "a"}),
+    ("reassign_workflow_step", {"kind": "workflow_reassign", "ticket_id": 1001, "step_id": "s", "group_id": 4}),
+    ("move_ticket", {"kind": "move", "ticket_id": 1001, "new_app_id": 1072, "new_type_id": 5}),
+])
+def test_workflow_and_move_tools_submit_typed_actions(name, action, tools_server):
+    server, service = tools_server
+    assert structured(run(server, name, {"action": action}))["outcome"] == "applied" and service.actions[-1].kind == action["kind"]
