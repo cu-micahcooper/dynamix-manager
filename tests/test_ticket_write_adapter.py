@@ -727,25 +727,28 @@ def test_article_create_builds_a_sanitised_draft_payload():
     adapter, _, _ = kb_adapter()
     prepared = adapter.validate(parse_action(dict(
         kind="article_create", subject="Reset MFA", body="Step one\n\nStep <two>", category_id=9208,
-        tags=["mfa", "auth"], owner_uid=UID, owning_group_id=77, summary="How to reset")))
+        tags=["mfa", "auth"], owner_uid=UID, summary="How to reset")))
     payload = json.loads(prepared.payload_json)
     assert payload == dict(Subject="Reset MFA", Body="<p>Step one</p><p>Step &lt;two&gt;</p>", CategoryID=9208, Summary="How to reset",
-                           Tags=["mfa", "auth"], OwnerUid=UID, OwningGroupID=77, Status=1, IsPublished=False, IsPublic=False)
+                           Tags=["mfa", "auth"], OwnerUid=UID, Status=1, IsPublished=False, IsPublic=False)
+    grouped = adapter.validate(parse_action(dict(kind="article_create", subject="G", body="b", category_id=9208, owning_group_id=77)))
+    assert json.loads(grouped.payload_json)["OwningGroupID"] == 77
+    assert {f.name: f.after for f in grouped.preview.fields}["Owning group"] == "Service Desk"
     assert prepared.portal_app_id == PORTAL_APP and prepared.preview.application == "Knowledge Base"
     assert prepared.preview.ticket_id == 0 and prepared.preview.action == "article_create"
     fields = {f.name: f.after for f in prepared.preview.fields}
-    assert fields["Category"] == "Office Devices" and fields["Owner"] == "Person" and fields["Owning group"] == "Service Desk"
+    assert fields["Category"] == "Office Devices" and fields["Owner"] == "Person" and "Owning group" not in fields
     assert fields["Status"] == "Not Submitted" and fields["Published"] == "False"
 
 
 def test_article_create_strips_scripts_and_says_so():
     adapter, _, _ = kb_adapter()
-    prepared = adapter.validate(parse_action(dict(kind="article_create", subject="S", category_id=9208,
+    prepared = adapter.validate(parse_action(dict(kind="article_create", subject="S", category_id=9208, owner_uid=UID,
                                                   body='<p onclick="x()">Hi</p><script>evil()</script>')))
     assert json.loads(prepared.payload_json)["Body"] == "<p>Hi</p>"
     assert any("script or frame markup was removed" in n.lower() for n in prepared.preview.notices)
     with pytest.raises(ValueError, match="category"):
-        adapter.validate(parse_action(dict(kind="article_create", subject="S", body="b", category_id=999)))
+        adapter.validate(parse_action(dict(kind="article_create", subject="S", body="b", category_id=999, owner_uid=UID)))
 
 
 def test_article_edit_builds_a_patch_with_baseline_and_publication_notices():
@@ -812,7 +815,7 @@ def test_article_actions_need_a_portal_application():
 
 def test_article_create_and_edit_apply_and_confirm_the_article():
     adapter, calls, _ = kb_adapter()
-    prepared = adapter.validate(parse_action(dict(kind="article_create", subject="Reset MFA", body="x", category_id=9208)))
+    prepared = adapter.validate(parse_action(dict(kind="article_create", subject="Reset MFA", body="x", category_id=9208, owner_uid=UID)))
     created = dict(ARTICLE_REC, ID=170001, Subject="Reset MFA", Status=1, StatusName="Not Submitted", IsPublished=False, RevisionNumber=1)
     adapter.request = lambda *a, **k: (calls.append((a, k)) or SimpleNamespace(status_code=201, json=lambda: created))
     result = adapter.apply_once(prepared)

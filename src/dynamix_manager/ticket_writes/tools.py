@@ -114,8 +114,8 @@ class CreateArticleRequest(BaseModel):
 
     @model_validator(mode="after")
     def one_way_to_name_the_owner(self):
-        if self.owner is not None and self.owner_uid is not None:
-            raise ValueError("Give owner (name/email) or owner_uid, not both.")
+        if sum(value is not None for value in (self.owner, self.owner_uid, self.owning_group_id)) > 1:
+            raise ValueError("Give one of owner (name/email), owner_uid or owning_group_id; omit all to own it yourself.")
         return self
 
 
@@ -422,13 +422,19 @@ def register_ticket_write_tools(server, tool, service, connection_provider):
     def create_article(article: CreateArticleRequest, request_id: REQUEST_ID) -> CreateResultOutput:
         """Create a knowledge base article only on an explicit user request; defaults to an unpublished draft.
 
-        Resolve category_id with article_categories. `owner` is resolved through the people API
-        (state who matched and continue). Body may be HTML or plain text; scripts are stripped.
-        Set is_published/is_public/status only when the user asked to publish. Generate a unique
-        request_id and reuse it with identical arguments for recovery for 30 days.
+        Resolve category_id with article_categories. TeamDynamix requires exactly one owner: `owner`
+        (resolved through the people API; state who matched and continue), `owner_uid`, or
+        `owning_group_id`; omit all three and the signed-in user owns it. Body may be HTML or plain
+        text; scripts are stripped. Set is_published/is_public/status only when the user asked to
+        publish. Generate a unique request_id and reuse it with identical arguments for 30 days.
         """
         connection = connection_provider()
         resolved, uids = [], {}
+        if article.owner is None and article.owner_uid is None and article.owning_group_id is None:
+            try:
+                uids["owner_uid"] = connection.identity()
+            except Exception:
+                return _error("The signed-in user could not be identified; give owner, owner_uid or owning_group_id.")
         if article.owner is not None:
             try:
                 entry, chosen = connection.resolve_person("owner", article.owner)

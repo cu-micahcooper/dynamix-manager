@@ -320,6 +320,13 @@ class ArticleCreateAction(_NoTicket, _ArticleFields):
     is_published: Annotated[bool, Field(strict=True)] = False
     status: ARTICLE_STATUS = "not_submitted"
 
+    @model_validator(mode="after")
+    def exactly_one_owner(self):
+        # TeamDynamix: "Exactly one of OwningGroupID or OwnerUID must be provided." (observed live 2026-09-22)
+        if (self.owner_uid is None) == (self.owning_group_id is None):
+            raise ValueError("Give exactly one of owner_uid or owning_group_id.")
+        return self
+
     @property
     def item(self):
         return ("create", None)

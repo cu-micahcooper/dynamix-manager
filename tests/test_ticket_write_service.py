@@ -731,5 +731,14 @@ def test_article_actions_submit_and_report_the_portal_item(setup):
     assert setup.service.result("principal", result.operation_id).item == result.item
     setup.upstream.apply_result = SimpleNamespace(status_code=201, json=lambda: dict(ID=30001, AppID=PORTAL_APP, Name="Scratch", ParentID=10548))
     created = setup.service.submit("principal", parse_action(dict(kind="category_create", name="Scratch", parent_id=10548)), "kb-2")
-    assert created.outcome == "applied"
+    assert created.outcome == "applied" and created.message == "TeamDynamix created the category."
     assert created.item == {"type": "category", "id": 30001, "url": "https://tenant.example/TDClient/2045/Portal/KB/?CategoryID=30001"}
+    setup.upstream.apply_result = SimpleNamespace(status_code=201, json=lambda: dict(ID=170001, AppID=PORTAL_APP, StatusName="Not Submitted",
+                                                                                     IsPublished=False, IsPublic=False, RevisionNumber=1))
+    article = setup.service.submit("principal", parse_action(dict(kind="article_create", subject="New", body="b", category_id=10548,
+                                                                  owner_uid=UID)), "kb-3")
+    assert article.message == "TeamDynamix created the article." and article.item["id"] == 170001
+    setup.upstream.apply_result = SimpleNamespace(status_code=204, json=lambda: None)
+    setup.upstream.records[f"/api/{ASSET_APP}/assets/1973209"] = dict(ASSET_REC)
+    linked = setup.service.submit("principal", parse_action(dict(kind="article_link", article_id=95821, asset_id=1973209)), "kb-4")
+    assert linked.outcome == "applied" and linked.message == "The article was already linked."

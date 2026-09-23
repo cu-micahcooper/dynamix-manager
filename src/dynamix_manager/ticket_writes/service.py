@@ -80,6 +80,11 @@ _REJECTED_MESSAGES = {
     429: "TeamDynamix rate limit reached; nothing was changed. Try again later with a new request ID.",
 }
 _REJECTED_MESSAGE = "TeamDynamix rejected the change."
+_CREATED_MESSAGES = {"create": "TeamDynamix created the ticket.", "article_create": "TeamDynamix created the article.",
+                     "category_create": "TeamDynamix created the category."}
+# Adapter messages for idempotent no-op successes that are safe to persist verbatim.
+_IDEMPOTENT_MESSAGES = frozenset({"The asset was already linked to the ticket.", "The article was already linked.",
+                                  "The link did not exist."})
 _AUTH_MESSAGE = "Current write authorization is required."
 _DISABLED_MESSAGE = "Hosted ticket writes are disabled."
 _PREPARATION_MESSAGE = "The ticket change could not be safely prepared."
@@ -268,8 +273,9 @@ class TicketWriteService:
 
                 # Only fixed, safe messages are persisted; adapter text never escapes.
                 safe_message = {
-                    "applied": ("TeamDynamix created the ticket." if claim.record.prepared.action.kind == "create"
-                                else "TeamDynamix accepted the change."),
+                    "applied": _CREATED_MESSAGES.get(claim.record.prepared.action.kind,
+                                                     result.message if result.message in _IDEMPOTENT_MESSAGES
+                                                     else "TeamDynamix accepted the change."),
                     "rejected": _REJECTED_MESSAGES.get(result.status_code, _REJECTED_MESSAGE),
                     "unknown": _UNKNOWN_MESSAGE,
                 }[result.outcome]

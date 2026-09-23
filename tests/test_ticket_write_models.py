@@ -125,10 +125,12 @@ def test_asset_actions_are_typed_bounded_and_carry_an_item_identity():
 def test_article_actions_are_typed_bounded_and_carry_an_item_identity():
     from dynamix_manager.ticket_writes.models import (ArticleCreateAction, ArticleEditAction, ArticleLinkAction,
                                                        ArticleUnlinkAction, CategoryCreateAction, CategoryEditAction)
-    create = parse(dict(kind="article_create", subject="Reset MFA", body="Step one", category_id=9212))
+    create = parse(dict(kind="article_create", subject="Reset MFA", body="Step one", category_id=9212, owner_uid=ASSET_UID))
     assert isinstance(create, ArticleCreateAction) and create.item == ("create", None) and create.ticket_id == 0
     assert create.status == "not_submitted" and create.is_published is False and create.is_public is False
-    assert create.model_dump(mode="json") == {"kind": "article_create", "subject": "Reset MFA", "body": "Step one", "category_id": 9212}
+    assert create.model_dump(mode="json") == {"kind": "article_create", "subject": "Reset MFA", "body": "Step one", "category_id": 9212,
+                                              "owner_uid": ASSET_UID}
+    assert parse(dict(kind="article_create", subject="s", body="x", category_id=1, owning_group_id=77)).owner_uid is None
     edit = parse(dict(kind="article_edit", article_id=95821, status="archived", is_published=False, tags=["macos"]))
     assert isinstance(edit, ArticleEditAction) and edit.item == ("article", 95821) and edit.ticket_id == 0
     assert edit.model_dump(mode="json") == {"kind": "article_edit", "article_id": 95821, "status": "archived", "is_published": False, "tags": ["macos"]}
@@ -140,10 +142,12 @@ def test_article_actions_are_typed_bounded_and_carry_an_item_identity():
     assert isinstance(category, CategoryCreateAction) and category.item == ("create", None) and category.is_public is False
     cat_edit = parse(dict(kind="category_edit", category_id=9107, name="Adobe apps"))
     assert isinstance(cat_edit, CategoryEditAction) and cat_edit.item == ("category", 9107) and cat_edit.ticket_id == 0
-    for bad in (dict(kind="article_create", subject=" ", body="x", category_id=1),
-                dict(kind="article_create", subject="s", body="", category_id=1),
-                dict(kind="article_create", subject="s", body="x", category_id=1, status="published"),
-                dict(kind="article_create", subject="s", body="x", category_id=1, tags=["a" * 101]),
+    for bad in (dict(kind="article_create", subject=" ", body="x", category_id=1, owner_uid=ASSET_UID),
+                dict(kind="article_create", subject="s", body="", category_id=1, owner_uid=ASSET_UID),
+                dict(kind="article_create", subject="s", body="x", category_id=1, owner_uid=ASSET_UID, status="published"),
+                dict(kind="article_create", subject="s", body="x", category_id=1, owner_uid=ASSET_UID, tags=["a" * 101]),
+                dict(kind="article_create", subject="s", body="x", category_id=1),  # TDX: exactly one of owner or group
+                dict(kind="article_create", subject="s", body="x", category_id=1, owner_uid=ASSET_UID, owning_group_id=77),
                 dict(kind="article_edit", article_id=95821),
                 dict(kind="article_edit", article_id=95821, review_date="soon"),
                 dict(kind="article_link", article_id=95821),

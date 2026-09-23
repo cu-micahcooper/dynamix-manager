@@ -74,6 +74,9 @@ class FakeConnection:
     def ready(self):
         return self
 
+    def identity(self):
+        return "aaaaaaaa-0000-4000-8000-000000000002"
+
     def resolve_person(self, role, search):
         matched = self.people.get(search, [])
         chosen = matched if len(matched) == 1 else []
@@ -665,7 +668,11 @@ def test_create_article_resolves_the_owner_and_defaults_to_a_draft(tools_server)
     assert action.kind == "article_create" and str(action.owner_uid) == ALAN["uid"] and action.status == "not_submitted"
     assert action.is_published is False and result["resolved_people"] == [{"role": "owner", "search": "Alan McCain", "matched": [ALAN]}]
     without_owner = structured(run(server, "create_article", {"article": {"subject": "S", "body": "b", "category_id": 1}}))
-    assert without_owner["resolved_people"] == [] and service.actions[-1].owner_uid is None
+    assert without_owner["resolved_people"] == [] and str(service.actions[-1].owner_uid) == MICAH["uid"]  # signed-in user
+    grouped = structured(run(server, "create_article", {"article": {"subject": "S", "body": "b", "category_id": 1, "owning_group_id": 77}}))
+    assert grouped["outcome"] == "applied" and service.actions[-1].owner_uid is None and service.actions[-1].owning_group_id == 77
+    with pytest.raises(Exception):  # the hardened argument model rejects owner + owning_group_id
+        run(server, "create_article", {"article": {"subject": "S", "body": "b", "category_id": 1, "owner": "Alan McCain", "owning_group_id": 77}})
     count = len(service.actions)
     ambiguous = run(server, "create_article", {"article": {"subject": "S", "body": "b", "category_id": 1, "owner": "McCain"}})
     assert ambiguous.isError and "ambiguous" in ambiguous.content[0].text.lower() and len(service.actions) == count
