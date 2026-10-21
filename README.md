@@ -157,3 +157,14 @@ node --test tests/frontend/workbench.test.cjs
 ```
 
 The workbench can override the analytics app ID with `WORKBENCH_TDX_APP_ID` or the non-secret `tdx_app_id` in `.workbench/config.json`. The current local configuration selects ticketing app 634; live submissions were enabled after user approval, with mandatory preview and explicit submission. The standard note/status API contract was checked against the tenant documentation; no real update was sent.
+
+## CFO email diagnostics
+
+Run `./create_cfo_email.sh` to generate the report and create its Gmail draft.
+Each run prints the path to a private, timestamped log in `logs/cfo_email_*.log`.
+The log includes standard output, errors, exception tracebacks, UTC start/end
+times, and the exit status. Log files are ignored by Git.
+
+If Gmail draft creation fails (including missing credentials), the command exits
+nonzero and preserves `reports/cfo_email.html`. Check the printed log path for
+the error. A successful run includes a `gmail_draft_id` in its output.

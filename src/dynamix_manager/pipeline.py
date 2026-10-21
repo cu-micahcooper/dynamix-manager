@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import base64
+import sys
+import traceback
 from typing import Any
 
 import pandas as pd
@@ -849,6 +851,7 @@ def generate_cfo_email(
     )
 
     draft_id = None
+    draft_error = None
     if credentials_available(config.gmail_token_path):
         try:
             period_label = snapshot.get("period_label") or snapshot.get("week_range_label") or ""
@@ -877,8 +880,15 @@ def generate_cfo_email(
                 ),
             )
             draft_id = draft.get("id")
+            if not draft_id:
+                raise RuntimeError("Gmail returned a response without a draft ID")
         except Exception as exc:
-            print(f"[gmail] Draft creation skipped: {exc}")
+            draft_error = f"{type(exc).__name__}: {exc}"
+            print(f"[gmail] Draft creation failed: {draft_error}", file=sys.stderr)
+            traceback.print_exc()
+    else:
+        draft_error = "Gmail token file is missing; restore it or set GMAIL_TOKEN_PATH."
+        print(f"[gmail] {draft_error}", file=sys.stderr)
 
     _append_cfo_email_run(
         config,
@@ -904,6 +914,7 @@ def generate_cfo_email(
         "discussion_item_count": len(discussion_items),
         "datatype_sparklines": bool(datatype_sparklines),
         "gmail_draft_id": draft_id,
+        "gmail_draft_error": draft_error,
     }
 
 

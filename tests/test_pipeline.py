@@ -1,5 +1,6 @@
 import pandas as pd
 import requests
+import pytest
 
 from dynamix_manager.config import RuntimeConfig
 from dynamix_manager.pipeline import (
@@ -17,6 +18,34 @@ from dynamix_manager.pipeline import (
     _fetch_live_open_ticket_summary,
 )
 from dynamix_manager.storage import read_table, replace_table
+
+
+@pytest.mark.parametrize("failure", ["exception", "missing_token", "missing_id"])
+def test_cfo_draft_failure_reports_error_and_preserves_html(tmp_path, monkeypatch, capsys, failure):
+    config = RuntimeConfig(
+        base_url="https://example.test", app_id="1", username="test", password="test",
+        db_path=tmp_path / "analytics.duckdb",
+        report_output_path=tmp_path / "survey_health.html",
+        notebook_output_path=tmp_path / "survey_health.ipynb",
+    )
+    monkeypatch.setattr("dynamix_manager.pipeline.credentials_available", lambda path: failure != "missing_token")
+
+    def fail(**kwargs):
+        if failure == "exception":
+            raise RuntimeError("simulated Gmail failure")
+        return {}
+
+    monkeypatch.setattr("dynamix_manager.pipeline.create_draft", fail)
+    result = generate_cfo_email(config)
+    assert result["gmail_draft_id"] is None
+    assert result["gmail_draft_error"]
+    assert (tmp_path / "reports/cfo_email.html").exists()
+    assert len(read_table(config.db_path, "cfo_email_runs")) == 1
+    stderr = capsys.readouterr().err
+    assert "[gmail]" in stderr
+    if failure == "exception":
+        assert "Traceback" in stderr
+        assert "RuntimeError: simulated Gmail failure" in stderr
 
 
 class StubClient:

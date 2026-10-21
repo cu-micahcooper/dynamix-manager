@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 
 from dynamix_manager import pipeline
 from dynamix_manager.config import load_runtime_config, survey_report_id
@@ -156,6 +157,12 @@ def main() -> None:
             datatype_sparklines=args.datatype_sparklines,
         )
         print(json.dumps(result, indent=2))
+        if not result.get("gmail_draft_id"):
+            print(
+                f"Gmail draft was not created. HTML report saved at {result['email_path']}.",
+                file=sys.stderr,
+            )
+            raise SystemExit(1)
 
     else:
         parser.print_help()
