@@ -6,14 +6,13 @@ import traceback
 from typing import Any
 
 import pandas as pd
-import requests
+import duckdb
 
 from dynamix_manager.aha import (
     enrich_aha_roadmap_details,
     fetch_aha_roadmap_pivot,
     parse_aha_roadmap_pivot,
 )
-from dynamix_manager.models import build_ticket_linked_survey_model
 from dynamix_manager.notebooks import (
     write_survey_health_notebook,
     write_ticket_quality_notebook,
@@ -238,10 +237,6 @@ def _write_days_off_rows(config: RuntimeConfig, rows: list[dict]) -> pd.DataFram
     return days_off
 
 
-def _survey_ticket_ids(rows: list[dict]) -> list[int]:
-    return sorted({row["TicketID"] for row in rows if row.get("TicketID") is not None})
-
-
 def _artifact_root(config: RuntimeConfig):
     db_parent = config.db_path.parent
     if db_parent.name == "data":
@@ -386,64 +381,6 @@ def _discover_ticket_app_from_rows(
     raise RuntimeError("Unable to determine ticket application for survey report")
 
 
-def _cache_ticket_context_from_rows(
-    config: RuntimeConfig,
-    client: TeamDynamixClient,
-    token: str,
-    ticket_app_id: int,
-    ticket_app_name: str | None,
-    survey_rows: list[dict],
-    ticket_ids: list[int] | None = None,
-    limit: int | None = None,
-    existing_tickets: pd.DataFrame | None = None,
-    max_attempts: int = 1,
-) -> tuple[pd.DataFrame, list[int]]:
-    if ticket_ids is None:
-        ticket_ids = _survey_ticket_ids(survey_rows)
-    if existing_tickets is None and table_exists(config.db_path, "tickets"):
-        existing_tickets = read_table(config.db_path, "tickets")
-    existing_ticket_ids = set()
-    if existing_tickets is not None and not existing_tickets.empty:
-        existing_ticket_ids = set(existing_tickets["ticket_id"].tolist())
-    pending_ticket_ids = [ticket_id for ticket_id in ticket_ids if ticket_id not in existing_ticket_ids]
-    if limit is not None:
-        batch_ticket_ids = pending_ticket_ids[:limit]
-    else:
-        batch_ticket_ids = pending_ticket_ids
-    tickets = []
-    fetched_count = 0
-    for ticket_id in batch_ticket_ids:
-        try:
-            tickets.append(
-                client.get_ticket(
-                    ticket_id,
-                    token,
-                    ticket_app_id,
-                    max_attempts=max_attempts,
-                )
-            )
-            fetched_count += 1
-        except requests.HTTPError as exc:
-            status_code = getattr(exc.response, "status_code", None)
-            if status_code == 429:
-                break
-            if status_code == 404:
-                continue
-            raise
-    ticket_frame = normalize_ticket_rows(tickets)
-    if not ticket_frame.empty:
-        ticket_frame["ticket_app_id"] = ticket_app_id
-        ticket_frame["ticket_app_name"] = ticket_app_name
-    if existing_tickets is not None:
-        if ticket_frame.empty:
-            ticket_frame = existing_tickets
-        else:
-            ticket_frame = pd.concat([existing_tickets, ticket_frame], ignore_index=True)
-            ticket_frame = ticket_frame.drop_duplicates(subset=["ticket_id"], keep="first")
-    replace_table(config.db_path, "tickets", ticket_frame)
-    return ticket_frame, pending_ticket_ids[fetched_count:]
-
-
 def cache_survey_report(
     config: RuntimeConfig,
     client: TeamDynamixClient,
@@ -472,30 +409,6 @@ def discover_ticket_app(
     token = client.authenticate()
     rows = client.fetch_report(report_id, token, with_data=True)
     return _discover_ticket_app_from_rows(client, token, rows)
-
-
-def cache_ticket_context(
-    config: RuntimeConfig,
-    client: TeamDynamixClient,
-    ticket_app_id: int,
-    ticket_app_name: str | None = None,
-    report_id: int = 100482,
-    limit: int | None = None,
-):
-    token = client.authenticate()
-    survey_rows = client.fetch_report(report_id, token, with_data=True)
-    ticket_frame, _ = _cache_ticket_context_from_rows(
-        config=config,
-        client=client,
-        token=token,
-        ticket_app_id=ticket_app_id,
-        ticket_app_name=ticket_app_name,
-        survey_rows=survey_rows,
-        ticket_ids=None,
-        limit=limit,
-        max_attempts=1,
-    )
-    return ticket_frame
 
 
 def cache_ticket_quality_slice(
@@ -592,11 +505,32 @@ def cache_ticket_quality_slice(
 
 
 def materialize_ticket_linked_surveys(config: RuntimeConfig):
-    surveys = read_table(config.db_path, "survey_responses")
-    tickets = read_table(config.db_path, "tickets")
-    model = build_ticket_linked_survey_model(surveys, tickets)
-    replace_table(config.db_path, "ticket_linked_surveys", model)
-    return model
+    # A view lets the notebook reuse ticket analytics without retaining a survey copy.
+    with duckdb.connect(str(config.db_path)) as conn:
+        conn.execute("begin transaction")
+        if conn.execute("select count(*) from duckdb_tables() where schema_name='main' and table_name='ticket_linked_surveys'").fetchone()[0]:
+            conn.execute("drop table ticket_linked_surveys")
+        if conn.execute("select count(*) from duckdb_tables() where schema_name='main' and table_name='tickets'").fetchone()[0]:
+            columns = {r[0] for r in conn.execute("describe tickets").fetchall()}
+            scope = "t.ticket_app_name = 'InfoTech Tickets'" if "ticket_app_name" in columns else "t.service_name is not null"
+            query = f"""
+                select s.*, t.team_name, t.service_name, t.assignee_name,
+                       t.service_name is not null as ticket_linked,
+                       epoch(try_cast(t.responded_at as timestamptz) - try_cast(t.created_at as timestamptz))/3600 as response_time_hours,
+                       epoch(try_cast(t.resolved_at as timestamptz) - try_cast(t.created_at as timestamptz))/3600 as resolution_time_hours
+                from survey_responses s join tickets t using(ticket_id) where {scope}
+            """
+        else:
+            query = """
+                select *, null::varchar as team_name, null::varchar as service_name,
+                       null::varchar as assignee_name, false as ticket_linked,
+                       null::double as response_time_hours, null::double as resolution_time_hours
+                from survey_responses
+            """
+        conn.execute("create or replace view ticket_linked_surveys as " + query)
+        model = conn.execute("select * from ticket_linked_surveys").fetchdf()
+        conn.execute("commit")
+        return model
 
 
 def sync_tickets(
@@ -925,12 +859,6 @@ def refresh_survey_slice(
     ticket_limit: int | None = None,
 ) -> dict[str, int]:
     survey_frame = cache_survey_report(config=config, client=client, report_id=report_id)
-    ticket_app = discover_ticket_app(config=config, client=client, report_id=report_id)
-    sync_result = sync_tickets(
-        config=config,
-        client=client,
-        ticket_app_id=int(ticket_app["AppID"]),
-    )
     model = materialize_ticket_linked_surveys(config)
     write_survey_health_report(model, config.report_output_path)
     notebook_path = write_survey_health_notebook(
@@ -939,70 +867,6 @@ def refresh_survey_slice(
     )
     return {
         "survey_rows": len(survey_frame),
-        "ticket_app_id": int(ticket_app["AppID"]),
-        "ticket_rows": sync_result["synced_tickets"],
         "linked_rows": int(model["ticket_linked"].sum()),
         "notebook_written": int(notebook_path.exists()),
     }
-
-
-def backfill_ticket_links(
-    config: RuntimeConfig,
-    client: TeamDynamixClient,
-    report_id: int,
-    batch_size: int = 50,
-    max_batches: int = 5,
-) -> dict[str, int]:
-    token = client.authenticate()
-    survey_rows = client.fetch_report(report_id, token, with_data=True)
-    survey_frame = _write_survey_rows(config, survey_rows)
-    ticket_app = _discover_ticket_app_from_rows(client, token, survey_rows)
-    ticket_ids = _survey_ticket_ids(survey_rows)
-
-    ticket_frame, remaining_ticket_ids = _cache_ticket_context_from_rows(
-        config=config,
-        client=client,
-        token=token,
-        ticket_app_id=ticket_app["AppID"],
-        ticket_app_name=ticket_app.get("Name"),
-        survey_rows=survey_rows,
-        ticket_ids=ticket_ids,
-        limit=batch_size,
-        max_attempts=1,
-    )
-    batches_run = 1
-    previous_ticket_rows = len(ticket_frame)
-
-    while batches_run < max_batches and remaining_ticket_ids:
-        ticket_frame, remaining_ticket_ids = _cache_ticket_context_from_rows(
-            config=config,
-            client=client,
-            token=token,
-            ticket_app_id=ticket_app["AppID"],
-            ticket_app_name=ticket_app.get("Name"),
-            survey_rows=survey_rows,
-            ticket_ids=remaining_ticket_ids,
-            existing_tickets=ticket_frame,
-            limit=batch_size,
-            max_attempts=1,
-        )
-        batches_run += 1
-        if len(ticket_frame) <= previous_ticket_rows:
-            break
-        previous_ticket_rows = len(ticket_frame)
-
-    model = materialize_ticket_linked_surveys(config)
-    write_survey_health_report(model, config.report_output_path)
-    notebook_path = write_survey_health_notebook(
-        db_path=config.db_path,
-        output_path=config.notebook_output_path,
-    )
-    summary = {
-        "survey_rows": len(survey_frame),
-        "ticket_app_id": int(ticket_app["AppID"]),
-        "ticket_rows": len(ticket_frame),
-        "linked_rows": int(model["ticket_linked"].sum()),
-        "notebook_written": int(notebook_path.exists()),
-    }
-    summary["batches_run"] = batches_run
-    return summary

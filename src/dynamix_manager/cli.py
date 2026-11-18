@@ -22,24 +22,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Fetch latest survey report and refresh linked-ticket model",
     )
 
-    # backfill-tickets
-    backfill = subparsers.add_parser(
-        "backfill-tickets",
-        help="Backfill ticket context for all surveyed tickets in batches",
-    )
-    backfill.add_argument(
-        "--batch-size",
-        type=int,
-        default=50,
-        help="Number of tickets to fetch per batch (default: 50)",
-    )
-    backfill.add_argument(
-        "--max-batches",
-        type=int,
-        default=5,
-        help="Maximum number of batches to run (default: 5)",
-    )
-
     # quality-check
     quality = subparsers.add_parser(
         "quality-check",
@@ -115,16 +97,6 @@ def main() -> None:
             config=config,
             client=client,
             report_id=survey_report_id(),
-        )
-        print(json.dumps(result, indent=2))
-
-    elif args.command == "backfill-tickets":
-        result = pipeline.backfill_ticket_links(
-            config=config,
-            client=client,
-            report_id=survey_report_id(),
-            batch_size=args.batch_size,
-            max_batches=args.max_batches,
         )
         print(json.dumps(result, indent=2))
 

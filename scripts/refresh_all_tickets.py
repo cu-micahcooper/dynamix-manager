@@ -1,7 +1,6 @@
 """Sweep all tickets by created-date range and cache them — open and closed.
 
-Unlike backfill_all_tickets.py (which only fetches survey-linked IDs), this
-script collects every ticket returned by the search API across all date ranges
+This script collects every ticket returned by the search API across all date ranges
 and upserts them into the tickets table.
 """
 from __future__ import annotations

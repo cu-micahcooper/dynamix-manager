@@ -1,14 +1,11 @@
 import pandas as pd
-import requests
 import pytest
 
 from dynamix_manager.config import RuntimeConfig
 from dynamix_manager.pipeline import (
-    backfill_ticket_links,
     cache_days_off,
     cache_ticket_quality_slice,
     cache_survey_report,
-    cache_ticket_context,
     discover_ticket_app,
     generate_cfo_email,
     generate_executive_report,
@@ -224,84 +221,6 @@ def test_discover_ticket_app_prefers_infotech_tickets_by_name(tmp_path):
 
     assert app["AppID"] == 634
     assert client.ticket_calls == []
-
-
-def test_cache_ticket_context_persists_ticket_details_for_survey_rows(tmp_path):
-    config = RuntimeConfig(
-        base_url="https://example.test",
-        app_id="1234",
-        username="user",
-        password="pass",
-        db_path=tmp_path / "analytics.duckdb",
-        report_output_path=tmp_path / "survey_health.html",
-        notebook_output_path=tmp_path / "survey_health.ipynb",
-    )
-    client = StubClient(
-        [
-            {"ResponseID": 1, "TicketID": 42, "48398": "Very Satisfied"},
-            {"ResponseID": 2, "TicketID": 99, "48398": "Dissatisfied"},
-        ]
-    )
-    client.ticket_payloads[(634, 42)] = {
-        "ID": 42,
-        "Title": "Laptop issue",
-        "StatusName": "Closed",
-        "ServiceName": "Desktop Support",
-        "ResponsibleGroupName": "Client Services",
-        "RespondingFullName": "Analyst One",
-        "CreatedDate": "2026-03-01T08:00:00Z",
-        "RespondedDate": "2026-03-01T08:30:00Z",
-        "CompletedDate": "2026-03-01T09:00:00Z",
-    }
-    client.ticket_payloads[(634, 99)] = {
-        "ID": 99,
-        "Title": "Wi-Fi issue",
-        "StatusName": "Open",
-        "ServiceName": "Network",
-        "ResponsibleGroupName": "Infrastructure",
-        "RespondingFullName": "Analyst Two",
-        "CreatedDate": "2026-03-01T10:00:00Z",
-        "RespondedDate": "2026-03-01T10:15:00Z",
-        "CompletedDate": None,
-    }
-
-    df = cache_ticket_context(config=config, client=client, ticket_app_id=634)
-
-    persisted = read_table(config.db_path, "tickets")
-    assert set(df["ticket_id"]) == {42, 99}
-    assert set(persisted["team_name"]) == {"Client Services", "Infrastructure"}
-
-
-def test_cache_ticket_context_honors_limit(tmp_path):
-    config = RuntimeConfig(
-        base_url="https://example.test",
-        app_id="1234",
-        username="user",
-        password="pass",
-        db_path=tmp_path / "analytics.duckdb",
-        report_output_path=tmp_path / "survey_health.html",
-        notebook_output_path=tmp_path / "survey_health.ipynb",
-    )
-    client = StubClient(
-        [
-            {"ResponseID": 1, "TicketID": 42, "48398": "Very Satisfied"},
-            {"ResponseID": 2, "TicketID": 99, "48398": "Dissatisfied"},
-        ]
-    )
-    client.ticket_payloads[(634, 42)] = {
-        "ID": 42,
-        "Title": "Laptop issue",
-        "StatusName": "Closed",
-    }
-    client.ticket_payloads[(634, 99)] = {
-        "ID": 99,
-        "Title": "Wi-Fi issue",
-        "StatusName": "Open",
-    }
-
-    df = cache_ticket_context(config=config, client=client, ticket_app_id=634, limit=1)
-
-    assert list(df["ticket_id"]) == [42]
 
 
 def test_cache_ticket_quality_slice_persists_flags_and_artifacts(tmp_path):
@@ -589,85 +508,6 @@ def test_cache_ticket_quality_slice_drops_tickets_closed_in_fresh_detail(tmp_pat
     assert summary["flag_rows"] == 0
     assert flags.empty
     assert interactions.empty
-
-
-def test_cache_ticket_context_reuses_existing_ticket_rows(tmp_path):
-    config = RuntimeConfig(
-        base_url="https://example.test",
-        app_id="1234",
-        username="user",
-        password="pass",
-        db_path=tmp_path / "analytics.duckdb",
-        report_output_path=tmp_path / "survey_health.html",
-        notebook_output_path=tmp_path / "survey_health.ipynb",
-    )
-    replace_table(
-        config.db_path,
-        "tickets",
-        pd.DataFrame(
-            [
-                {
-                    "ticket_id": 42,
-                    "ticket_title": "Cached ticket",
-                    "status_name": "Closed",
-                }
-            ]
-        ),
-    )
-    client = StubClient(
-        [
-            {"ResponseID": 1, "TicketID": 42, "48398": "Very Satisfied"},
-            {"ResponseID": 2, "TicketID": 99, "48398": "Dissatisfied"},
-        ]
-    )
-    client.ticket_payloads[(634, 99)] = {
-        "ID": 99,
-        "Title": "Wi-Fi issue",
-        "StatusName": "Open",
-    }
-
-    df = cache_ticket_context(config=config, client=client, ticket_app_id=634)
-
-    assert set(df["ticket_id"]) == {42, 99}
-    assert client.ticket_calls == [(99, "token", 634)]
-
-
-def test_cache_ticket_context_keeps_partial_progress_on_rate_limit(tmp_path):
-    class RateLimitedClient(StubClient):
-        def get_ticket(self, ticket_id, token, ticket_app_id, max_attempts=5):
-            self.ticket_calls.append((ticket_id, token, ticket_app_id))
-            if ticket_id == 99:
-                response = requests.Response()
-                response.status_code = 429
-                response.url = "https://example.test/api/634/tickets/99"
-                raise requests.HTTPError(response=response)
-            return self.ticket_payloads[(ticket_app_id, ticket_id)]
-
-    config = RuntimeConfig(
-        base_url="https://example.test",
-        app_id="1234",
-        username="user",
-        password="pass",
-        db_path=tmp_path / "analytics.duckdb",
-        report_output_path=tmp_path / "survey_health.html",
-        notebook_output_path=tmp_path / "survey_health.ipynb",
-    )
-    client = RateLimitedClient(
-        [
-            {"ResponseID": 1, "TicketID": 42, "48398": "Very Satisfied"},
-            {"ResponseID": 2, "TicketID": 99, "48398": "Dissatisfied"},
-        ]
-    )
-    client.ticket_payloads[(634, 42)] = {
-        "ID": 42,
-        "Title": "Laptop issue",
-        "StatusName": "Closed",
-    }
-
-    df = cache_ticket_context(config=config, client=client, ticket_app_id=634)
-
-    assert list(df["ticket_id"]) == [42]
-    assert client.ticket_calls == [(42, "token", 634), (99, "token", 634)]
 
 
 def test_materialize_ticket_linked_surveys_persists_joined_model(tmp_path):
@@ -1106,109 +946,14 @@ def test_refresh_survey_slice_runs_end_to_end_and_writes_report(tmp_path):
 
     summary = refresh_survey_slice(config=config, client=client, report_id=100482)
 
-    assert summary["ticket_app_id"] == 634
     assert summary["survey_rows"] == 1
-    assert summary["ticket_rows"] == 1
-    assert summary["linked_rows"] == 1
+    assert summary["linked_rows"] == 0
+    import duckdb
+    with duckdb.connect(str(config.db_path)) as conn:
+        assert conn.execute("select count(*) from duckdb_tables() where table_name='tickets'").fetchone() == (0,)
+        assert conn.execute("select count(*) from duckdb_views() where view_name='ticket_linked_surveys'").fetchone() == (1,)
     assert config.report_output_path.exists()
     assert config.notebook_output_path.exists()
-
-
-def test_backfill_ticket_links_runs_multiple_batches_until_no_progress(tmp_path):
-    config = RuntimeConfig(
-        base_url="https://example.test",
-        app_id="1234",
-        username="user",
-        password="pass",
-        db_path=tmp_path / "analytics.duckdb",
-        report_output_path=tmp_path / "survey_health.html",
-        notebook_output_path=tmp_path / "survey_health.ipynb",
-    )
-    client = StubClient(
-        [
-            {"ResponseID": 1, "TicketID": 42, "48398": "Very Satisfied"},
-            {"ResponseID": 2, "TicketID": 99, "48398": "Dissatisfied"},
-            {"ResponseID": 3, "TicketID": 100, "48398": "Satisfied"},
-        ]
-    )
-    client.applications = [
-        {"AppID": 634, "Name": "InfoTech Tickets", "AppClass": "TDTickets"},
-    ]
-    client.ticket_payloads[(634, 42)] = {"ID": 42, "Title": "One", "StatusName": "Closed"}
-    client.ticket_payloads[(634, 99)] = {"ID": 99, "Title": "Two", "StatusName": "Closed"}
-    client.ticket_payloads[(634, 100)] = {"ID": 100, "Title": "Three", "StatusName": "Closed"}
-
-    summary = backfill_ticket_links(
-        config=config,
-        client=client,
-        report_id=100482,
-        batch_size=2,
-        max_batches=3,
-    )
-
-    persisted = read_table(config.db_path, "tickets")
-    assert summary["batches_run"] == 2
-    assert summary["ticket_rows"] == 3
-    assert set(persisted["ticket_id"]) == {42, 99, 100}
-    assert client.auth_calls == 1
-    assert client.report_calls == [(100482, "token", True)]
-    assert client.app_fetch_calls == 1
-
-
-def test_backfill_ticket_links_materializes_outputs_once_after_batching(tmp_path, monkeypatch):
-    config = RuntimeConfig(
-        base_url="https://example.test",
-        app_id="1234",
-        username="user",
-        password="pass",
-        db_path=tmp_path / "analytics.duckdb",
-        report_output_path=tmp_path / "survey_health.html",
-        notebook_output_path=tmp_path / "survey_health.ipynb",
-    )
-    client = StubClient(
-        [
-            {"ResponseID": 1, "TicketID": 42, "48398": "Very Satisfied"},
-            {"ResponseID": 2, "TicketID": 99, "48398": "Dissatisfied"},
-            {"ResponseID": 3, "TicketID": 100, "48398": "Satisfied"},
-        ]
-    )
-    client.applications = [
-        {"AppID": 634, "Name": "InfoTech Tickets", "AppClass": "TDTickets"},
-    ]
-    client.ticket_payloads[(634, 42)] = {"ID": 42, "Title": "One", "StatusName": "Closed"}
-    client.ticket_payloads[(634, 99)] = {"ID": 99, "Title": "Two", "StatusName": "Closed"}
-    client.ticket_payloads[(634, 100)] = {"ID": 100, "Title": "Three", "StatusName": "Closed"}
-
-    report_calls = []
-    notebook_calls = []
-
-    def fake_report(model, output_path):
-        report_calls.append((len(model), output_path))
-
-    def fake_notebook(db_path, output_path):
-        notebook_calls.append((db_path, output_path))
-
-        class _NotebookPath:
-            def exists(self):
-                return True
-
-        return _NotebookPath()
-
-    monkeypatch.setattr("dynamix_manager.pipeline.write_survey_health_report", fake_report)
-    monkeypatch.setattr("dynamix_manager.pipeline.write_survey_health_notebook", fake_notebook)
-
-    summary = backfill_ticket_links(
-        config=config,
-        client=client,
-        report_id=100482,
-        batch_size=2,
-        max_batches=3,
-    )
-
-    assert summary["ticket_rows"] == 3
-    assert summary["batches_run"] == 2
-    assert len(report_calls) == 1
-    assert len(notebook_calls) == 1
 
 
 def test_generate_executive_report_writes_html_and_returns_summary(tmp_path):
