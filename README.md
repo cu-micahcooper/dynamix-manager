@@ -39,7 +39,7 @@ The `dynamix-manager` CLI is the primary way to refresh data and generate report
 
 ### `refresh-surveys`
 
-Fetches the latest survey report from TeamDynamix, reads available ticket context from the shared analytics table through the `ticket_linked_surveys` view, writes `reports/survey_health.html`, and updates `notebooks/survey_health.ipynb`.
+Fetches the latest survey report from TeamDynamix, reads response-level reporting dimensions through the `ticket_linked_surveys` view, writes `reports/survey_health.html`, and updates `notebooks/survey_health.ipynb`.
 
 ```bash
 python -m dynamix_manager.cli refresh-surveys
@@ -97,10 +97,16 @@ HTML reports are written to the `reports/` directory:
 All ingested data is stored in `data/analytics.duckdb` (a local DuckDB file, not checked in). Key tables:
 
 - `survey_responses` — raw survey report rows from TeamDynamix
-- `tickets` — ticket context records linked to surveys
-- `ticket_linked_surveys` — modeled join of surveys and tickets
+- `cfo_daily_counts` — created and closed counts by report run and UTC day, split at exact reporting cutoffs
+- `cfo_backlog_snapshots` and `cfo_observed_queue` — reconstructed chart points and separately observed live queue counts
+- `survey_dimensions` — team, service, assignee and elapsed hours for linked survey responses
+- `ticket_linked_surveys` — view joining surveys and their reporting dimensions
 - `days_off` — cached holidays and planned days off
 - `ticket_quality_tickets`, `ticket_quality_interactions`, `ticket_quality_flags` — open-ticket quality analysis
+
+The CFO email refreshes its reporting windows from TeamDynamix. The dashboard reads the aggregates for the most recent CFO run. Daily buckets split at exact report cutoffs, including partial days. Historical chart backlog is reconstructed across ticket types, while the incident/service-request queue is measured at run time. The executive and ticket-health reports read ticket details into memory when they run, so those reports require TeamDynamix access. The quality check retains its existing dedicated quality-analysis tables.
+
+For a legacy database, run `python scripts/retire_ticket_cache.py` to stage daily counts and compare the latest CFO metrics. After verifying the reports, `--retire` also checks survey-row parity and removes the legacy table transactionally.
 
 ## Verification
 

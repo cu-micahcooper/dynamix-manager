@@ -5,58 +5,56 @@ import sys
 import traceback
 from typing import Any
 
-import pandas as pd
 import duckdb
+import pandas as pd
 
+from dynamix_manager import cfo_counts
 from dynamix_manager.aha import (
     enrich_aha_roadmap_details,
     fetch_aha_roadmap_pivot,
     parse_aha_roadmap_pivot,
 )
+from dynamix_manager.cfo import _recent_survey_comments, summarize_cfo_snapshot
+from dynamix_manager.config import RuntimeConfig, survey_report_id
+from dynamix_manager.executive import summarize_executive_snapshot
+from dynamix_manager.gmail import create_draft, credentials_available
 from dynamix_manager.notebooks import (
     write_survey_health_notebook,
     write_ticket_quality_notebook,
 )
 from dynamix_manager.noteplan import build_cfo_discussion_items
 from dynamix_manager.planned_days_off import PLANNED_DAYS_OFF
-from dynamix_manager.config import RuntimeConfig, survey_report_id
-from dynamix_manager.cfo import summarize_cfo_snapshot
-from dynamix_manager.executive import summarize_executive_snapshot
+from dynamix_manager.report_source import date_rows, frame_from_rows, live_history
 from dynamix_manager.reporting import (
     header_burst_png_data_uri,
     render_cfo_email_html,
     render_header_burst_png,
+    write_cfo_email,
+    write_executive_email,
+    write_executive_report,
     write_survey_health_report,
     write_ticket_health_report,
     write_ticket_quality_report,
-    write_executive_email,
-    write_executive_report,
-    write_cfo_email,
 )
-from dynamix_manager.gmail import create_draft, credentials_available
-from dynamix_manager.youtrack import fetch_youtrack_inprogress_projects
 from dynamix_manager.storage import read_table, replace_table, table_exists
+from dynamix_manager.survey_context import refresh_context
+from dynamix_manager.surveys import normalize_survey_rows
+from dynamix_manager.tdx_client import TeamDynamixClient
 from dynamix_manager.ticket_quality import (
     build_ticket_quality_flags,
     normalize_ticket_quality_feed_rows,
     normalize_ticket_quality_ticket_rows,
 )
 from dynamix_manager.tickets import (
-    build_ticket_search_filters,
     exclude_cancelled_tickets,
-    normalize_ticket_rows,
     ticket_row_is_cancelled,
 )
-from dynamix_manager.surveys import normalize_survey_rows
-from dynamix_manager.tdx_client import TeamDynamixClient
+from dynamix_manager.youtrack import fetch_youtrack_inprogress_projects
 
 INFOTECH_TICKETS_APP_NAME = "InfoTech Tickets"
-TICKET_SYNC_OVERLAP_DAYS = 14
 CFO_RUNS_TABLE = "cfo_email_runs"
 CFO_NORMAL_PERIOD_DAYS = 7
 CFO_VOLUME_BACKFILL_DAYS = 56
-CFO_CATCHUP_CHUNK_DAYS = 7
-TICKET_SEARCH_CAP_GUARD = 300
 CFO_OPEN_TICKET_CLASSIFICATIONS = {"Incident", "Service Request"}
 CFO_COMPUTER_REFRESH_TYPES = {"Campus Upgrades"}
 CFO_SCHEDULED_CHANGE_TYPES = {"Change", "Change Management", "IT Internal"}
@@ -145,62 +143,6 @@ def _append_cfo_email_run(
         existing = read_table(config.db_path, CFO_RUNS_TABLE)
         run = pd.concat([existing, run], ignore_index=True)
     replace_table(config.db_path, CFO_RUNS_TABLE, run)
-
-
-def _catchup_windows(
-    start: pd.Timestamp,
-    end: pd.Timestamp,
-    *,
-    days: int = CFO_CATCHUP_CHUNK_DAYS,
-) -> list[tuple[pd.Timestamp, pd.Timestamp]]:
-    windows: list[tuple[pd.Timestamp, pd.Timestamp]] = []
-    cursor = start
-    while cursor < end:
-        window_end = min(cursor + pd.Timedelta(days=days), end)
-        windows.append((cursor, window_end))
-        cursor = window_end
-    return windows
-
-
-def _search_ticket_window_rows(
-    client: TeamDynamixClient,
-    token: str,
-    ticket_app_id: int,
-    *,
-    start: pd.Timestamp,
-    end: pd.Timestamp,
-    date_kind: str,
-) -> list[dict[str, Any]]:
-    if date_kind == "created":
-        payload = build_ticket_search_filters(
-            created_from=start.isoformat(),
-            created_to=end.isoformat(),
-        )
-    elif date_kind == "closed":
-        payload = build_ticket_search_filters(
-            closed_from=start.isoformat(),
-            closed_to=end.isoformat(),
-        )
-    else:
-        raise ValueError(f"Unknown ticket search date kind: {date_kind}")
-
-    rows = client.search_tickets(token, payload, ticket_app_id=ticket_app_id)
-    if len(rows) < TICKET_SEARCH_CAP_GUARD or end - start <= pd.Timedelta(days=1):
-        return rows
-
-    split_rows: list[dict[str, Any]] = []
-    for day_start, day_end in _catchup_windows(start, end, days=1):
-        split_rows.extend(
-            _search_ticket_window_rows(
-                client,
-                token,
-                ticket_app_id,
-                start=day_start,
-                end=day_end,
-                date_kind=date_kind,
-            )
-        )
-    return split_rows
 
 
 def _write_survey_rows(config: RuntimeConfig, rows: list[dict]) -> pd.DataFrame:
@@ -305,6 +247,8 @@ def _fetch_live_open_ticket_summary(
         },
         ticket_app_id=ticket_app_id,
     )
+    if len(rows) >= CFO_OPEN_TICKET_SEARCH_MAX_RESULTS:
+        raise ValueError("Open ticket count reached search limit")
     rows = [row for row in rows if not ticket_row_is_cancelled(row)]
     incident_service_request_count = 0
     computer_refresh_count = 0
@@ -350,9 +294,8 @@ def _apply_live_open_ticket_summary(
     snapshot["total_open_tickets_scope_label"] = str(
         live_open_summary.get("scope_label") or "Incident/Service Requests"
     )
-    snapshot["total_open_tickets_live_all_open"] = int(
-        live_open_summary.get("all_open_count", 0) or 0
-    )
+    if "all_open_count" in live_open_summary:
+        snapshot["total_open_tickets_live_all_open"] = int(live_open_summary["all_open_count"])
     buckets = live_open_summary.get("buckets")
     if isinstance(buckets, list):
         snapshot["open_ticket_summary_buckets"] = buckets
@@ -417,7 +360,7 @@ def cache_ticket_quality_slice(
     ticket_app_id: int,
     limit: int | None = None,
 ):
-    all_tickets = read_table(config.db_path, "tickets")
+    all_tickets = _report_tickets(config, client, ticket_app_id)
     source_tickets = _open_tickets_only(all_tickets)
     days_off = read_table(config.db_path, "days_off") if table_exists(config.db_path, "days_off") else pd.DataFrame(columns=["holiday_date"])
     if "modified_at" in source_tickets.columns:
@@ -520,6 +463,8 @@ def materialize_ticket_linked_surveys(config: RuntimeConfig):
                        epoch(try_cast(t.resolved_at as timestamptz) - try_cast(t.created_at as timestamptz))/3600 as resolution_time_hours
                 from survey_responses s join tickets t using(ticket_id) where {scope}
             """
+        elif conn.execute("select count(*) from duckdb_tables() where table_name='survey_dimensions' and schema_name='main'").fetchone()[0]:
+            query = "select s.*, d.* exclude(response_id) from survey_responses s join survey_dimensions d using (response_id)"
         else:
             query = """
                 select *, null::varchar as team_name, null::varchar as service_name,
@@ -533,116 +478,21 @@ def materialize_ticket_linked_surveys(config: RuntimeConfig):
         return model
 
 
-def sync_tickets(
-    config: RuntimeConfig,
-    client: TeamDynamixClient,
-    ticket_app_id: int,
-    catchup_start: pd.Timestamp | None = None,
-    catchup_end: pd.Timestamp | None = None,
-) -> dict[str, int]:
-    """Bulk-sync tickets with an overlap window to avoid brittle cursor gaps.
-
-    We intentionally rewind the ModifiedDateFrom cursor by 14 days so that the
-    current CFO 7-day reporting window is always refreshed from live data even
-    if a prior run missed records near the cursor boundary.
-    """
-    modified_from: str | None = None
-    existing = pd.DataFrame()
+def _report_tickets(config, client=None, app=634):
     if table_exists(config.db_path, "tickets"):
-        existing = read_table(config.db_path, "tickets")
-        if not existing.empty and "modified_at" in existing.columns:
-            max_mod = pd.to_datetime(existing["modified_at"], utc=True, errors="coerce").dropna().max()
-            if pd.notna(max_mod):
-                modified_from = (max_mod - pd.Timedelta(days=TICKET_SYNC_OVERLAP_DAYS)).isoformat()
-
-    token = client.authenticate()
-    payload = build_ticket_search_filters(modified_from=modified_from)
-    rows = client.search_tickets(token, payload, ticket_app_id=ticket_app_id)
-    new_frame = normalize_ticket_rows(rows)
-    catchup_created_frames: list[pd.DataFrame] = []
-    catchup_closed_frames: list[pd.DataFrame] = []
-
-    if catchup_start is not None and catchup_end is not None:
-        start = _coerce_utc(catchup_start)
-        end = _coerce_utc(catchup_end)
-        if start is not None and end is not None and start < end:
-            for window_start, window_end in _catchup_windows(start, end):
-                created_rows = _search_ticket_window_rows(
-                    client,
-                    token,
-                    ticket_app_id,
-                    start=window_start,
-                    end=window_end,
-                    date_kind="created",
-                )
-                created_frame = normalize_ticket_rows(created_rows)
-                if not created_frame.empty:
-                    catchup_created_frames.append(created_frame)
-
-                closed_rows = _search_ticket_window_rows(
-                    client,
-                    token,
-                    ticket_app_id,
-                    start=window_start,
-                    end=window_end,
-                    date_kind="closed",
-                )
-                closed_frame = normalize_ticket_rows(closed_rows)
-                if not closed_frame.empty:
-                    catchup_closed_frames.append(closed_frame)
-
-    if not new_frame.empty:
-        new_frame["ticket_app_id"] = ticket_app_id
-    for frame in [*catchup_created_frames, *catchup_closed_frames]:
-        frame["ticket_app_id"] = ticket_app_id
-
-    frames = [
-        frame
-        for frame in [
-            existing,
-            new_frame,
-            *catchup_created_frames,
-            *catchup_closed_frames,
-        ]
-        if not frame.empty
-    ]
-    if frames:
-        combined = pd.concat(frames, ignore_index=True)
-        combined = combined.drop_duplicates(subset=["ticket_id"], keep="last")
-    elif len(existing.columns) > 0:
-        combined = existing
-    else:
-        combined = new_frame
-
-    created_catchup_count = (
-        len(pd.concat(catchup_created_frames, ignore_index=True).drop_duplicates(subset=["ticket_id"]))
-        if catchup_created_frames
-        else 0
-    )
-    closed_catchup_count = (
-        len(pd.concat(catchup_closed_frames, ignore_index=True).drop_duplicates(subset=["ticket_id"]))
-        if catchup_closed_frames
-        else 0
-    )
-
-    replace_table(config.db_path, "tickets", combined)
-    return {
-        "synced_tickets": len(new_frame),
-        "catchup_created_tickets": int(created_catchup_count),
-        "catchup_closed_tickets": int(closed_catchup_count),
-    }
+        return read_table(config.db_path, "tickets")
+    return live_history(config, client, app)
 
 
 def generate_executive_report(
     config: RuntimeConfig,
     client: TeamDynamixClient | None = None,
 ) -> dict[str, object]:
+    app = 634
     if client is not None:
         cache_survey_report(config=config, client=client, report_id=survey_report_id())
-        ticket_app = discover_ticket_app(config=config, client=client, report_id=survey_report_id())
-        sync_tickets(config=config, client=client, ticket_app_id=int(ticket_app["AppID"]))
-
-    tickets = read_table(config.db_path, "tickets") if table_exists(config.db_path, "tickets") else pd.DataFrame()
+        app = int(discover_ticket_app(config=config, client=client, report_id=survey_report_id())["AppID"])
+    tickets = _report_tickets(config, client, app)
     surveys = (
         read_table(config.db_path, "survey_responses")
         if table_exists(config.db_path, "survey_responses")
@@ -674,7 +524,7 @@ def generate_executive_email(
     config: RuntimeConfig,
 ) -> dict[str, object]:
     """Render the executive email HTML from cached data (no live sync)."""
-    tickets = read_table(config.db_path, "tickets") if table_exists(config.db_path, "tickets") else pd.DataFrame()
+    tickets = _report_tickets(config)
     surveys = (
         read_table(config.db_path, "survey_responses")
         if table_exists(config.db_path, "survey_responses")
@@ -716,24 +566,25 @@ def generate_cfo_email(
     if client is not None:
         cache_survey_report(config=config, client=client, report_id=survey_report_id())
         ticket_app = discover_ticket_app(config=config, client=client, report_id=survey_report_id())
-        sync_tickets(
-            config=config,
-            client=client,
-            ticket_app_id=int(ticket_app["AppID"]),
-            catchup_start=ticket_backfill_start,
-            catchup_end=as_of,
-        )
-        try:
-            token = client.authenticate()
-            live_open_ticket_summary = _fetch_live_open_ticket_summary(
-                client,
-                token,
-                int(ticket_app["AppID"]),
-            )
-        except Exception:
-            live_open_ticket_summary = {}
-
-    tickets = read_table(config.db_path, "tickets") if table_exists(config.db_path, "tickets") else pd.DataFrame()
+        app = int(ticket_app["AppID"])
+        token = client.authenticate()
+        rows = []
+        for lo, hi in ((min(ticket_backfill_start, period_start-(as_of-period_start)), as_of),
+                       (period_start-pd.Timedelta(weeks=52), as_of-pd.Timedelta(weeks=52))):
+            for field in ("CreatedDate", "ClosedDate"):
+                rows.extend(date_rows(client, token, app, field, lo, hi))
+        open_rows = client.search_tickets(token, {"StatusClassIDs":[1,2,5,6],
+                                                "MaxResults": CFO_OPEN_TICKET_SEARCH_MAX_RESULTS}, ticket_app_id=app)
+        if len(open_rows) >= CFO_OPEN_TICKET_SEARCH_MAX_RESULTS:
+            raise ValueError("Open-ticket search exceeded its coverage limit")
+        tickets = frame_from_rows(rows + open_rows)
+        live_open_ticket_summary = _fetch_live_open_ticket_summary(client, token, app)
+    else:
+        tickets = read_table(config.db_path, "tickets") if table_exists(config.db_path, "tickets") else pd.DataFrame()
+        if tickets.empty and table_exists(config.db_path, "cfo_daily_counts"):
+            raise ValueError("A live TeamDynamix client is required for a new CFO reporting period")
+    cfo_counts.save_counts(config.db_path, tickets, period_start, as_of, observed=live_open_ticket_summary)
+    live_open_ticket_summary = cfo_counts.load_queue_snapshot(config.db_path, as_of)
     surveys = (
         read_table(config.db_path, "survey_responses")
         if table_exists(config.db_path, "survey_responses")
@@ -753,12 +604,14 @@ def generate_cfo_email(
     discussion_items = _fetch_cfo_discussion_items(config, as_of)
 
     snapshot = summarize_cfo_snapshot(
-        tickets,
+        pd.DataFrame(),
         surveys,
         youtrack_projects=youtrack_projects,
         as_of=as_of,
         period_start=period_start,
     )
+    snapshot.update(cfo_counts.load_metrics(config.db_path, period_start, as_of))
+    snapshot["survey_comments"] = _recent_survey_comments(surveys, tickets, period_start=period_start, as_of=as_of)
     snapshot["aha_roadmap"] = aha_roadmap
     snapshot["discussion_items"] = discussion_items
     _apply_live_open_ticket_summary(snapshot, live_open_ticket_summary)
@@ -859,6 +712,8 @@ def refresh_survey_slice(
     ticket_limit: int | None = None,
 ) -> dict[str, int]:
     survey_frame = cache_survey_report(config=config, client=client, report_id=report_id)
+    if table_exists(config.db_path, "survey_dimensions"):
+        refresh_context(config.db_path, client, survey_frame)
     model = materialize_ticket_linked_surveys(config)
     write_survey_health_report(model, config.report_output_path)
     notebook_path = write_survey_health_notebook(

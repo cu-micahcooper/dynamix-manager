@@ -6,7 +6,11 @@ import pandas as pd
 
 from dynamix_manager.aha import fetch_aha_roadmap_pivot, parse_aha_roadmap_pivot
 from dynamix_manager.cfo import summarize_cfo_snapshot
-from dynamix_manager.cfo_dashboard import build_cfo_dashboard_data, write_cfo_dashboard_site
+from dynamix_manager.cfo_counts import load_metrics
+from dynamix_manager.cfo_dashboard import (
+    build_cfo_dashboard_data,
+    write_cfo_dashboard_site,
+)
 from dynamix_manager.config import RuntimeConfig, load_runtime_config
 from dynamix_manager.pipeline import fetch_youtrack_inprogress_projects
 from dynamix_manager.storage import read_table, table_exists
@@ -15,7 +19,6 @@ from dynamix_manager.storage import read_table, table_exists
 def main() -> None:
     config = load_runtime_config()
     as_of, period_start = _latest_cfo_period(config)
-    tickets = read_table(config.db_path, "tickets") if table_exists(config.db_path, "tickets") else pd.DataFrame()
     surveys = (
         read_table(config.db_path, "survey_responses")
         if table_exists(config.db_path, "survey_responses")
@@ -24,12 +27,13 @@ def main() -> None:
     youtrack_projects = _fetch_youtrack_projects(config)
     aha_roadmap = _fetch_aha_roadmap(config)
     snapshot = summarize_cfo_snapshot(
-        tickets,
+        pd.DataFrame(),
         surveys,
         youtrack_projects=youtrack_projects,
         as_of=as_of,
         period_start=period_start,
     )
+    snapshot.update(load_metrics(config.db_path, period_start, as_of))
     data = build_cfo_dashboard_data(snapshot, aha_roadmap=aha_roadmap)
     write_cfo_dashboard_site(Path("sites/cfo-dashboard"), data)
     print(

@@ -11,7 +11,6 @@ from dynamix_manager.pipeline import (
     generate_executive_report,
     materialize_ticket_linked_surveys,
     refresh_survey_slice,
-    sync_tickets,
     _fetch_live_open_ticket_summary,
 )
 from dynamix_manager.storage import read_table, replace_table
@@ -562,173 +561,6 @@ def test_materialize_ticket_linked_surveys_persists_joined_model(tmp_path):
     assert len(model) == 1
 
 
-def test_sync_tickets_upserts_modified_tickets(tmp_path):
-    config = RuntimeConfig(
-        base_url="https://example.test",
-        app_id="1234",
-        username="user",
-        password="pass",
-        db_path=tmp_path / "analytics.duckdb",
-        report_output_path=tmp_path / "survey_health.html",
-        notebook_output_path=tmp_path / "survey_health.ipynb",
-    )
-    replace_table(config.db_path, "tickets", pd.DataFrame([
-        {"ticket_id": 1, "ticket_title": "Old", "modified_at": "2026-03-20T10:00:00Z"},
-    ]))
-    client = StubClient([])
-    client.search_rows = [
-        {"ID": 2, "Title": "New ticket", "CreatedDate": "2026-04-01T10:00:00Z",
-         "ModifiedDate": "2026-04-01T10:00:00Z", "StatusName": "Open"},
-    ]
-
-    result = sync_tickets(config, client, ticket_app_id=634)
-
-    tickets = read_table(config.db_path, "tickets")
-    assert result["synced_tickets"] == 1
-    assert len(tickets) == 2
-    assert set(tickets["ticket_id"]) == {1, 2}
-    assert client.search_calls[0][1]["ModifiedDateFrom"] == "2026-03-06T10:00:00+00:00"
-
-
-def test_sync_tickets_catches_up_created_and_closed_volume_windows(tmp_path):
-    class CatchupClient(StubClient):
-        def search_tickets(self, token, payload, ticket_app_id=None):
-            self.search_calls.append((token, payload, ticket_app_id))
-            if "CreatedDateFrom" in payload:
-                return [
-                    {
-                        "ID": 2,
-                        "Title": "Missed created ticket",
-                        "StatusName": "Open",
-                        "CreatedDate": "2026-04-10T10:00:00Z",
-                        "ModifiedDate": "2026-04-10T10:00:00Z",
-                        "CompletedDate": None,
-                    }
-                ]
-            if "ClosedDateFrom" in payload:
-                return [
-                    {
-                        "ID": 3,
-                        "Title": "Missed closed ticket",
-                        "StatusName": "Closed",
-                        "CreatedDate": "2026-03-15T10:00:00Z",
-                        "ModifiedDate": "2026-04-12T10:00:00Z",
-                        "CompletedDate": "2026-04-12T10:00:00Z",
-                    }
-                ]
-            return []
-
-    config = RuntimeConfig(
-        base_url="https://example.test",
-        app_id="1234",
-        username="user",
-        password="pass",
-        db_path=tmp_path / "analytics.duckdb",
-        report_output_path=tmp_path / "survey_health.html",
-        notebook_output_path=tmp_path / "survey_health.ipynb",
-    )
-    replace_table(
-        config.db_path,
-        "tickets",
-        pd.DataFrame(
-            [
-                {
-                    "ticket_id": 1,
-                    "ticket_title": "Already cached",
-                    "modified_at": "2026-04-29T10:00:00Z",
-                },
-            ]
-        ),
-    )
-    client = CatchupClient([])
-
-    result = sync_tickets(
-        config,
-        client,
-        ticket_app_id=634,
-        catchup_start=pd.Timestamp("2026-04-08 15:00:00", tz="UTC"),
-        catchup_end=pd.Timestamp("2026-04-29 15:00:00", tz="UTC"),
-    )
-
-    tickets = read_table(config.db_path, "tickets")
-    payloads = [call[1] for call in client.search_calls]
-    assert set(tickets["ticket_id"]) == {1, 2, 3}
-    assert result["synced_tickets"] == 0
-    assert result["catchup_created_tickets"] == 1
-    assert result["catchup_closed_tickets"] == 1
-    assert any("CreatedDateFrom" in payload and "CreatedDateTo" in payload for payload in payloads)
-    assert any("ClosedDateFrom" in payload and "ClosedDateTo" in payload for payload in payloads)
-
-
-def test_sync_tickets_catchup_splits_capped_windows_to_avoid_search_caps(tmp_path):
-    class CappedClient(StubClient):
-        def search_tickets(self, token, payload, ticket_app_id=None):
-            self.search_calls.append((token, payload, ticket_app_id))
-            if "CreatedDateFrom" not in payload and "ClosedDateFrom" not in payload:
-                return []
-            from_key = "CreatedDateFrom" if "CreatedDateFrom" in payload else "ClosedDateFrom"
-            to_key = "CreatedDateTo" if "CreatedDateTo" in payload else "ClosedDateTo"
-            start = pd.Timestamp(payload[from_key])
-            end = pd.Timestamp(payload[to_key])
-            if end - start > pd.Timedelta(days=1):
-                return [
-                    {
-                        "ID": idx,
-                        "Title": f"Capped {idx}",
-                        "CreatedDate": start.isoformat(),
-                        "ModifiedDate": start.isoformat(),
-                    }
-                    for idx in range(300)
-                ]
-            return [
-                {
-                    "ID": int(start.strftime("%d")),
-                    "Title": f"Daily {start:%Y-%m-%d}",
-                    "CreatedDate": start.isoformat(),
-                    "ModifiedDate": start.isoformat(),
-                }
-            ]
-
-    config = RuntimeConfig(
-        base_url="https://example.test",
-        app_id="1234",
-        username="user",
-        password="pass",
-        db_path=tmp_path / "analytics.duckdb",
-        report_output_path=tmp_path / "survey_health.html",
-        notebook_output_path=tmp_path / "survey_health.ipynb",
-    )
-    client = CappedClient([])
-    replace_table(config.db_path, "tickets", pd.DataFrame([{"ticket_id": 1}]).iloc[0:0])
-
-    sync_tickets(
-        config,
-        client,
-        ticket_app_id=634,
-        catchup_start=pd.Timestamp("2026-04-08 00:00:00", tz="UTC"),
-        catchup_end=pd.Timestamp("2026-04-11 00:00:00", tz="UTC"),
-    )
-
-    created_payloads = [
-        payload for _, payload, _ in client.search_calls if "CreatedDateFrom" in payload
-    ]
-    closed_payloads = [
-        payload for _, payload, _ in client.search_calls if "ClosedDateFrom" in payload
-    ]
-    assert [payload["CreatedDateFrom"] for payload in created_payloads] == [
-        "2026-04-08T00:00:00+00:00",
-        "2026-04-08T00:00:00+00:00",
-        "2026-04-09T00:00:00+00:00",
-        "2026-04-10T00:00:00+00:00",
-    ]
-    assert [payload["ClosedDateFrom"] for payload in closed_payloads] == [
-        "2026-04-08T00:00:00+00:00",
-        "2026-04-08T00:00:00+00:00",
-        "2026-04-09T00:00:00+00:00",
-        "2026-04-10T00:00:00+00:00",
-    ]
-
-
 def test_generate_cfo_email_keeps_report_period_to_seven_days_after_missed_run(tmp_path, monkeypatch):
     config = RuntimeConfig(
         base_url="https://example.test",
@@ -792,9 +624,9 @@ def test_generate_cfo_email_keeps_report_period_to_seven_days_after_missed_run(t
 
     runs = read_table(config.db_path, "cfo_email_runs")
     assert captured["period_start"] == captured["as_of"] - pd.Timedelta(days=7)
-    assert result["tickets_created_this_week"] == 2
+    assert result["tickets_created_this_week"] == 0
     assert len(runs) == 2
-    assert set(runs["tickets_created"]) == {12, 2}
+    assert set(runs["tickets_created"]) == {12, 0}
 
 
 def test_generate_cfo_email_backfills_full_chart_horizon(tmp_path, monkeypatch):
@@ -839,7 +671,7 @@ def test_generate_cfo_email_backfills_full_chart_horizon(tmp_path, monkeypatch):
         for _, payload, _ in client.search_calls
         if "CreatedDateFrom" in payload
     ]
-    assert min(created_from_values) == as_of - pd.Timedelta(days=56)
+    assert as_of - pd.Timedelta(days=56) in created_from_values
 
 
 def test_generate_cfo_email_backfills_from_last_run_without_expanding_report_period(tmp_path, monkeypatch):
@@ -920,7 +752,7 @@ def test_generate_cfo_email_backfills_from_last_run_without_expanding_report_per
         if "CreatedDateFrom" in payload
     ]
     assert captured["period_start"] == as_of - pd.Timedelta(days=7)
-    assert min(created_from_values) == last_period_end
+    assert last_period_end in created_from_values
 
 
 def test_refresh_survey_slice_runs_end_to_end_and_writes_report(tmp_path):
@@ -1498,7 +1330,8 @@ def test_generate_cfo_email_overrides_open_count_with_live_incident_service_requ
         },
     ]
     assert "total_open_tickets_prior_week" not in captured["snapshot"]
-    assert captured["snapshot"]["open_weekly"] == [{"week": "Apr 8", "count": 580}]
+    assert len(captured["snapshot"]["open_weekly"]) == 8
+    assert captured["snapshot"]["open_weekly"][-1]["count"] == 0
     assert result["total_open_tickets"] == 340
 
 
@@ -1595,6 +1428,7 @@ def test_generate_cfo_email_refreshes_live_tdx_data_when_client_provided(tmp_pat
     assert client.report_calls == [(100482, "token", True), (100482, "token", True)]
     assert any("CreatedDateFrom" in payload and "CreatedDateTo" in payload for payload in payloads)
     assert any("ClosedDateFrom" in payload and "ClosedDateTo" in payload for payload in payloads)
-    assert captured["ticket_ids"] == {1, 42}
+    assert captured["ticket_ids"] == set()
+    assert read_table(config.db_path, "tickets")["ticket_id"].tolist() == [1]
     assert captured["survey_ticket_ids"] == {42}
     assert result["email_written"] == 1
